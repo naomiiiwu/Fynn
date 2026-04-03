@@ -14,10 +14,16 @@ class WhatsAppService:
 
     def __init__(self) -> None:
         """Initialise Twilio credentials from environment variables."""
-        self.account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-        self.auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
-        self.from_number = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
-        self.to_number = os.getenv("TWILIO_WHATSAPP_TO", "")
+        self.account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+        self.auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+        self.from_number = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").strip()
+        self.to_number = os.getenv("TWILIO_WHATSAPP_TO", "").strip()
+
+        # Ensure whatsapp: prefix on both numbers
+        if self.from_number and not self.from_number.startswith("whatsapp:"):
+            self.from_number = f"whatsapp:{self.from_number}"
+        if self.to_number and not self.to_number.startswith("whatsapp:"):
+            self.to_number = f"whatsapp:{self.to_number}"
 
     def _is_configured(self) -> bool:
         """
@@ -55,7 +61,7 @@ class WhatsAppService:
             client = Client(self.account_sid, self.auth_token)
             msg = client.messages.create(
                 from_=self.from_number,
-                to=f"whatsapp:{self.to_number}" if not self.to_number.startswith("whatsapp:") else self.to_number,
+                to=self.to_number,
                 body=message,
             )
             print(f"  [WhatsApp] Message sent successfully. SID: {msg.sid}")

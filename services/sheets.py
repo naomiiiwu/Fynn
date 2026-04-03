@@ -24,8 +24,8 @@ class SheetsService:
 
     def __init__(self) -> None:
         """Initialise with credentials path and spreadsheet ID from environment."""
-        self.credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "")
-        self.spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "")
+        self.credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "").strip()
+        self.spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
         self.client: Optional[gspread.Client] = None
 
     def _authenticate(self) -> bool:

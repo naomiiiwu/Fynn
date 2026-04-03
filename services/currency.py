@@ -40,7 +40,7 @@ class CurrencyConverter:
 
     def __init__(self) -> None:
         """Initialise the converter; load API key from environment if available."""
-        self.app_id = os.getenv("OPENEXCHANGERATES_APP_ID", "")
+        self.app_id = os.getenv("OPENEXCHANGERATES_APP_ID", "").strip()
         self.api_base = "https://openexchangerates.org/api"
         self._live_rates: Optional[dict] = None
 

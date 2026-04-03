@@ -40,7 +40,7 @@ class BookkeeperAgent:
 
     def __init__(self) -> None:
         """Initialise the Anthropic client."""
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
             print("  [Bookkeeper] WARNING: ANTHROPIC_API_KEY not set — AI features will be limited.")
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
