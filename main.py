@@ -19,17 +19,37 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import anthropic
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRouter
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
+from services.scheduler import create_scheduler
+
+
+# ── App lifespan — starts/stops scheduler with the server ─────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the scheduler when the server starts, stop it on shutdown."""
+    print("\n[Fynn] Starting scheduler...")
+    scheduler = create_scheduler()
+    scheduler.start()
+    app.state.scheduler = scheduler
+    yield
+    print("\n[Fynn] Stopping scheduler...")
+    scheduler.shutdown()
+
 
 app = FastAPI(
     title="Fynn Bookkeeping Agent",
     description="Autonomous AI bookkeeping agent for cross-border e-commerce sellers.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Shared state
@@ -48,6 +68,53 @@ async def health() -> dict:
         JSON with status and version.
     """
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ── Schedule status ────────────────────────────────────────────────────────────
+
+@app.get("/schedule")
+async def get_schedule() -> JSONResponse:
+    """
+    Show all scheduled jobs and their next run times.
+
+    Returns:
+        JSON list of jobs with name, id, and next_run_time.
+    """
+    scheduler: AsyncIOScheduler = app.state.scheduler
+    jobs = []
+    for job in scheduler.get_jobs():
+        next_run = getattr(job, "next_run_time", None)
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run": next_run.isoformat() if next_run else "scheduler not yet started",
+        })
+    return JSONResponse(content={"jobs": jobs})
+
+
+@app.post("/schedule/trigger/{job_id}")
+async def trigger_job(job_id: str) -> JSONResponse:
+    """
+    Manually trigger a scheduled job by ID immediately.
+
+    Valid job IDs: daily_ping, weekly_summary, monthly_report
+
+    Args:
+        job_id: The scheduler job ID to run now.
+
+    Returns:
+        JSON confirmation or error.
+    """
+    scheduler: AsyncIOScheduler = app.state.scheduler
+    job = scheduler.get_job(job_id)
+    if not job:
+        return JSONResponse(
+            content={"error": f"Job '{job_id}' not found. Valid IDs: daily_ping, weekly_summary, monthly_report"},
+            status_code=404,
+        )
+    from datetime import datetime as dt
+    job.modify(next_run_time=dt.now())
+    return JSONResponse(content={"status": "triggered", "job": job_id})
 
 
 # ── Monthly report pipeline ────────────────────────────────────────────────────
