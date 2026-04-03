@@ -115,6 +115,7 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
     Returns:
         Formatted multi-line string ready to send via Twilio.
     """
+    import os
     period = pnl["period"]
     net_revenue = pnl["revenue"]["net_revenue"]
     order_count = pnl["order_count"]
@@ -124,6 +125,14 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
 
     net_profit = pnl["profit"]["net_profit"]
     gross_sales = pnl["revenue"]["gross_sales"]
+
+    # Build Google Sheets link
+    spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
+    if spreadsheet_id:
+        sheets_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+        sheets_line = f"📄 Full P&L: {sheets_link}"
+    else:
+        sheets_line = "📄 Full P&L saved to pnl_report.json"
 
     if anomalies:
         anomaly_lines = "\n".join(f"⚠️ {a['description']}" for a in anomalies)
@@ -147,7 +156,7 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
         f"\n"
         f"{anomaly_block}\n"
         f"\n"
-        f"Full P&L → Google Sheets 📄\n"
+        f"{sheets_line}\n"
         f"— Fynn 🤖"
     )
     return message
