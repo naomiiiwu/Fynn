@@ -19,13 +19,29 @@ Schedule env vars (24h format, server local time):
 
 import os
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from agents.bookkeeper import BookkeeperAgent
+from models.user_profile import ProfileStore, UserProfile
 from services.whatsapp import WhatsAppService
 from utils.formatter import format_whatsapp_message
+
+# Shared profile store — injected by main.py after app starts
+_profile_store: ProfileStore | None = None
+
+
+def set_profile_store(store: ProfileStore) -> None:
+    """
+    Inject the shared ProfileStore so scheduler jobs can read per-user settings.
+
+    Args:
+        store: The ProfileStore instance from ConversationManager.
+    """
+    global _profile_store
+    _profile_store = store
 
 
 def _env_int(key: str, default: int) -> int:
@@ -43,15 +59,45 @@ def _env_str(key: str, default: str) -> str:
 
 # ── Job functions ───────────────────────────────────────────────────────────────
 
+def _get_profiles_for_job(job_type: str) -> list[UserProfile]:
+    """
+    Return all onboarded profiles that have opted into a given job type.
+
+    Args:
+        job_type: "daily", "weekly", or "monthly"
+
+    Returns:
+        List of matching UserProfile objects.
+    """
+    if _profile_store is None:
+        return []
+    all_profiles = _profile_store.all()
+    enabled_attr = f"{job_type}_enabled"
+    return [
+        p for p in all_profiles
+        if p.is_onboarding_complete() and getattr(p, enabled_attr, False)
+    ]
+
+
 async def run_daily_ping() -> None:
     """
-    Daily job: send a short WhatsApp ping to the seller.
+    Daily job: send a short WhatsApp ping to each seller who enabled daily reports.
 
-    Loads today's transactions from mock data and sends a
-    brief update. In production this would query today's
-    real orders from the platform API.
+    Loads today's transactions and sends a brief update per seller.
+    Falls back to global .env config if no profiles exist yet.
     """
     print(f"\n[Scheduler] ⏰ Daily ping — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    profiles = _get_profiles_for_job("daily")
+
+    # Fallback to env config if no profiles yet
+    if not profiles:
+        profiles = [UserProfile(
+            phone=os.getenv("TWILIO_WHATSAPP_TO", "").strip(),
+            name=_env_str("SELLER_NAME", "Seller"),
+            daily_enabled=True,
+            onboarding_step=None,
+        )]
 
     try:
         from data.mock_shopee_data import get_mock_transactions
@@ -65,24 +111,23 @@ async def run_daily_ping() -> None:
         ]
         total = sum(t.amount_myr for t in orders_today)
 
-        seller_name = _env_str("SELLER_NAME", "Seller")
-        if orders_today:
-            message = (
-                f"Good morning {seller_name}! ☀️\n\n"
-                f"📦 Today so far: {len(orders_today)} order{'s' if len(orders_today) != 1 else ''} "
-                f"(MYR {total:,.2f})\n\n"
-                f"— Fynn"
-            )
-        else:
-            message = (
-                f"Good morning {seller_name}! ☀️\n\n"
-                f"No new orders yet today. I'll keep watching.\n\n"
-                f"— Fynn"
-            )
-
-        wa = WhatsAppService()
-        wa.send(message)
-        print(f"  [Scheduler] Daily ping sent.")
+        for profile in profiles:
+            if orders_today:
+                message = (
+                    f"Good morning {profile.name}! ☀️\n\n"
+                    f"📦 Today so far: {len(orders_today)} order{'s' if len(orders_today) != 1 else ''} "
+                    f"(MYR {total:,.2f})\n\n"
+                    f"— Fynn"
+                )
+            else:
+                message = (
+                    f"Good morning {profile.name}! ☀️\n\n"
+                    f"No new orders yet today. I'll keep watching.\n\n"
+                    f"— Fynn"
+                )
+            wa = WhatsAppService()
+            wa.send(message)
+            print(f"  [Scheduler] Daily ping sent to {profile.phone}.")
 
     except Exception as exc:
         print(f"  [Scheduler] Daily ping failed: {exc}")
@@ -90,12 +135,18 @@ async def run_daily_ping() -> None:
 
 async def run_weekly_summary() -> None:
     """
-    Weekly job: send a 7-day rolling summary via WhatsApp.
-
-    Runs a condensed version of the pipeline for the past week
-    and delivers a brief summary — not the full P&L.
+    Weekly job: send a 7-day rolling summary to each seller who enabled weekly reports.
     """
     print(f"\n[Scheduler] ⏰ Weekly summary — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+
+    profiles = _get_profiles_for_job("weekly")
+    if not profiles:
+        profiles = [UserProfile(
+            phone=os.getenv("TWILIO_WHATSAPP_TO", "").strip(),
+            name=_env_str("SELLER_NAME", "Seller"),
+            weekly_enabled=True,
+            onboarding_step=None,
+        )]
 
     try:
         from data.mock_shopee_data import get_mock_transactions
@@ -106,24 +157,21 @@ async def run_weekly_summary() -> None:
         orders = [t for t in txns if t.type == TransactionType.ORDER]
         refunds = [t for t in txns if t.type == TransactionType.REFUND]
         gross_myr = sum(t.amount_myr for t in orders)
-
         conv = CurrencyConverter()
-        result = conv.myr_to_sgd(gross_myr)
-        gross_sgd = result["converted_amount"]
+        gross_sgd = conv.myr_to_sgd(gross_myr)["converted_amount"]
 
-        seller_name = _env_str("SELLER_NAME", "Seller")
-        message = (
-            f"Hey {seller_name}! 📊 Your weekly Fynn update:\n\n"
-            f"📦 Orders: {len(orders)}\n"
-            f"💰 Gross Sales: SGD {gross_sgd:,.2f}\n"
-            f"↩️ Refunds: {len(refunds)}\n\n"
-            f"Full monthly report drops on the 1st.\n"
-            f"— Fynn"
-        )
-
-        wa = WhatsAppService()
-        wa.send(message)
-        print(f"  [Scheduler] Weekly summary sent.")
+        for profile in profiles:
+            message = (
+                f"Hey {profile.name}! 📊 Your weekly Fynn update:\n\n"
+                f"📦 Orders: {len(orders)}\n"
+                f"💰 Gross Sales: {profile.currency} {gross_sgd:,.2f}\n"
+                f"↩️ Refunds: {len(refunds)}\n\n"
+                f"Full monthly report drops on the 1st.\n"
+                f"— Fynn"
+            )
+            wa = WhatsAppService()
+            wa.send(message)
+            print(f"  [Scheduler] Weekly summary sent to {profile.phone}.")
 
     except Exception as exc:
         print(f"  [Scheduler] Weekly summary failed: {exc}")
@@ -131,26 +179,31 @@ async def run_weekly_summary() -> None:
 
 async def run_monthly_report() -> None:
     """
-    Monthly job: run the full 7-step agent pipeline.
-
-    This is the same as POST /run-monthly-report — reconciles
-    payouts, generates P&L, writes to Sheets, sends WhatsApp.
+    Monthly job: run the full 7-step agent pipeline for each seller who enabled monthly reports.
     """
     print(f"\n[Scheduler] ⏰ Monthly report — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
-    try:
-        # Determine period label from current month
-        now = datetime.now()
-        period = now.strftime("%B %Y")  # e.g. "April 2026"
+    profiles = _get_profiles_for_job("monthly")
+    if not profiles:
+        profiles = [UserProfile(
+            phone=os.getenv("TWILIO_WHATSAPP_TO", "").strip(),
+            name=_env_str("SELLER_NAME", "Seller"),
+            monthly_enabled=True,
+            onboarding_step=None,
+        )]
 
-        agent = BookkeeperAgent()
-        result = agent.run(period=period, platform="Shopee MY")
+    now = datetime.now()
+    period = now.strftime("%B %Y")
 
-        pnl = result.get("pnl", {})
-        print(f"  [Scheduler] Monthly report complete. Net profit: SGD {pnl.get('profit', {}).get('net_profit', 0):,.2f}")
-
-    except Exception as exc:
-        print(f"  [Scheduler] Monthly report failed: {exc}")
+    for profile in profiles:
+        try:
+            agent = BookkeeperAgent()
+            result = agent.run(period=period, platform="Shopee MY")
+            pnl = result.get("pnl", {})
+            print(f"  [Scheduler] Monthly report complete for {profile.name}. "
+                  f"Net profit: {profile.currency} {pnl.get('profit', {}).get('net_profit', 0):,.2f}")
+        except Exception as exc:
+            print(f"  [Scheduler] Monthly report failed for {profile.phone}: {exc}")
 
 
 # ── Scheduler factory ───────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
-from services.scheduler import create_scheduler
+from services.scheduler import create_scheduler, set_profile_store
 
 
 # ── App lifespan — starts/stops scheduler with the server ─────────────────────
@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI):
     """Start the scheduler when the server starts, stop it on shutdown."""
     print("\n[Fynn] Starting scheduler...")
     scheduler = create_scheduler()
+    set_profile_store(_conversation.profiles)
     scheduler.start()
     app.state.scheduler = scheduler
     yield
@@ -242,17 +243,26 @@ async def whatsapp_webhook(
     sender = From.strip()
     message = Body.strip()
 
-    # Reset conversation
+    # Get profile (creates new one if first contact)
+    profile, is_new = _conversation.profiles.get_or_create(sender)
+
+    # Hard reset command — clears history and restarts onboarding
     if message.lower() in {"reset", "clear", "restart"}:
         _conversation.clear_history(sender)
-        reply = "Conversation reset! 🔄 How can I help you?"
+        profile.onboarding_step = "ask_name"
+        _conversation.profiles.save(profile)
+        reply = "Restarting setup! 🔄 What's your name?"
+        return _twiml_response(reply)
 
-    # Report trigger — run full pipeline then reply
-    elif _conversation.is_report_trigger(message):
-        reply = "On it! Running your March 2026 report now... I'll update you here when it's done. ⏳"
-        # Send immediate acknowledgement, then run pipeline async
-        # For MVP: run inline (blocks for ~5-10s), fine for demo
-        _twiml_send(sender, reply)
+    # New user or mid-onboarding → state machine handles it
+    if not profile.is_onboarding_complete():
+        reply = _conversation.handle(sender, message)
+        return _twiml_response(reply)
+
+    # Onboarded user — check for report trigger
+    if _conversation.is_report_trigger(message, profile):
+        ack = "On it! Running your March 2026 report now... I'll update you here when it's done. ⏳"
+        _twiml_send(sender, ack)
 
         agent = BookkeeperAgent()
         result = agent.run(period="March 2026", platform="Shopee MY")
@@ -262,15 +272,18 @@ async def whatsapp_webhook(
         _last_pnl = pnl
         _conversation.store_pnl(sender, pnl)
 
-        # Pipeline sends its own WhatsApp summary, so just confirm here
         reply = "✅ Done! Your March P&L has been sent and your Google Sheet is updated."
+        return _twiml_response(reply)
 
-    # Conversational Q&A
-    else:
-        # Give Claude the latest P&L if we have it
-        if _last_pnl and not _conversation.get_pnl(sender):
-            _conversation.store_pnl(sender, _last_pnl)
-        reply = _conversation.reply(sender, message)
+    # Settings change trigger
+    if _conversation.is_settings_trigger(message, profile):
+        reply = _conversation.handle(sender, message)
+        return _twiml_response(reply)
+
+    # Conversational Q&A via Claude
+    if _last_pnl and not _conversation.get_pnl(sender):
+        _conversation.store_pnl(sender, _last_pnl)
+    reply = _conversation.handle(sender, message)
 
     return _twiml_response(reply)
 
