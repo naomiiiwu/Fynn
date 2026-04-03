@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
+from services.database import load_latest_pnl_any
 from services.scheduler import create_scheduler, set_profile_store
 
 
@@ -35,8 +36,20 @@ from services.scheduler import create_scheduler, set_profile_store
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the scheduler when the server starts, stop it on shutdown."""
-    print("\n[Fynn] Starting scheduler...")
+    """Start the scheduler when the server starts, restore state, stop on shutdown."""
+    global _last_pnl
+
+    print("\n[Fynn] Starting up...")
+
+    # Restore last P&L from Supabase so /ask works after restarts
+    restored = load_latest_pnl_any()
+    if restored:
+        _last_pnl = restored
+        print(f"  [Fynn] Restored last P&L from Supabase ({restored.get('period')})")
+    else:
+        print("  [Fynn] No previous P&L found in Supabase.")
+
+    print("[Fynn] Starting scheduler...")
     scheduler = create_scheduler()
     set_profile_store(_conversation.profiles)
     scheduler.start()
@@ -142,6 +155,10 @@ async def run_monthly_report() -> JSONResponse:
     result = agent.run(period="March 2026", platform="Shopee MY")
 
     _last_pnl = result.get("pnl", {})
+
+    # Persist P&L to Supabase
+    from services.database import save_pnl
+    save_pnl("system", _last_pnl)
 
     print("\n" + "=" * 60)
     print("  FYNN — Agent Pipeline Complete ✅")
@@ -271,6 +288,10 @@ async def whatsapp_webhook(
         global _last_pnl
         _last_pnl = pnl
         _conversation.store_pnl(sender, pnl)
+
+        # Persist to Supabase
+        from services.database import save_pnl
+        save_pnl(sender, pnl)
 
         reply = "✅ Done! Your March P&L has been sent and your Google Sheet is updated."
         return _twiml_response(reply)

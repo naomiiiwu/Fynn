@@ -82,30 +82,68 @@ class UserProfile:
         )
 
 
-# ── In-memory profile store ────────────────────────────────────────────────────
+# ── Profile store (in-memory + Supabase) ──────────────────────────────────────
 
 class ProfileStore:
     """
-    Simple in-memory store for UserProfile objects keyed by phone number.
+    Profile store backed by in-memory cache + Supabase persistence.
 
-    Replace with Supabase calls in v1.5 for persistence across restarts.
+    Read path:  memory first, then Supabase on miss.
+    Write path: memory + Supabase (fire-and-forget, never blocks).
+    Fallback:   if Supabase is unavailable, behaves as pure in-memory store.
     """
 
     def __init__(self) -> None:
-        """Initialise empty store."""
+        """Initialise empty in-memory cache."""
         self._profiles: dict[str, UserProfile] = {}
+
+    def _from_dict(self, data: dict) -> UserProfile:
+        """
+        Convert a Supabase row dict to a UserProfile.
+
+        Args:
+            data: Raw dict from Supabase.
+
+        Returns:
+            UserProfile instance.
+        """
+        return UserProfile(
+            phone=data["phone"],
+            name=data.get("name", "Seller"),
+            language=data.get("language", "en"),
+            currency=data.get("currency", "SGD"),
+            report_time_hour=data.get("report_time_hour", 8),
+            daily_enabled=data.get("daily_enabled", False),
+            weekly_enabled=data.get("weekly_enabled", True),
+            monthly_enabled=data.get("monthly_enabled", True),
+            weekly_day=data.get("weekly_day", "mon"),
+            monthly_day=data.get("monthly_day", 1),
+            anomaly_sensitivity=data.get("anomaly_sensitivity", "normal"),
+            onboarding_step=data.get("onboarding_step", "ask_name"),
+        )
 
     def get(self, phone: str) -> Optional[UserProfile]:
         """
-        Retrieve a profile by phone number.
+        Retrieve a profile — memory first, then Supabase.
 
         Args:
             phone: WhatsApp number string.
 
         Returns:
-            UserProfile or None if not found.
+            UserProfile or None if not found anywhere.
         """
-        return self._profiles.get(phone)
+        if phone in self._profiles:
+            return self._profiles[phone]
+
+        # Try Supabase
+        from services.database import load_profile
+        data = load_profile(phone)
+        if data:
+            profile = self._from_dict(data)
+            self._profiles[phone] = profile
+            return profile
+
+        return None
 
     def get_or_create(self, phone: str) -> tuple[UserProfile, bool]:
         """
@@ -117,21 +155,36 @@ class ProfileStore:
         Returns:
             Tuple of (UserProfile, is_new). is_new=True means onboarding needed.
         """
-        if phone in self._profiles:
-            return self._profiles[phone], False
+        existing = self.get(phone)
+        if existing:
+            return existing, False
+
         profile = UserProfile(phone=phone)
         self._profiles[phone] = profile
         return profile, True
 
     def save(self, profile: UserProfile) -> None:
         """
-        Persist a profile (in-memory for now).
+        Save profile to memory and persist to Supabase.
 
         Args:
             profile: The UserProfile to save.
         """
         self._profiles[profile.phone] = profile
+        from services.database import save_profile
+        save_profile(profile)
 
     def all(self) -> list[UserProfile]:
-        """Return all stored profiles."""
+        """
+        Return all profiles — merges Supabase records with in-memory cache.
+
+        Returns:
+            List of all known UserProfile objects.
+        """
+        from services.database import load_all_profiles
+        db_profiles = load_all_profiles()
+        for data in db_profiles:
+            phone = data["phone"]
+            if phone not in self._profiles:
+                self._profiles[phone] = self._from_dict(data)
         return list(self._profiles.values())

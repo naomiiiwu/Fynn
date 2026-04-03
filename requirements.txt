@@ -9,3 +9,4 @@ google-auth==2.47.0
 twilio==9.3.8
 python-multipart==0.0.20
 apscheduler==3.10.4
+supabase==2.10.0
