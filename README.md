@@ -79,11 +79,67 @@ This runs all 8 steps:
 7. Write to Google Sheets
 8. Send WhatsApp summary (or print to console)
 
+### Ask Fynn a question (after running a report)
+
+```bash
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was my biggest cost this month?"}'
+```
+
 ### Health check
 
 ```bash
 curl http://localhost:8000/health
 ```
+
+---
+
+## WhatsApp Chatbot Setup (Conversational Fynn)
+
+Sellers can chat with Fynn directly on WhatsApp. Twilio webhooks incoming messages to your server, Claude replies as Fynn.
+
+### How it works
+
+```
+Seller texts WhatsApp → Twilio → POST /webhook/whatsapp → Claude → reply
+```
+
+**Trigger phrases** (runs the full pipeline):
+- "run my report", "send report", "generate report", "run"
+
+**Everything else** is answered conversationally by Claude using P&L context.
+
+**Reset conversation:**
+- "reset" or "clear"
+
+### Step 1 — Expose your local server with ngrok
+
+Twilio needs a public URL to POST to. Use ngrok for local dev:
+
+```bash
+# Install ngrok: https://ngrok.com/download
+ngrok http 8000
+```
+
+Copy the `https://xxxx.ngrok-free.app` URL from the output.
+
+### Step 2 — Configure Twilio webhook
+
+1. Go to [console.twilio.com](https://console.twilio.com)
+2. **Messaging → Try it out → Send a WhatsApp message**
+3. Under **Sandbox Configuration**, set:
+   - **When a message comes in:** `https://xxxx.ngrok-free.app/webhook/whatsapp`
+   - Method: `HTTP POST`
+4. Save
+
+### Step 3 — Test it
+
+Send any of these to your Twilio sandbox number on WhatsApp:
+- `run my report` → triggers full pipeline
+- `what was my profit margin?` → Claude answers
+- `how many refunds did I have?` → Claude answers
+- `reset` → clears conversation history
 
 ---
 
