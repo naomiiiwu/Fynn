@@ -23,31 +23,42 @@ class SheetsService:
     """Handles Google Sheets creation and data writing for P&L reports."""
 
     def __init__(self) -> None:
-        """Initialise with credentials path and spreadsheet ID from environment."""
+        """Initialise with credentials and spreadsheet ID from environment."""
         self.credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH", "").strip()
+        self.credentials_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
         self.spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
         self.client: Optional[gspread.Client] = None
 
     def _authenticate(self) -> bool:
         """
-        Authenticate using the service account JSON key file.
+        Authenticate using either:
+          1. GOOGLE_SHEETS_CREDENTIALS_JSON env var (Railway/production)
+          2. GOOGLE_SHEETS_CREDENTIALS_PATH file path (local dev)
 
         Returns:
             True if authentication succeeded, False otherwise.
         """
-        if not self.credentials_path:
-            print("  [Sheets] GOOGLE_SHEETS_CREDENTIALS_PATH not set — skipping Sheets output.")
-            return False
-
-        if not os.path.exists(self.credentials_path):
-            print(f"  [Sheets] Credentials file not found: {self.credentials_path}")
-            return False
+        import json
 
         try:
-            creds = Credentials.from_service_account_file(self.credentials_path, scopes=SCOPES)
-            self.client = gspread.authorize(creds)
-            print("  [Sheets] Authenticated successfully with service account.")
-            return True
+            # Prefer JSON env var (works on Railway where files aren't available)
+            if self.credentials_json:
+                info = json.loads(self.credentials_json)
+                creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+                self.client = gspread.authorize(creds)
+                print("  [Sheets] Authenticated via GOOGLE_SHEETS_CREDENTIALS_JSON.")
+                return True
+
+            # Fall back to file path (local dev)
+            if self.credentials_path and os.path.exists(self.credentials_path):
+                creds = Credentials.from_service_account_file(self.credentials_path, scopes=SCOPES)
+                self.client = gspread.authorize(creds)
+                print("  [Sheets] Authenticated via credentials file.")
+                return True
+
+            print("  [Sheets] No credentials found — set GOOGLE_SHEETS_CREDENTIALS_JSON or GOOGLE_SHEETS_CREDENTIALS_PATH.")
+            return False
+
         except Exception as exc:
             print(f"  [Sheets] Authentication failed: {exc}")
             return False
