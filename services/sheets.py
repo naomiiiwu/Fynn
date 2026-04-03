@@ -84,23 +84,43 @@ class SheetsService:
             sheet: The worksheet to format.
         """
         try:
-            # Bold rows 1, 5, 11, 17, 22 (section headers and totals)
-            bold_rows = [1, 2, 6, 12, 18, 23, 28]
-            for row in bold_rows:
-                sheet.format(f"A{row}:C{row}", {"textFormat": {"bold": True}})
-
-            # Light blue fill for main header
+            # Main title — dark blue bg, white bold text
             sheet.format("A1:C1", {
-                "backgroundColor": {"red": 0.2, "green": 0.5, "blue": 0.8},
-                "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                "backgroundColor": {"red": 0.13, "green": 0.29, "blue": 0.53},
+                "textFormat": {
+                    "bold": True,
+                    "fontSize": 13,
+                    "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                },
             })
 
-            # Light grey fill for section headers
-            for row in [6, 12, 18, 23]:
+            # Section header rows: Orders(8), Revenue(13), Costs(19), Profit(26), MYR Ref(31), Anomalies(39)
+            section_rows = [8, 13, 19, 26, 31, 39]
+            for row in section_rows:
                 sheet.format(f"A{row}:C{row}", {
-                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                    "backgroundColor": {"red": 0.85, "green": 0.91, "blue": 0.98},
                     "textFormat": {"bold": True},
                 })
+
+            # Total rows bold: Net Revenue(17), Total Costs(25), Net Profit(28)
+            for row in [17, 25, 28]:
+                sheet.format(f"A{row}:B{row}", {"textFormat": {"bold": True}})
+
+            # Column widths via batchUpdate
+            spreadsheet = sheet.spreadsheet
+            sheet_id = sheet.id
+            spreadsheet.batch_update({"requests": [
+                {"updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+                    "properties": {"pixelSize": 220},
+                    "fields": "pixelSize",
+                }},
+                {"updateDimensionProperties": {
+                    "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+                    "properties": {"pixelSize": 160},
+                    "fields": "pixelSize",
+                }},
+            ]})
 
             print("  [Sheets] Formatting applied.")
         except Exception as exc:
@@ -137,50 +157,54 @@ class SheetsService:
         rate = ex.get("rate", "N/A")
 
         rows = [
-            # Title
+            # Title block
             ["Fynn Bookkeeping Report", "", ""],
-            [f"Period: {period}", f"Platform: {pnl['platform']}", f"Generated: {pnl['generated_at'][:10]}"],
-            [f"Currency: {cur}", f"MYR→SGD Rate: {rate}", f"Source: {ex.get('source', 'N/A')}"],
+            ["Period", period, ""],
+            ["Platform", pnl["platform"], ""],
+            ["Currency", cur, ""],
+            ["MYR → SGD Rate", rate, ""],
+            ["Generated", pnl["generated_at"][:10], ""],
             ["", "", ""],
 
             # Orders summary
             ["Orders Summary", "", ""],
-            ["Metric", "Count", ""],
+            ["", "Count", ""],
             ["Total Orders", pnl.get("order_count", 0), ""],
             ["Refund Orders", pnl.get("refund_count", 0), ""],
             ["", "", ""],
 
             # Revenue
             ["Revenue", "", ""],
-            ["Line Item", f"Amount ({cur})", ""],
-            ["Gross Sales", f"{cur} {rev['gross_sales']:,.2f}", ""],
-            ["Refunds", f"-{cur} {rev['refunds']:,.2f}", ""],
-            ["Net Revenue", f"{cur} {rev['net_revenue']:,.2f}", ""],
+            ["", f"Amount ({cur})", ""],
+            ["Gross Sales", rev["gross_sales"], ""],
+            ["Refunds", -rev["refunds"], ""],
+            ["Net Revenue", rev["net_revenue"], ""],
             ["", "", ""],
 
             # Costs
             ["Costs", "", ""],
-            ["Line Item", f"Amount ({cur})", ""],
-            ["Platform Fees", f"-{cur} {costs['platform_fees']:,.2f}", ""],
-            ["Shipping", f"-{cur} {costs['shipping']:,.2f}", ""],
-            ["Vouchers", f"-{cur} {costs['vouchers']:,.2f}", ""],
-            ["Total Costs", f"-{cur} {costs['total_costs']:,.2f}", ""],
+            ["", f"Amount ({cur})", ""],
+            ["Platform Fees", -costs["platform_fees"], ""],
+            ["Shipping", -costs["shipping"], ""],
+            ["Vouchers", -costs["vouchers"], ""],
+            ["Total Costs", -costs["total_costs"], ""],
             ["", "", ""],
 
             # Profit
             ["Profit", "", ""],
-            ["Line Item", f"Amount ({cur})", ""],
-            ["Net Profit", f"{cur} {profit['net_profit']:,.2f}", ""],
+            ["", f"Amount ({cur})", ""],
+            ["Net Profit", profit["net_profit"], ""],
             ["Profit Margin", f"{profit['profit_margin_pct']}%", ""],
             ["", "", ""],
 
             # MYR Reference
-            ["MYR Reference (Pre-conversion)", "", ""],
-            ["Gross Sales (MYR)", f"MYR {myr_ref.get('gross_sales', 0):,.2f}", ""],
-            ["Net Revenue (MYR)", f"MYR {myr_ref.get('net_revenue', 0):,.2f}", ""],
-            ["Expected Payout (MYR)", f"MYR {myr_ref.get('expected_payout', 0):,.2f}", ""],
-            ["Actual Payout (MYR)", f"MYR {myr_ref.get('actual_payout', 0):,.2f}", ""],
-            ["Discrepancy (MYR)", f"MYR {myr_ref.get('discrepancy', 0):,.2f}", ""],
+            ["MYR Reference (pre-conversion)", "", ""],
+            ["", "Amount (MYR)", ""],
+            ["Gross Sales", myr_ref.get("gross_sales", 0), ""],
+            ["Net Revenue", myr_ref.get("net_revenue", 0), ""],
+            ["Expected Payout", myr_ref.get("expected_payout", 0), ""],
+            ["Actual Payout", myr_ref.get("actual_payout", 0), ""],
+            ["Discrepancy", myr_ref.get("discrepancy", 0), ""],
             ["", "", ""],
 
             # Anomalies
@@ -189,12 +213,12 @@ class SheetsService:
 
         if anomalies:
             for a in anomalies:
-                rows.append([f"[{a['severity']}] {a['type']}", a["description"], ""])
+                rows.append([f"⚠️ {a['type']} [{a['severity']}]", a["description"], ""])
         else:
             rows.append(["✅ No anomalies detected", "", ""])
 
         try:
-            sheet.update("A1", rows)
+            sheet.update("A1", rows, value_input_option="USER_ENTERED")
             self._apply_formatting(sheet)
             url = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}"
             print(f"  [Sheets] P&L written successfully → {url}")

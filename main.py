@@ -4,34 +4,34 @@ FastAPI entry point.
 
 Endpoints:
   GET  /health              → health check
-  POST /run-monthly-report  → full pipeline execution
+  POST /run-monthly-report  → full Claude agent pipeline
+  POST /ask                 → conversational P&L queries
 """
 
-import sys
+import json
 import os
+import sys
 
-# Add project root to Python path so all internal imports resolve
 sys.path.insert(0, os.path.dirname(__file__))
 
 from dotenv import load_dotenv
 load_dotenv()
 
+import anthropic
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
-from data.mock_shopee_data import get_mock_transactions, get_summary
-from services.currency import CurrencyConverter
-from services.reconciliation import reconcile
-from services.sheets import SheetsService
-from services.whatsapp import WhatsAppService
-from utils.formatter import format_whatsapp_message, generate_pnl, save_pnl_json
 
 app = FastAPI(
     title="Fynn Bookkeeping Agent",
     description="Autonomous AI bookkeeping agent for cross-border e-commerce sellers.",
     version="0.1.0",
 )
+
+# In-memory store for the last P&L — used by /ask
+_last_pnl: dict = {}
 
 
 @app.get("/health")
@@ -48,91 +48,89 @@ async def health() -> dict:
 @app.post("/run-monthly-report")
 async def run_monthly_report() -> JSONResponse:
     """
-    Trigger the full Fynn pipeline for March 2026 (Shopee MY mock data).
+    Trigger the full Fynn agent pipeline for March 2026 (Shopee MY mock data).
 
-    Pipeline steps:
-      1. Load mock Shopee transactions
-      2. Reconcile payout (expected vs actual)
-      3. AI categorization via Claude
-      4. Anomaly detection
-      5. Currency conversion (MYR → SGD)
-      6. P&L generation
-      7. Google Sheets output
-      8. WhatsApp summary delivery
+    Claude orchestrates all 7 steps via tool calls:
+      load_transactions → reconcile_payout → detect_anomalies →
+      convert_currency → generate_pnl → write_to_sheets → send_whatsapp
 
     Returns:
-        JSON containing the full P&L report and pipeline status.
+        JSON with full P&L report and pipeline status.
     """
+    global _last_pnl
+
     print("\n" + "=" * 60)
-    print("  FYNN — Monthly Report Pipeline Starting")
+    print("  FYNN — Agent Pipeline Starting")
     print("=" * 60)
 
-    seller_name = os.getenv("SELLER_NAME", "Seller")
-    status_log: dict[str, str] = {}
-
-    # ── Step 1: Load mock data ──────────────────────────────────────
-    print("\n[Step 1/7] Loading mock Shopee transaction data...")
-    transactions = get_mock_transactions()
-    summary = get_summary()
-    print(f"  Loaded {summary['total_transactions']} transactions | "
-          f"Orders: {summary['orders']} | Refunds: {summary['refunds']} | "
-          f"Gross Sales: MYR {summary['gross_sales_myr']:,.2f}")
-    status_log["data_load"] = "ok"
-
-    # ── Step 2: Reconcile ───────────────────────────────────────────
-    print("\n[Step 2/7] Reconciling payout...")
-    reconciliation = reconcile(transactions)
-    status_log["reconciliation"] = "ok"
-
-    # ── Step 3: AI Categorization ───────────────────────────────────
-    print("\n[Step 3/7] AI transaction categorization...")
     agent = BookkeeperAgent()
-    transactions = agent.categorize_all(transactions)
-    status_log["categorization"] = "ok"
+    result = agent.run(period="March 2026", platform="Shopee MY")
 
-    # ── Step 4: Anomaly Detection ───────────────────────────────────
-    print("\n[Step 4/7] Anomaly detection...")
-    anomalies = agent.detect_anomalies(transactions, reconciliation)
-    status_log["anomaly_detection"] = "ok"
-
-    # ── Step 5: Currency Conversion ─────────────────────────────────
-    print("\n[Step 5/7] Currency conversion (MYR → SGD)...")
-    converter = CurrencyConverter()
-    sgd_conversion = converter.myr_to_sgd(reconciliation.actual_payout_myr)
-    status_log["currency_conversion"] = "ok"
-
-    # ── Step 6: Generate P&L ────────────────────────────────────────
-    print("\n[Step 6/7] Generating P&L report...")
-    pnl = generate_pnl(
-        transactions=transactions,
-        reconciliation=reconciliation,
-        anomalies=anomalies,
-        sgd_conversion=sgd_conversion,
-    )
-    status_log["pnl_generation"] = "ok"
-
-    # ── Step 7: Google Sheets ───────────────────────────────────────
-    print("\n[Step 7/8] Writing to Google Sheets...")
-    sheets = SheetsService()
-    sheets_ok = sheets.write_pnl(pnl)
-    status_log["google_sheets"] = "ok" if sheets_ok else "fallback_json"
-
-    if not sheets_ok:
-        save_pnl_json(pnl, "pnl_report.json")
-
-    # ── Step 8: WhatsApp ────────────────────────────────────────────
-    print("\n[Step 8/8] Sending WhatsApp summary...")
-    wa_message = format_whatsapp_message(pnl, seller_name=seller_name)
-    wa_service = WhatsAppService()
-    wa_ok = wa_service.send(wa_message)
-    status_log["whatsapp"] = "ok" if wa_ok else "failed"
+    _last_pnl = result.get("pnl", {})
 
     print("\n" + "=" * 60)
-    print("  FYNN — Pipeline Complete ✅")
+    print("  FYNN — Agent Pipeline Complete ✅")
     print("=" * 60 + "\n")
 
-    return JSONResponse(content={
-        "status": "success",
-        "pipeline_status": status_log,
-        "pnl": pnl,
-    })
+    return JSONResponse(content={"status": "success", **result})
+
+
+class AskRequest(BaseModel):
+    """Request body for the /ask endpoint."""
+    question: str
+
+
+@app.post("/ask")
+async def ask(body: AskRequest) -> JSONResponse:
+    """
+    Answer a natural language question about the last monthly P&L report.
+
+    Claude uses the stored P&L as context to answer questions like:
+      - "What was my profit margin?"
+      - "How many refunds did I have?"
+      - "Were there any anomalies?"
+      - "What were my biggest costs?"
+
+    Args:
+        body: JSON with a 'question' field.
+
+    Returns:
+        JSON with Claude's plain-English answer.
+    """
+    if not _last_pnl:
+        return JSONResponse(
+            content={"error": "No report available. Run POST /run-monthly-report first."},
+            status_code=400,
+        )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return JSONResponse(
+            content={"error": "ANTHROPIC_API_KEY not configured."},
+            status_code=500,
+        )
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    system = """You are Fynn, an AI bookkeeping assistant for cross-border e-commerce sellers.
+Answer questions about the seller's monthly P&L report clearly and concisely.
+Use plain English. Include relevant numbers. Keep answers to 2-4 sentences."""
+
+    prompt = f"""Here is the seller's P&L report:
+{json.dumps(_last_pnl, indent=2)}
+
+Seller's question: {body.question}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        answer = response.content[0].text
+        print(f"\n[Ask] Q: {body.question}")
+        print(f"[Ask] A: {answer}")
+        return JSONResponse(content={"question": body.question, "answer": answer})
+    except Exception as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=500)

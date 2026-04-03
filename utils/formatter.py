@@ -122,25 +122,33 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
     profit_margin = pnl["profit"]["profit_margin_pct"]
     anomalies = pnl.get("anomalies", [])
 
+    net_profit = pnl["profit"]["net_profit"]
+    gross_sales = pnl["revenue"]["gross_sales"]
+
     if anomalies:
-        anomaly_lines = "\n".join(
-            f"⚠️ {a['description']}" for a in anomalies
-        )
+        anomaly_lines = "\n".join(f"⚠️ {a['description']}" for a in anomalies)
+        anomaly_block = f"*Heads up:*\n{anomaly_lines}"
     else:
-        anomaly_lines = "✅ No anomalies detected"
+        anomaly_block = "✅ All clear — no anomalies detected."
 
     message = (
-        f"Hey {seller_name}! Here's your Fynn {period} summary 📊\n"
+        f"Hey {seller_name}! 👋 Your *{period}* books are done.\n"
         f"\n"
-        f"💰 Net Revenue: SGD {net_revenue:,.2f}\n"
-        f"📦 Total Orders: {order_count}\n"
-        f"↩️ Refunds: {refund_count} orders\n"
-        f"📈 Profit Margin: {profit_margin}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 *Shopee MY — {period}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Gross Sales:     SGD {gross_sales:>8,.2f}\n"
+        f"↩️  Refunds:         {refund_count} order{'s' if refund_count != 1 else ''}\n"
+        f"💵 Net Revenue:     SGD {net_revenue:>8,.2f}\n"
+        f"📈 Net Profit:      SGD {net_profit:>8,.2f}\n"
+        f"📉 Profit Margin:   {profit_margin}%\n"
+        f"📦 Orders:          {order_count}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"\n"
-        f"{anomaly_lines}\n"
+        f"{anomaly_block}\n"
         f"\n"
-        f"Your full P&L is ready in Google Sheets.\n"
-        f"— Fynn"
+        f"Full P&L → Google Sheets 📄\n"
+        f"— Fynn 🤖"
     )
     return message
 
