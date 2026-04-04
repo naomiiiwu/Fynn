@@ -20,7 +20,7 @@ load_dotenv()
 
 import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, Form
+from fastapi import BackgroundTasks, FastAPI, Form
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRouter
 from contextlib import asynccontextmanager
@@ -232,8 +232,29 @@ Seller's question: {body.question}"""
 
 # ── WhatsApp webhook ───────────────────────────────────────────────────────────
 
+def _run_report_background(sender: str) -> None:
+    """Run the full agent pipeline and send results via Twilio when done."""
+    global _last_pnl
+    try:
+        agent = BookkeeperAgent()
+        result = agent.run(period="March 2026", platform="Shopee MY")
+        pnl = result.get("pnl", {})
+
+        _last_pnl = pnl
+        _conversation.store_pnl(sender, pnl)
+
+        from services.database import save_pnl
+        save_pnl(sender, pnl)
+
+        _twiml_send(sender, "✅ Done! Your March P&L has been sent and your Google Sheet is updated.")
+    except Exception as exc:
+        print(f"  [Webhook] Background report failed: {exc}")
+        _twiml_send(sender, f"❌ Report failed: {exc}")
+
+
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
+    background_tasks: BackgroundTasks,
     From: str = Form(...),
     Body: str = Form(...),
 ) -> Response:
@@ -278,23 +299,8 @@ async def whatsapp_webhook(
 
     # Onboarded user — check for report trigger
     if _conversation.is_report_trigger(message, profile):
-        ack = "On it! Running your March 2026 report now... I'll update you here when it's done. ⏳"
-        _twiml_send(sender, ack)
-
-        agent = BookkeeperAgent()
-        result = agent.run(period="March 2026", platform="Shopee MY")
-        pnl = result.get("pnl", {})
-
-        global _last_pnl
-        _last_pnl = pnl
-        _conversation.store_pnl(sender, pnl)
-
-        # Persist to Supabase
-        from services.database import save_pnl
-        save_pnl(sender, pnl)
-
-        reply = "✅ Done! Your March P&L has been sent and your Google Sheet is updated."
-        return _twiml_response(reply)
+        background_tasks.add_task(_run_report_background, sender)
+        return _twiml_response("On it! Running your March 2026 report now... I'll message you here when it's done. ⏳")
 
     # Settings change trigger
     if _conversation.is_settings_trigger(message, profile):
