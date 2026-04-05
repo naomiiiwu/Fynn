@@ -21,8 +21,8 @@ load_dotenv()
 
 import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi import BackgroundTasks, FastAPI, File, Form, Query, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -85,6 +85,156 @@ async def health() -> dict:
         JSON with status and version.
     """
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ── Web settings page ──────────────────────────────────────────────────────────
+
+def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
+    base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
+
+    name     = profile.name if profile and profile.name != "Seller" else ""
+    currency = profile.currency if profile else "SGD"
+    lang     = profile.language if profile else "en"
+    hour     = profile.report_time_hour if profile else 8
+    daily    = "checked" if profile and profile.daily_enabled else ""
+    weekly   = "checked" if profile and profile.weekly_enabled else ""
+    monthly  = "checked" if profile and profile.monthly_enabled else "checked"
+
+    saved_banner = """
+    <div style="background:#d1fae5;border:1px solid #6ee7b7;color:#065f46;padding:12px 16px;
+                border-radius:8px;margin-bottom:24px;font-weight:600;">
+      ✅ Settings saved! Head back to WhatsApp — Fynn is ready.
+    </div>""" if saved else ""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Fynn — Your Settings</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          background:#f9fafb;color:#111;min-height:100vh;display:flex;
+          align-items:flex-start;justify-content:center;padding:32px 16px}}
+    .card{{background:#fff;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.08);
+           padding:32px;width:100%;max-width:440px}}
+    h1{{font-size:1.5rem;font-weight:700;margin-bottom:4px}}
+    .sub{{color:#6b7280;font-size:.9rem;margin-bottom:28px}}
+    label{{display:block;font-size:.85rem;font-weight:600;color:#374151;margin-bottom:6px}}
+    input[type=text],select{{width:100%;padding:10px 12px;border:1.5px solid #d1d5db;
+      border-radius:8px;font-size:1rem;outline:none;transition:border .2s}}
+    input[type=text]:focus,select:focus{{border-color:#6366f1}}
+    .field{{margin-bottom:20px}}
+    .checks{{display:flex;gap:16px;flex-wrap:wrap}}
+    .checks label{{display:flex;align-items:center;gap:6px;font-weight:400;
+                   font-size:.95rem;cursor:pointer}}
+    .checks input{{width:16px;height:16px;accent-color:#6366f1}}
+    .hours{{display:flex;align-items:center;gap:10px}}
+    .hours input[type=number]{{width:80px}}
+    .hours span{{color:#6b7280;font-size:.9rem}}
+    button{{width:100%;padding:13px;background:#6366f1;color:#fff;border:none;
+            border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;
+            margin-top:8px;transition:background .2s}}
+    button:hover{{background:#4f46e5}}
+    .logo{{font-size:1.1rem;font-weight:800;color:#6366f1;margin-bottom:24px}}
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">🤖 Fynn</div>
+  <h1>Your Settings</h1>
+  <p class="sub">Set up once — Fynn remembers everything.</p>
+  {saved_banner}
+  <form method="POST" action="{app_url}/settings/save">
+    <input type="hidden" name="phone" value="{phone}"/>
+
+    <div class="field">
+      <label>Your name</label>
+      <input type="text" name="name" value="{name}" placeholder="e.g. Naomi" required/>
+    </div>
+
+    <div class="field">
+      <label>Report currency</label>
+      <select name="currency">
+        <option value="SGD" {"selected" if currency=="SGD" else ""}>SGD — Singapore Dollar</option>
+        <option value="MYR" {"selected" if currency=="MYR" else ""}>MYR — Malaysian Ringgit</option>
+        <option value="USD" {"selected" if currency=="USD" else ""}>USD — US Dollar</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Report language</label>
+      <select name="language">
+        <option value="en" {"selected" if lang=="en" else ""}>English</option>
+        <option value="zh" {"selected" if lang=="zh" else ""}>中文 (Mandarin)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Report frequency</label>
+      <div class="checks">
+        <label><input type="checkbox" name="daily_enabled" value="1" {daily}/> Daily ping</label>
+        <label><input type="checkbox" name="weekly_enabled" value="1" {weekly}/> Weekly summary</label>
+        <label><input type="checkbox" name="monthly_enabled" value="1" {monthly}/> Monthly P&amp;L</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Send reports at</label>
+      <div class="hours">
+        <input type="number" name="report_time_hour" min="0" max="23" value="{hour}"/>
+        <span>:00 (24h, server time)</span>
+      </div>
+    </div>
+
+    <button type="submit">Save settings →</button>
+  </form>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(phone: str = Query(...)) -> HTMLResponse:
+    """Render the settings form for a seller, pre-filled if profile exists."""
+    profile = _conversation.profiles.get(phone)
+    return HTMLResponse(_settings_html(phone, profile))
+
+
+@app.post("/settings/save", response_class=HTMLResponse)
+async def settings_save(
+    phone:             str = Form(...),
+    name:              str = Form(...),
+    currency:          str = Form("SGD"),
+    language:          str = Form("en"),
+    report_time_hour:  str = Form("8"),
+    daily_enabled:     str = Form(None),
+    weekly_enabled:    str = Form(None),
+    monthly_enabled:   str = Form(None),
+) -> HTMLResponse:
+    """Save the settings form and send a WhatsApp confirmation."""
+    profile, _ = _conversation.profiles.get_or_create(phone)
+
+    profile.name              = name.strip().title()
+    profile.currency          = currency
+    profile.language          = language
+    profile.report_time_hour  = max(0, min(23, int(report_time_hour or 8)))
+    profile.daily_enabled     = daily_enabled == "1"
+    profile.weekly_enabled    = weekly_enabled == "1"
+    profile.monthly_enabled   = monthly_enabled == "1"
+    profile.onboarding_step   = None  # mark onboarding complete
+
+    _conversation.profiles.save(profile)
+
+    # Send WhatsApp confirmation
+    strings = __import__("services.conversation", fromlist=["ZH", "EN"])
+    S = strings.ZH if language == "zh" else strings.EN
+    msg = S["complete"].format(name=profile.name, summary=profile.to_summary())
+    _twiml_send(phone, msg)
+
+    return HTMLResponse(_settings_html(phone, profile, saved=True))
 
 
 # ── CSV upload ─────────────────────────────────────────────────────────────────
@@ -359,9 +509,17 @@ async def whatsapp_webhook(
         reply = "Restarting setup! 🔄 What's your name?"
         return _twiml_response(reply)
 
-    # New user or mid-onboarding → state machine handles it
+    # New user → send settings link
     if not profile.is_onboarding_complete():
-        reply = _conversation.handle(sender, message)
+        base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+        app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
+        encoded = sender.replace("+", "%2B")
+        link = f"{app_url}/settings?phone={encoded}"
+        reply = (
+            f"Hey! 👋 I'm *Fynn*, your AI bookkeeper.\n\n"
+            f"Set up your preferences here (takes 30 seconds):\n{link}\n\n"
+            f"Once done, come back here and say *run my report* to get started!"
+        )
         return _twiml_response(reply)
 
     # Onboarded user — check for report trigger
