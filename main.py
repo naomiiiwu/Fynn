@@ -672,7 +672,7 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         import httpx
         account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
         auth_token  = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-        resp = httpx.get(media_url, auth=(account_sid, auth_token), timeout=30)
+        resp = httpx.get(media_url, auth=(account_sid, auth_token), timeout=30, follow_redirects=True)
         resp.raise_for_status()
         content = resp.content
 
