@@ -94,22 +94,30 @@ Classify this file and respond with ONLY valid JSON in this exact format:
   "notes": "brief explanation"
 }}
 
-Rules:
-- platform = the e-commerce platform this data is from, or "generic" for internal cost files
-- file_type:
-    "transactions" = orders, refunds, fees, settlements from a platform
-    "cogs"         = cost of goods / supplier invoices / purchase orders
-    "ads"          = advertising / marketing spend
-    "warehouse"    = storage, fulfilment, 3PL costs
-    "payroll"      = staff / labour costs
-    "packaging"    = packaging material costs
-    "expense"      = any other business expense
-- confidence = how sure you are (0.0–1.0)
-- If unsure, use "unknown" and set confidence < 0.5"""
+Platform rules — look for these signals:
+- "shopee": headers/values contain "Shopee", "Buyer Payment", "Shopee Commission", "Bank Transfer" from Shopee
+- "lazada": headers/values contain "Lazada", "LazWallet", "LazPay"
+- "amazon": headers/values contain "Amazon", "ASIN", "FBA"
+- "shopify": headers/values contain "Shopify", "Shop Pay"
+- "tiktok": headers/values contain "TikTok", "TikShop"
+- "generic": internal cost file (no platform branding)
+- "unknown": truly cannot determine
+
+File type rules:
+- "transactions" = orders, refunds, platform fees, settlements, payouts — typical platform finance export
+- "cogs"         = supplier invoices, unit cost, purchase orders, cost of goods
+- "ads"          = ad spend, campaign, impressions, clicks, ROAS
+- "warehouse"    = storage fees, fulfilment, 3PL, pick and pack
+- "payroll"      = salary, staff, labour, employee, headcount
+- "packaging"    = packaging, poly mailer, box, bubble wrap
+- "expense"      = any other business cost
+
+Be decisive. If the signals strongly point to a category, use confidence >= 0.85.
+Only use "unknown" if you genuinely cannot tell after reading the data."""
 
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",  # fast + cheap for classification
+            model="claude-sonnet-4-6",
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )

@@ -707,7 +707,8 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         plabel = platform_labels.get(platform, platform.title())
         ticon  = type_icons.get(file_type, "❓")
 
-        if platform == "unknown" or file_type == "unknown" or classified.confidence < 0.5:
+        truly_unknown = (platform == "unknown" and file_type == "unknown") or classified.confidence < 0.5
+        if truly_unknown:
             # Store raw bytes so we can re-process once user clarifies
             _pending_files[sender] = content
             reply = (
