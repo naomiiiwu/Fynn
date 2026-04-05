@@ -118,12 +118,13 @@ class BookkeeperAgent:
     executes what Claude asks for.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, seller_name: str = "", currency: str = "SGD") -> None:
         """Initialise the Anthropic client and internal state."""
         api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
         self.model = "claude-sonnet-4-6"
-        self.seller_name = os.getenv("SELLER_NAME", "Seller").strip()
+        self.seller_name = seller_name or os.getenv("SELLER_NAME", "Seller").strip()
+        self.currency = currency or "SGD"
 
         # Shared state populated as tools are called
         self._transactions: list[Transaction] = []
@@ -187,7 +188,7 @@ class BookkeeperAgent:
             self._conversion = converter.convert(
                 amount,
                 inputs.get("from_currency", "MYR"),
-                inputs.get("to_currency", "SGD"),
+                inputs.get("to_currency", self.currency),
             )
             return self._conversion
 

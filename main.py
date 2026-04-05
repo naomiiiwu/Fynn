@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
 from services.csv_parser import parse_shopee_csv
-from services.database import load_latest_pnl_any
+from services.database import load_latest_csv, load_latest_pnl_any, save_csv
 from services.scheduler import create_scheduler, set_profile_store
 
 
@@ -50,6 +50,13 @@ async def lifespan(app: FastAPI):
         print(f"  [Fynn] Restored last P&L from Supabase ({restored.get('period')})")
     else:
         print("  [Fynn] No previous P&L found in Supabase.")
+
+    # Restore last uploaded CSV from Supabase
+    csv_row = load_latest_csv()
+    if csv_row:
+        csv_bytes, period = csv_row
+        _uploaded_transactions = parse_shopee_csv(csv_bytes)
+        print(f"  [Fynn] Restored CSV transactions from Supabase ({period}, {len(_uploaded_transactions)} rows)")
 
     print("[Fynn] Starting scheduler...")
     scheduler = create_scheduler()
@@ -276,6 +283,9 @@ async def upload_csv(
 
     _uploaded_transactions = transactions
 
+    # Persist to Supabase so it survives restarts
+    save_csv(content, period or "unknown")
+
     # Auto-detect period from date range in transactions
     if not period and transactions:
         dates = [t.date for t in transactions]
@@ -453,7 +463,10 @@ def _run_report_background(sender: str) -> None:
     """Run the full agent pipeline and send results via Twilio when done."""
     global _last_pnl
     try:
-        agent = BookkeeperAgent()
+        profile = _conversation.profiles.get(sender)
+        seller_name = profile.name if profile else "Seller"
+        currency = profile.currency if profile else "SGD"
+        agent = BookkeeperAgent(seller_name=seller_name, currency=currency)
         result = agent.run(period="March 2026", platform="Shopee MY")
         pnl = result.get("pnl", {})
 
