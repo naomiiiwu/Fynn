@@ -117,6 +117,31 @@ REPORT_TRIGGERS_EN = {
 
 REPORT_TRIGGERS_ZH = {"生成报告", "运行报告", "发送报告", "开始报告"}
 
+# Valid manual file type labels (when user clarifies an unknown file)
+FILE_TYPE_LABELS = {
+    "shopee": ("shopee", "transactions"),
+    "lazada": ("lazada", "transactions"),
+    "amazon": ("amazon", "transactions"),
+    "shopify": ("shopify", "transactions"),
+    "tiktok": ("tiktok", "transactions"),
+    "cogs": ("generic", "cogs"),
+    "cost of goods": ("generic", "cogs"),
+    "supplier": ("generic", "cogs"),
+    "ads": ("generic", "ads"),
+    "advertising": ("generic", "ads"),
+    "marketing": ("generic", "ads"),
+    "warehouse": ("generic", "warehouse"),
+    "storage": ("generic", "warehouse"),
+    "payroll": ("generic", "payroll"),
+    "staff": ("generic", "payroll"),
+    "labour": ("generic", "payroll"),
+    "labor": ("generic", "payroll"),
+    "packaging": ("generic", "packaging"),
+    "expense": ("generic", "expense"),
+    "expenses": ("generic", "expense"),
+    "other": ("generic", "expense"),
+}
+
 SETTINGS_TRIGGERS_EN = {
     "change settings", "settings", "update settings", "preferences", "setup",
     "change currency", "update currency", "change language", "update language",

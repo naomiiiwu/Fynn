@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
-from services.conversation import ConversationManager
+from services.conversation import FILE_TYPE_LABELS, ConversationManager
 from services.csv_parser import parse_shopee_csv
 from services.database import load_all_csvs, load_latest_pnl_any, save_csv
 from services.file_classifier import classify_file
@@ -85,6 +85,8 @@ app = FastAPI(
 _last_pnl: dict = {}
 # Per-platform transaction store: {"shopee": [...], "lazada": [...], ...}
 _platform_transactions: dict[str, list] = {}
+# Holds the raw bytes of the last unclassified file per sender, pending user clarification
+_pending_files: dict[str, bytes] = {}
 _conversation = ConversationManager()
 
 
@@ -705,17 +707,33 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         plabel = platform_labels.get(platform, platform.title())
         ticon  = type_icons.get(file_type, "❓")
 
-        if file_type == "transactions" and transaction_count:
+        if platform == "unknown" or file_type == "unknown" or classified.confidence < 0.5:
+            # Store raw bytes so we can re-process once user clarifies
+            _pending_files[sender] = content
             reply = (
-                f"{ticon} Got it! I've read your *{plabel}* finance file.\n"
+                f"🤔 I received your file but I'm not sure what it is "
+                f"(confidence: {classified.confidence:.0%}).\n\n"
+                f"Can you tell me what it contains? Reply with one of:\n"
+                f"• *shopee* — Shopee Finance export\n"
+                f"• *lazada* — Lazada Finance export\n"
+                f"• *cogs* — Supplier/product costs\n"
+                f"• *ads* — Advertising spend\n"
+                f"• *warehouse* — Storage/fulfilment costs\n"
+                f"• *payroll* — Staff costs\n"
+                f"• *packaging* — Packaging materials\n"
+                f"• *expense* — Other business expense"
+            )
+        elif file_type == "transactions" and transaction_count:
+            reply = (
+                f"{ticon} Got it! *{plabel}* finance file received.\n"
                 f"📅 Period: {period}\n"
                 f"📊 {transaction_count} transactions loaded\n\n"
-                f"Say *run my report* and I'll generate your full P&L. 🚀"
+                f"Send more files, or say *run my report* to generate your P&L. 🚀"
             )
         else:
             reply = (
-                f"{ticon} Got it! Classified as *{plabel} — {file_type}*.\n"
-                f"I'll factor this into your next report. 📋"
+                f"{ticon} Got it! Logged as *{plabel} — {file_type}*.\n"
+                f"I'll factor this into your next report. Send more files or say *run my report*. 📋"
             )
 
         _twiml_send(sender, reply)
@@ -799,6 +817,30 @@ async def whatsapp_webhook(
             f"Once done, come back here and say *run my report* to get started!"
         )
         return _twiml_response(reply)
+
+    # Pending file clarification — user is labelling an unknown file
+    if sender in _pending_files:
+        label = message.strip().lower()
+        if label in FILE_TYPE_LABELS:
+            raw = _pending_files.pop(sender)
+            platform_key, file_type_key = FILE_TYPE_LABELS[label]
+            type_icons = {
+                "transactions": "🛒", "cogs": "📦", "ads": "📣", "warehouse": "🏭",
+                "payroll": "👥", "packaging": "📫", "expense": "💸",
+            }
+            ticon = type_icons.get(file_type_key, "📄")
+            if file_type_key == "transactions":
+                try:
+                    txns = parse_shopee_csv(raw)
+                    _platform_transactions[platform_key] = txns
+                    save_csv(raw, "unknown", platform_key, file_type_key)
+                    reply = f"{ticon} Got it — saved as *{label.title()}* transactions ({len(txns)} rows). Say *run my report* when ready. 🚀"
+                except Exception as exc:
+                    reply = f"❌ Couldn't parse that file as transactions: {exc}"
+            else:
+                save_csv(raw, "unknown", platform_key, file_type_key)
+                reply = f"{ticon} Got it — saved as *{file_type_key}*. I'll include it in your next report. 📋"
+            return _twiml_response(reply)
 
     # Onboarded user — check for report trigger
     if _conversation.is_report_trigger(message, profile):
