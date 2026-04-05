@@ -698,7 +698,7 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
 
         platform_labels = {
             "shopee": "Shopee", "lazada": "Lazada", "amazon": "Amazon",
-            "shopify": "Shopify", "tiktok": "TikTok Shop", "generic": "Internal", "unknown": "?",
+            "shopify": "Shopify", "tiktok": "TikTok Shop", "generic": "Internal", "unknown": "Unknown",
         }
         type_icons = {
             "transactions": "🛒", "cogs": "📦", "ads": "📣", "warehouse": "🏭",
@@ -707,7 +707,7 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         plabel = platform_labels.get(platform, platform.title())
         ticon  = type_icons.get(file_type, "❓")
 
-        truly_unknown = (platform == "unknown" and file_type == "unknown") or classified.confidence < 0.5
+        truly_unknown = platform == "unknown" or file_type == "unknown" or classified.confidence < 0.6
         if truly_unknown:
             # Store raw bytes so we can re-process once user clarifies
             _pending_files[sender] = content

@@ -94,14 +94,16 @@ Classify this file and respond with ONLY valid JSON in this exact format:
   "notes": "brief explanation"
 }}
 
-Platform rules — look for these signals:
-- "shopee": headers/values contain "Shopee", "Buyer Payment", "Shopee Commission", "Bank Transfer" from Shopee
-- "lazada": headers/values contain "Lazada", "LazWallet", "LazPay"
-- "amazon": headers/values contain "Amazon", "ASIN", "FBA"
-- "shopify": headers/values contain "Shopify", "Shop Pay"
-- "tiktok": headers/values contain "TikTok", "TikShop"
-- "generic": internal cost file (no platform branding)
-- "unknown": truly cannot determine
+Platform rules — check BOTH headers AND the actual cell values in sample rows:
+- "shopee": any of "Shopee Commission", "Buyer Payment", "shopee" in filename, Type column contains Shopee-specific values
+- "lazada": any of "Lazada", "LazWallet", "LazPay" anywhere in data
+- "amazon": any of "Amazon", "ASIN", "FBA" anywhere in data
+- "shopify": any of "Shopify", "Shop Pay" anywhere in data
+- "tiktok": any of "TikTok", "TikShop" anywhere in data
+- "generic": internal cost file with no platform branding (payroll, warehouse, supplier, etc.)
+- "unknown": truly cannot determine after reading both headers and values
+
+IMPORTANT: "Buyer Payment" and "Shopee Commission" as values in a Type/Description column = shopee platform.
 
 File type rules:
 - "transactions" = orders, refunds, platform fees, settlements, payouts — typical platform finance export
