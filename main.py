@@ -825,13 +825,29 @@ async def whatsapp_webhook(
         reply = f"Sure! Your current settings are pre-filled — just update what you need:\n{link}"
         return _twiml_response(reply)
 
-    # New user → send settings link
+    # New user → send settings link plus a short getting-started guide
     if not profile.is_onboarding_complete():
+        from services.conversation import QUICK_START_EN, QUICK_START_ZH
         link = _settings_link()
+        quick_start = QUICK_START_ZH if profile.language == "zh" else QUICK_START_EN
         reply = (
             f"Hey! 👋 I'm *Fynn*, your AI bookkeeper.\n\n"
+            f"I help e-commerce sellers organise bookkeeping, reconcile payouts, and generate P&L reports.\n\n"
             f"Set up your preferences here (takes 30 seconds):\n{link}\n\n"
-            f"Once done, come back here and I'll guide you through the rest!"
+            f"{quick_start}\n\n"
+            f"Once setup is done, send your files here and I'll take it from there."
+        )
+        return _twiml_response(reply)
+
+    # Simple greeting/help request → show quick start and settings link
+    if _conversation.is_greeting(message, profile):
+        from services.conversation import QUICK_START_EN, QUICK_START_ZH
+        link = _settings_link()
+        quick_start = QUICK_START_ZH if profile.language == "zh" else QUICK_START_EN
+        reply = (
+            f"Hey {profile.name}! 👋\n\n"
+            f"{quick_start}\n\n"
+            f"Need to update your preferences? Settings link:\n{link}"
         )
         return _twiml_response(reply)
 

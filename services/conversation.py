@@ -117,6 +117,11 @@ REPORT_TRIGGERS_EN = {
 
 REPORT_TRIGGERS_ZH = {"生成报告", "运行报告", "发送报告", "开始报告"}
 
+GREETING_TRIGGERS_EN = {
+    "hi", "hello", "hey", "yo", "start", "help", "menu",
+}
+GREETING_TRIGGERS_ZH = {"你好", "嗨", "开始", "帮助", "菜单"}
+
 # Valid manual file type labels (when user clarifies an unknown file)
 FILE_TYPE_LABELS = {
     "shopee": ("shopee", "transactions"),
@@ -179,6 +184,22 @@ I'll reconcile your payouts, detect anomalies, and send your full P&L here + sav
 Monthly reports run automatically on your chosen schedule.
 I've got it from here 🤖 — Fynn"""
 
+QUICK_START_EN = """Quick start with Fynn 📖
+
+What I do:
+• Organise your e-commerce bookkeeping
+• Reconcile payouts and expenses
+• Generate your P&L summary
+
+What you should send me:
+• Shopee or Lazada finance CSV exports
+• COGS, ads, warehouse, payroll, packaging, or other expense files
+
+What you can type:
+• *run my report* — build your report
+• Ask a question — e.g. _"What was my profit?"_
+• *change settings* — update preferences"""
+
 GUIDE_ZH = """Fynn使用指南 📖
 
 *第一步 — 发送文件*
@@ -206,6 +227,22 @@ GUIDE_ZH = """Fynn使用指南 📖
 • *reset* — 重新开始设置
 
 报告会按你设定的时间自动发送，剩下的交给我 🤖 — Fynn"""
+
+QUICK_START_ZH = """Fynn快速开始 📖
+
+我可以帮你：
+• 整理电商账目
+• 对账收入和费用
+• 生成盈亏报告
+
+你应该发送给我：
+• Shopee 或 Lazada 财务CSV导出
+• 货品成本、广告、仓储、工资、包装或其他费用文件
+
+你可以这样输入：
+• *生成报告* — 立即生成报告
+• 直接提问 — 例如 _“我的利润是多少？”_
+• *修改设置* — 更新偏好设置"""
 
 CLAUDE_SYSTEM_EN = """You are Fynn, an autonomous AI bookkeeper for cross-border e-commerce sellers.
 Communicate via WhatsApp — keep replies short and clear, no long paragraphs.
@@ -271,6 +308,14 @@ class ConversationManager:
         if lang == "zh":
             return cleaned in SETTINGS_TRIGGERS_ZH or cleaned in SETTINGS_TRIGGERS_EN
         return cleaned in SETTINGS_TRIGGERS_EN
+
+    def is_greeting(self, message: str, profile: Optional[UserProfile] = None) -> bool:
+        """Check if message is a simple greeting/help opener."""
+        cleaned = message.strip().lower().rstrip("!?.").strip()
+        lang = profile.language if profile else "en"
+        if lang == "zh":
+            return cleaned in GREETING_TRIGGERS_ZH or cleaned in GREETING_TRIGGERS_EN
+        return cleaned in GREETING_TRIGGERS_EN
 
     def handle(self, phone: str, message: str) -> str:
         """
