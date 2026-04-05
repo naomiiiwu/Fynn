@@ -501,12 +501,16 @@ async def whatsapp_webhook(
     # Get profile (creates new one if first contact)
     profile, is_new = _conversation.profiles.get_or_create(sender)
 
-    # Hard reset command — clears history and restarts onboarding
+    # Hard reset command — clears history, sends settings link (pre-filled)
     if message.lower() in {"reset", "clear", "restart"}:
         _conversation.clear_history(sender)
         profile.onboarding_step = "ask_name"
         _conversation.profiles.save(profile)
-        reply = "Restarting setup! 🔄 What's your name?"
+        base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+        app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
+        encoded = sender.replace("+", "%2B")
+        link = f"{app_url}/settings?phone={encoded}"
+        reply = f"No problem! Update any setting here (your existing values are pre-filled):\n{link}"
         return _twiml_response(reply)
 
     # New user → send settings link
