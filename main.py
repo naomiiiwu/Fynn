@@ -501,24 +501,22 @@ async def whatsapp_webhook(
     # Get profile (creates new one if first contact)
     profile, is_new = _conversation.profiles.get_or_create(sender)
 
-    # Hard reset command — clears history, sends settings link (pre-filled)
-    if message.lower() in {"reset", "clear", "restart"}:
-        _conversation.clear_history(sender)
-        profile.onboarding_step = "ask_name"
-        _conversation.profiles.save(profile)
+    def _settings_link() -> str:
         base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
         app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
         encoded = sender.replace("+", "%2B")
-        link = f"{app_url}/settings?phone={encoded}"
-        reply = f"No problem! Update any setting here (your existing values are pre-filled):\n{link}"
+        return f"{app_url}/settings?phone={encoded}"
+
+    # Any settings-related message (reset, change settings, change currency, etc.)
+    if message.lower() in {"reset", "clear", "restart"} or _conversation.is_settings_trigger(message, profile):
+        _conversation.clear_history(sender)
+        link = _settings_link()
+        reply = f"Sure! Your current settings are pre-filled — just update what you need:\n{link}"
         return _twiml_response(reply)
 
     # New user → send settings link
     if not profile.is_onboarding_complete():
-        base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
-        app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
-        encoded = sender.replace("+", "%2B")
-        link = f"{app_url}/settings?phone={encoded}"
+        link = _settings_link()
         reply = (
             f"Hey! 👋 I'm *Fynn*, your AI bookkeeper.\n\n"
             f"Set up your preferences here (takes 30 seconds):\n{link}\n\n"
@@ -530,11 +528,6 @@ async def whatsapp_webhook(
     if _conversation.is_report_trigger(message, profile):
         background_tasks.add_task(_run_report_background, sender)
         return _twiml_response("On it! Running your March 2026 report now... I'll message you here when it's done. ⏳")
-
-    # Settings change trigger
-    if _conversation.is_settings_trigger(message, profile):
-        reply = _conversation.handle(sender, message)
-        return _twiml_response(reply)
 
     # Conversational Q&A via Claude
     if _last_pnl and not _conversation.get_pnl(sender):

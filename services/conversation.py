@@ -117,8 +117,13 @@ REPORT_TRIGGERS_EN = {
 
 REPORT_TRIGGERS_ZH = {"生成报告", "运行报告", "发送报告", "开始报告"}
 
-SETTINGS_TRIGGERS_EN = {"change settings", "settings", "update settings", "preferences", "setup"}
-SETTINGS_TRIGGERS_ZH = {"修改设置", "设置", "更新设置"}
+SETTINGS_TRIGGERS_EN = {
+    "change settings", "settings", "update settings", "preferences", "setup",
+    "change currency", "update currency", "change language", "update language",
+    "change name", "update name", "change time", "update time",
+    "change frequency", "update frequency", "edit settings", "my settings",
+}
+SETTINGS_TRIGGERS_ZH = {"修改设置", "设置", "更新设置", "修改货币", "修改语言", "修改名字"}
 
 CLAUDE_SYSTEM_EN = """You are Fynn, an autonomous AI bookkeeper for cross-border e-commerce sellers.
 Communicate via WhatsApp — keep replies short and clear, no long paragraphs.
