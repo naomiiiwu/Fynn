@@ -57,7 +57,8 @@ EN = {
         "─────────────────────\n\n"
         "You can ask me anything about your books, or say:\n"
         "• *run my report* — generate your P&L now\n"
-        "• *change settings* — update your preferences\n\n"
+        "• *change settings* — update your preferences\n"
+        "• *reset* — restart setup from scratch\n\n"
         "— Fynn 🤖"
     ),
     "settings_updated": (
@@ -97,7 +98,8 @@ ZH = {
         "─────────────────────\n\n"
         "你可以随时问我账目问题，或者说：\n"
         "• *生成报告* — 立即生成盈亏报告\n"
-        "• *修改设置* — 更新偏好设置\n\n"
+        "• *修改设置* — 更新偏好设置\n"
+        "• *reset* — 重新开始设置\n\n"
         "— Fynn 🤖"
     ),
     "settings_updated": "设置已更新！✅\n\n{summary}\n\n— Fynn 🤖",
