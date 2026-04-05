@@ -44,13 +44,6 @@ EN = {
         "2️⃣ MYR — Malaysian Ringgit\n"
         "3️⃣ USD — US Dollar"
     ),
-    "ask_sensitivity": (
-        "Almost done! 🏁\n\n"
-        "How sensitive should anomaly alerts be?\n\n"
-        "1️⃣ Strict — flag anything unusual\n"
-        "2️⃣ Normal — default thresholds\n"
-        "3️⃣ Relaxed — major issues only"
-    ),
     "ask_language": (
         "Last one — preferred language?\n\n"
         "1️⃣ English\n"
@@ -75,7 +68,6 @@ EN = {
     "invalid_frequency": "Please reply with numbers like *1*, *2*, *3*, or a combo like *1 2*.",
     "invalid_time": "Please reply with just a number between 0 and 23, e.g. *9* for 9AM.",
     "invalid_currency": "Please reply with *1*, *2*, or *3*.",
-    "invalid_sensitivity": "Please reply with *1*, *2*, or *3*.",
     "invalid_language": "Please reply with *1* for English or *2* for 中文.",
 }
 
@@ -96,7 +88,6 @@ ZH = {
     ),
     "ask_time": "好的！✅\n\n几点发送报告给你？\n_(回复数字，例如 *9* 表示早上9点)_",
     "ask_currency": "完美。报告使用哪种货币？\n\n1️⃣ SGD — 新加坡元\n2️⃣ MYR — 马来西亚令吉\n3️⃣ USD — 美元",
-    "ask_sensitivity": "快完成了！🏁\n\n异常提醒的敏感程度？\n\n1️⃣ 严格 — 标记任何异常\n2️⃣ 正常 — 默认阈值\n3️⃣ 宽松 — 仅重大问题",
     "ask_language": "最后一步——首选语言？\n\n1️⃣ English\n2️⃣ 中文",
     "complete": (
         "设置完成，{name}！🚀\n\n"
@@ -113,7 +104,6 @@ ZH = {
     "invalid_frequency": "请回复数字，如 *1*、*2*、*3* 或组合 *1 2*。",
     "invalid_time": "请回复0到23之间的数字，例如 *9* 表示早上9点。",
     "invalid_currency": "请回复 *1*、*2* 或 *3*。",
-    "invalid_sensitivity": "请回复 *1*、*2* 或 *3*。",
     "invalid_language": "请回复 *1* 表示English，*2* 表示中文。",
 }
 
@@ -147,7 +137,7 @@ class ConversationManager:
 
     State machine steps:
       ask_name → ask_frequency → ask_time → ask_currency →
-      ask_sensitivity → ask_language → complete (None)
+      ask_language → complete (None)
     """
 
     def __init__(self) -> None:
@@ -289,18 +279,6 @@ class ConversationManager:
                 return strings["invalid_currency"]
 
             profile.currency = currency_map[choice]
-            profile.onboarding_step = "ask_sensitivity"
-            self.profiles.save(profile)
-            return strings["ask_sensitivity"]
-
-        # ── Step: anomaly sensitivity ──
-        elif step == "ask_sensitivity":
-            sensitivity_map = {"1": "strict", "2": "normal", "3": "relaxed"}
-            choice = msg.strip()
-            if choice not in sensitivity_map:
-                return strings["invalid_sensitivity"]
-
-            profile.anomaly_sensitivity = sensitivity_map[choice]
             profile.onboarding_step = "ask_language"
             self.profiles.save(profile)
             return strings["ask_language"]
