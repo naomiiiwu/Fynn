@@ -30,7 +30,8 @@ from pydantic import BaseModel
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
 from services.csv_parser import parse_shopee_csv
-from services.database import load_latest_csv, load_latest_pnl_any, save_csv
+from services.database import load_all_csvs, load_latest_pnl_any, save_csv
+from services.file_classifier import classify_file
 from services.scheduler import create_scheduler, set_profile_store
 
 
@@ -51,12 +52,17 @@ async def lifespan(app: FastAPI):
     else:
         print("  [Fynn] No previous P&L found in Supabase.")
 
-    # Restore last uploaded CSV from Supabase
-    csv_row = load_latest_csv()
-    if csv_row:
-        csv_bytes, period = csv_row
-        _uploaded_transactions = parse_shopee_csv(csv_bytes)
-        print(f"  [Fynn] Restored CSV transactions from Supabase ({period}, {len(_uploaded_transactions)} rows)")
+    # Restore all uploaded CSVs from Supabase
+    for row in load_all_csvs():
+        try:
+            platform = row.get("platform", "shopee")
+            file_type = row.get("file_type", "transactions")
+            if file_type == "transactions":
+                txns = parse_shopee_csv(row["csv_data"].encode("utf-8"))
+                _platform_transactions[platform] = txns
+                print(f"  [Fynn] Restored {platform} transactions ({row.get('period')}, {len(txns)} rows)")
+        except Exception as exc:
+            print(f"  [Fynn] Failed to restore CSV {row.get('id')}: {exc}")
 
     print("[Fynn] Starting scheduler...")
     scheduler = create_scheduler()
@@ -77,7 +83,8 @@ app = FastAPI(
 
 # Shared state
 _last_pnl: dict = {}
-_uploaded_transactions: list = []   # real CSV transactions, replaces mock when set
+# Per-platform transaction store: {"shopee": [...], "lazada": [...], ...}
+_platform_transactions: dict[str, list] = {}
 _conversation = ConversationManager()
 
 
@@ -244,70 +251,244 @@ async def settings_save(
     return HTMLResponse(_settings_html(phone, profile, saved=True))
 
 
-# ── CSV upload ─────────────────────────────────────────────────────────────────
+# ── Upload web page ────────────────────────────────────────────────────────────
 
-@app.post("/upload/csv")
-async def upload_csv(
-    file: UploadFile = File(...),
-    period: str = Form(""),
-    platform: str = Form("Shopee MY"),
-) -> JSONResponse:
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page() -> HTMLResponse:
+    """Drag-and-drop multi-file upload page."""
+    base_url = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+    app_url = f"https://{base_url}" if base_url else "http://localhost:8000"
+
+    platform_badges = {
+        "shopee":  ("#ee4d2d", "Shopee"),
+        "lazada":  ("#0f146d", "Lazada"),
+        "amazon":  ("#ff9900", "Amazon"),
+        "shopify": ("#96bf48", "Shopify"),
+        "tiktok":  ("#010101", "TikTok Shop"),
+        "generic": ("#6366f1", "Internal"),
+        "unknown": ("#9ca3af", "Unknown"),
+    }
+    file_type_icons = {
+        "transactions": "🛒", "cogs": "📦", "ads": "📣",
+        "warehouse": "🏭", "payroll": "👥", "packaging": "📫",
+        "expense": "💸", "unknown": "❓",
+    }
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Fynn — Upload Files</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          background:#f9fafb;color:#111;min-height:100vh;padding:32px 16px}}
+    .wrap{{max-width:640px;margin:0 auto}}
+    .logo{{font-size:1.1rem;font-weight:800;color:#6366f1;margin-bottom:8px}}
+    h1{{font-size:1.5rem;font-weight:700;margin-bottom:4px}}
+    .sub{{color:#6b7280;font-size:.9rem;margin-bottom:28px}}
+    .dropzone{{border:2px dashed #d1d5db;border-radius:16px;padding:40px;
+               text-align:center;background:#fff;cursor:pointer;transition:all .2s}}
+    .dropzone.drag{{border-color:#6366f1;background:#eef2ff}}
+    .dropzone-icon{{font-size:2.5rem;margin-bottom:12px}}
+    .dropzone p{{color:#6b7280;font-size:.95rem}}
+    .dropzone strong{{color:#6366f1;cursor:pointer}}
+    #fileInput{{display:none}}
+    .file-list{{margin-top:20px;display:flex;flex-direction:column;gap:10px}}
+    .file-card{{background:#fff;border-radius:12px;padding:14px 16px;
+                box-shadow:0 1px 4px rgba(0,0,0,.08);display:flex;
+                align-items:center;gap:12px}}
+    .file-card .icon{{font-size:1.4rem}}
+    .file-card .info{{flex:1;min-width:0}}
+    .file-card .name{{font-weight:600;font-size:.9rem;white-space:nowrap;
+                      overflow:hidden;text-overflow:ellipsis}}
+    .file-card .meta{{font-size:.78rem;color:#6b7280;margin-top:2px}}
+    .badge{{display:inline-block;padding:2px 8px;border-radius:999px;
+            font-size:.72rem;font-weight:700;color:#fff;margin-right:4px}}
+    .status-pending{{color:#9ca3af}}
+    .status-ok{{color:#10b981}}
+    .status-err{{color:#ef4444}}
+    .btn{{display:block;width:100%;padding:13px;background:#6366f1;color:#fff;
+          border:none;border-radius:8px;font-size:1rem;font-weight:600;
+          cursor:pointer;margin-top:20px;transition:background .2s}}
+    .btn:hover{{background:#4f46e5}}
+    .btn:disabled{{background:#c7d2fe;cursor:not-allowed}}
+    .result{{margin-top:20px;padding:16px;border-radius:12px;font-size:.9rem;
+             background:#d1fae5;border:1px solid #6ee7b7;color:#065f46;display:none}}
+    .result.err{{background:#fee2e2;border-color:#fca5a5;color:#991b1b}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">🤖 Fynn</div>
+  <h1>Upload your files</h1>
+  <p class="sub">Drop any CSV files — Fynn will automatically identify what each one is.<br>
+  Supports: Shopee, Lazada, supplier invoices, ads, warehouse costs, payroll, and more.</p>
+
+  <div class="dropzone" id="dropzone">
+    <div class="dropzone-icon">📂</div>
+    <p>Drag &amp; drop CSV files here<br>or <strong onclick="document.getElementById('fileInput').click()">browse files</strong></p>
+  </div>
+  <input type="file" id="fileInput" multiple accept=".csv"/>
+
+  <div class="file-list" id="fileList"></div>
+  <div class="result" id="result"></div>
+  <button class="btn" id="uploadBtn" disabled onclick="uploadAll()">Upload &amp; Classify →</button>
+</div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fileList  = document.getElementById('fileList');
+const uploadBtn = document.getElementById('uploadBtn');
+const result    = document.getElementById('result');
+let selectedFiles = [];
+
+dropzone.addEventListener('dragover', e => {{ e.preventDefault(); dropzone.classList.add('drag'); }});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {{
+  e.preventDefault(); dropzone.classList.remove('drag');
+  addFiles([...e.dataTransfer.files]);
+}});
+fileInput.addEventListener('change', () => addFiles([...fileInput.files]));
+
+function addFiles(files) {{
+  files.filter(f => f.name.endsWith('.csv')).forEach(f => {{
+    if (!selectedFiles.find(x => x.name === f.name)) selectedFiles.push(f);
+  }});
+  renderList();
+}}
+
+function renderList() {{
+  fileList.innerHTML = selectedFiles.map((f, i) => `
+    <div class="file-card" id="card-${{i}}">
+      <div class="icon">📄</div>
+      <div class="info">
+        <div class="name">${{f.name}}</div>
+        <div class="meta status-pending" id="meta-${{i}}">Waiting to classify...</div>
+      </div>
+    </div>`).join('');
+  uploadBtn.disabled = selectedFiles.length === 0;
+}}
+
+async function uploadAll() {{
+  uploadBtn.disabled = true;
+  result.style.display = 'none';
+  const summary = [];
+
+  for (let i = 0; i < selectedFiles.length; i++) {{
+    const f = selectedFiles[i];
+    const meta = document.getElementById('meta-' + i);
+    meta.className = 'meta status-pending';
+    meta.textContent = 'Classifying...';
+
+    const fd = new FormData();
+    fd.append('file', f);
+
+    try {{
+      const res = await fetch('{app_url}/upload/classify', {{method:'POST', body:fd}});
+      const data = await res.json();
+      if (res.ok) {{
+        meta.className = 'meta status-ok';
+        meta.innerHTML = `
+          <span class="badge" style="background:${{data.platform_color}}">${{data.platform_label}}</span>
+          <span class="badge" style="background:#374151">${{data.type_icon}} ${{data.file_type}}</span>
+          ${{data.transaction_count ? data.transaction_count + ' rows' : ''}}
+          · ${{data.notes}}`;
+        summary.push(data);
+      }} else {{
+        meta.className = 'meta status-err';
+        meta.textContent = 'Error: ' + (data.error || 'unknown');
+      }}
+    }} catch(e) {{
+      meta.className = 'meta status-err';
+      meta.textContent = 'Upload failed: ' + e.message;
+    }}
+  }}
+
+  uploadBtn.disabled = false;
+  if (summary.length) {{
+    result.style.display = 'block';
+    result.className = 'result';
+    const platforms = [...new Set(summary.map(s => s.platform_label))].join(', ');
+    result.innerHTML = `✅ ${{summary.length}} file(s) uploaded and classified (${{platforms}}).<br>
+      Head back to WhatsApp and say <strong>run my report</strong> to generate your P&L.`;
+  }}
+}}
+</script>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+@app.post("/upload/classify")
+async def upload_classify(file: UploadFile = File(...)) -> JSONResponse:
     """
-    Upload a real Shopee Finance CSV export.
+    Classify a single uploaded CSV and store it.
 
-    How to export from Shopee:
-      Seller Center → Finance → My Income → Export → select date range → Download
-
-    Args:
-        file:     The CSV file (.csv)
-        period:   Optional period label, e.g. "March 2026". Auto-detected if blank.
-        platform: Platform name (default: "Shopee MY")
-
-    Returns:
-        JSON with transaction count breakdown and the period label detected.
+    Returns classification result with platform, file_type, and row counts.
     """
-    global _uploaded_transactions
+    global _platform_transactions
 
     if not file.filename.endswith(".csv"):
-        return JSONResponse(
-            content={"error": "Only .csv files are supported."},
-            status_code=400,
-        )
+        return JSONResponse(content={"error": "Only .csv files are supported."}, status_code=400)
 
     content = await file.read()
 
-    try:
-        transactions = parse_shopee_csv(content)
-    except ValueError as exc:
-        return JSONResponse(content={"error": str(exc)}, status_code=422)
+    # Classify with Claude
+    classified = classify_file(file.filename, content)
+    platform  = classified.platform
+    file_type = classified.file_type
 
-    _uploaded_transactions = transactions
+    # Parse and store transaction files
+    transaction_count = None
+    period = "unknown"
+    if file_type == "transactions":
+        try:
+            txns = parse_shopee_csv(content)
+            _platform_transactions[platform] = txns
+            transaction_count = len(txns)
+            if txns:
+                dates = [t.date for t in txns]
+                earliest, latest = min(dates), max(dates)
+                if earliest.month == latest.month and earliest.year == latest.year:
+                    period = earliest.strftime("%B %Y")
+                else:
+                    period = f"{earliest.strftime('%b %Y')} – {latest.strftime('%b %Y')}"
+        except ValueError as exc:
+            return JSONResponse(content={"error": str(exc)}, status_code=422)
 
-    # Persist to Supabase so it survives restarts
-    save_csv(content, period or "unknown")
+    # Persist to Supabase
+    save_csv(content, period, platform, file_type)
 
-    # Auto-detect period from date range in transactions
-    if not period and transactions:
-        dates = [t.date for t in transactions]
-        earliest = min(dates)
-        latest = max(dates)
-        if earliest.month == latest.month and earliest.year == latest.year:
-            period = earliest.strftime("%B %Y")
-        else:
-            period = f"{earliest.strftime('%b %Y')} – {latest.strftime('%b %Y')}"
+    # Badge colors and icons for the UI
+    platform_colors = {
+        "shopee": "#ee4d2d", "lazada": "#0f146d", "amazon": "#ff9900",
+        "shopify": "#96bf48", "tiktok": "#010101", "generic": "#6366f1", "unknown": "#9ca3af",
+    }
+    platform_labels = {
+        "shopee": "Shopee", "lazada": "Lazada", "amazon": "Amazon",
+        "shopify": "Shopify", "tiktok": "TikTok Shop", "generic": "Internal", "unknown": "Unknown",
+    }
+    type_icons = {
+        "transactions": "🛒", "cogs": "📦", "ads": "📣", "warehouse": "🏭",
+        "payroll": "👥", "packaging": "📫", "expense": "💸", "unknown": "❓",
+    }
 
-    from collections import Counter
-    type_counts = Counter(t.type.value for t in transactions)
-
-    print(f"\n[Upload] CSV uploaded: {len(transactions)} transactions for {period}")
+    print(f"\n[Upload] {file.filename} → {platform}/{file_type} (confidence: {classified.confidence:.0%})")
 
     return JSONResponse(content={
-        "status": "uploaded",
-        "period": period,
-        "platform": platform,
-        "transaction_count": len(transactions),
-        "breakdown": dict(type_counts),
-        "message": f"Ready! Now call POST /run-monthly-report to generate the P&L for {period}.",
+        "filename":         file.filename,
+        "platform":         platform,
+        "platform_label":   platform_labels.get(platform, platform.title()),
+        "platform_color":   platform_colors.get(platform, "#9ca3af"),
+        "file_type":        file_type,
+        "type_icon":        type_icons.get(file_type, "❓"),
+        "confidence":       classified.confidence,
+        "notes":            classified.notes,
+        "period":           period,
+        "transaction_count": transaction_count,
     })
 
 

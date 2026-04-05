@@ -190,13 +190,15 @@ def load_latest_pnl(phone: str) -> Optional[dict]:
 
 # ── CSV uploads ────────────────────────────────────────────────────────────────
 
-def save_csv(csv_bytes: bytes, period: str) -> bool:
+def save_csv(csv_bytes: bytes, period: str, platform: str = "shopee", file_type: str = "transactions") -> bool:
     """
-    Persist uploaded CSV raw bytes to Supabase so it survives restarts.
+    Persist an uploaded CSV to Supabase keyed by platform + file_type.
 
     Args:
-        csv_bytes: Raw CSV file content.
-        period:    Period label e.g. "March 2026".
+        csv_bytes:  Raw CSV file content.
+        period:     Period label e.g. "March 2026".
+        platform:   e.g. "shopee", "lazada", "generic"
+        file_type:  e.g. "transactions", "cogs", "ads", "warehouse"
 
     Returns:
         True if saved, False if unavailable.
@@ -205,37 +207,37 @@ def save_csv(csv_bytes: bytes, period: str) -> bool:
     if not client:
         return False
     try:
+        row_id = f"{platform}_{file_type}"
         client.table("csv_uploads").upsert({
-            "id": "latest",
+            "id": row_id,
             "period": period,
+            "platform": platform,
+            "file_type": file_type,
             "csv_data": csv_bytes.decode("utf-8-sig", errors="replace"),
         }).execute()
-        print(f"  [DB] CSV saved for period {period}")
+        print(f"  [DB] CSV saved: {platform}/{file_type} for {period}")
         return True
     except Exception as exc:
         print(f"  [DB] Failed to save CSV: {exc}")
         return False
 
 
-def load_latest_csv() -> Optional[tuple[bytes, str]]:
+def load_all_csvs() -> list[dict]:
     """
-    Load the most recently uploaded CSV from Supabase.
+    Load all uploaded CSVs from Supabase.
 
     Returns:
-        Tuple of (csv_bytes, period) or None if not found.
+        List of dicts with keys: id, platform, file_type, period, csv_data
     """
     client = _get_client()
     if not client:
-        return None
+        return []
     try:
-        result = client.table("csv_uploads").select("csv_data,period").eq("id", "latest").execute()
-        if result.data:
-            row = result.data[0]
-            return row["csv_data"].encode("utf-8"), row["period"]
-        return None
+        result = client.table("csv_uploads").select("*").execute()
+        return result.data or []
     except Exception as exc:
-        print(f"  [DB] Failed to load CSV: {exc}")
-        return None
+        print(f"  [DB] Failed to load CSVs: {exc}")
+        return []
 
 
 def load_latest_pnl_any() -> Optional[dict]:

@@ -152,9 +152,13 @@ class BookkeeperAgent:
         if name == "load_transactions":
             # Use real uploaded transactions if available, otherwise fall back to mock data
             import main as _main
-            if _main._uploaded_transactions:
-                self._transactions = _main._uploaded_transactions
-                source = "real CSV upload"
+            platform_key = inputs.get("platform", "shopee").lower().replace(" ", "").replace("my", "")
+            # Try exact platform key, then any available platform
+            txns = _main._platform_transactions.get(platform_key) or \
+                   next(iter(_main._platform_transactions.values()), None)
+            if txns:
+                self._transactions = txns
+                source = f"real CSV upload ({platform_key})"
             else:
                 self._transactions = get_mock_transactions()
                 source = "mock data"
