@@ -150,6 +150,63 @@ SETTINGS_TRIGGERS_EN = {
 }
 SETTINGS_TRIGGERS_ZH = {"修改设置", "设置", "更新设置", "修改货币", "修改语言", "修改名字"}
 
+GUIDE_EN = """Here's how to use Fynn 📖
+
+*Step 1 — Send your files*
+Just drop your CSV files directly here in WhatsApp. I'll figure out what each one is.
+
+Supported files:
+• 🛒 Shopee Finance export _(Finance → My Income → Export)_
+• 🛒 Lazada Finance report _(Finance → Transaction → Export)_
+• 📦 Supplier / COGS sheet
+• 📣 Ads spend export
+• 🏭 Warehouse / storage costs
+• 👥 Payroll / staff costs
+• 📫 Packaging costs
+• 💸 Any other business expense
+
+*Step 2 — Run your report*
+Once files are sent, say:
+  *run my report*
+
+I'll reconcile your payouts, detect anomalies, and send your full P&L here + save it to Google Sheets.
+
+*Other commands*
+• Ask me anything: _"What was my profit margin?"_
+• *change settings* — update name, currency, language
+• *reset* — restart setup
+
+Monthly reports run automatically on your chosen schedule.
+I've got it from here 🤖 — Fynn"""
+
+GUIDE_ZH = """Fynn使用指南 📖
+
+*第一步 — 发送文件*
+直接在WhatsApp发送你的CSV文件，我会自动识别每个文件的类型。
+
+支持的文件：
+• 🛒 Shopee财务导出 _(财务 → 我的收入 → 导出)_
+• 🛒 Lazada财务报告 _(财务 → 交易 → 导出)_
+• 📦 供应商/货品成本表
+• 📣 广告费用导出
+• 🏭 仓储/履行费用
+• 👥 工资/人力成本
+• 📫 包装材料费用
+• 💸 其他业务费用
+
+*第二步 — 生成报告*
+文件发送后，说：
+  *生成报告*
+
+我会自动对账、检测异常，并在这里发送盈亏报告，同时保存到Google Sheets。
+
+*其他命令*
+• 随时提问：_"我的利润率是多少？"_
+• *修改设置* — 更新姓名、货币、语言
+• *reset* — 重新开始设置
+
+报告会按你设定的时间自动发送，剩下的交给我 🤖 — Fynn"""
+
 CLAUDE_SYSTEM_EN = """You are Fynn, an autonomous AI bookkeeper for cross-border e-commerce sellers.
 Communicate via WhatsApp — keep replies short and clear, no long paragraphs.
 Use plain English, include numbers when relevant. Be friendly but professional.
@@ -179,6 +236,11 @@ class ConversationManager:
         self.profiles = ProfileStore()
         self._history: dict[str, list[dict]] = {}
         self._pnl_store: dict[str, dict] = {}
+        self._pending_guide: dict[str, str] = {}  # phone → guide message to send after completion
+
+    def pop_pending_guide(self, phone: str) -> Optional[str]:
+        """Return and clear the pending guide message for a sender, if any."""
+        return self._pending_guide.pop(phone, None)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -329,6 +391,10 @@ class ConversationManager:
 
             # Use selected language for completion message
             final_strings = ZH if profile.language == "zh" else EN
+            # Store guide message to be sent as follow-up
+            self._pending_guide[profile.phone] = (
+                GUIDE_ZH if profile.language == "zh" else GUIDE_EN
+            )
             return final_strings["complete"].format(
                 name=profile.name,
                 summary=profile.to_summary(),

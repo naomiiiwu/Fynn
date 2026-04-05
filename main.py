@@ -27,7 +27,7 @@ from fastapi.routing import APIRouter
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
-from agents.bookkeeper import BookkeeperAgent
+from agents.orchestrator import OrchestratorAgent
 from services.conversation import FILE_TYPE_LABELS, ConversationManager
 from services.csv_parser import parse_shopee_csv
 from services.database import load_all_csvs, load_latest_pnl_any, save_csv
@@ -244,11 +244,13 @@ async def settings_save(
 
     _conversation.profiles.save(profile)
 
-    # Send WhatsApp confirmation
-    strings = __import__("services.conversation", fromlist=["ZH", "EN"])
-    S = strings.ZH if language == "zh" else strings.EN
+    # Send WhatsApp confirmation + guide
+    from services.conversation import EN, ZH, GUIDE_EN, GUIDE_ZH
+    S = ZH if language == "zh" else EN
     msg = S["complete"].format(name=profile.name, summary=profile.to_summary())
     _twiml_send(phone, msg)
+    guide = GUIDE_ZH if language == "zh" else GUIDE_EN
+    _twiml_send(phone, guide)
 
     return HTMLResponse(_settings_html(phone, profile, saved=True))
 
@@ -642,24 +644,38 @@ Seller's question: {body.question}"""
 
 # ── WhatsApp webhook ───────────────────────────────────────────────────────────
 
+def _detect_period() -> str:
+    """Detect reporting period from uploaded transactions, fallback to current month."""
+    from datetime import datetime as dt
+    if _platform_transactions:
+        txns = next(iter(_platform_transactions.values()))
+        if txns:
+            dates = [t.date for t in txns]
+            e = min(dates)
+            return e.strftime("%B %Y")
+    return dt.now().strftime("%B %Y")
+
+
 def _run_report_background(sender: str) -> None:
-    """Run the full agent pipeline and send results via Twilio when done."""
+    """Run the full multi-agent pipeline and send results via Twilio when done."""
     global _last_pnl
     try:
         profile = _conversation.profiles.get(sender)
-        seller_name = profile.name if profile else "Seller"
-        currency = profile.currency if profile else "SGD"
-        agent = BookkeeperAgent(seller_name=seller_name, currency=currency)
-        result = agent.run(period="March 2026", platform="Shopee MY")
-        pnl = result.get("pnl", {})
+        if not profile:
+            from models.user_profile import UserProfile
+            profile = UserProfile(phone=sender, onboarding_step=None)
 
-        _last_pnl = pnl
-        _conversation.store_pnl(sender, pnl)
+        period = _detect_period()
+        platform_list = list(_platform_transactions.keys()) or ["shopee"]
 
-        from services.database import save_pnl
-        save_pnl(sender, pnl)
+        result = OrchestratorAgent().run_sync(sender, period, platform_list, profile)
 
-        _twiml_send(sender, "✅ Done! Your March P&L has been sent and your Google Sheet is updated.")
+        if result.combined_pnl:
+            _last_pnl = result.combined_pnl
+            _conversation.store_pnl(sender, result.combined_pnl)
+            from services.database import save_pnl
+            save_pnl(sender, result.combined_pnl)
+
     except Exception as exc:
         print(f"  [Webhook] Background report failed: {exc}")
         _twiml_send(sender, f"❌ Report failed: {exc}")
@@ -815,9 +831,15 @@ async def whatsapp_webhook(
         reply = (
             f"Hey! 👋 I'm *Fynn*, your AI bookkeeper.\n\n"
             f"Set up your preferences here (takes 30 seconds):\n{link}\n\n"
-            f"Once done, come back here and say *run my report* to get started!"
+            f"Once done, come back here and I'll guide you through the rest!"
         )
         return _twiml_response(reply)
+
+    # Send guide message after settings saved (first time onboarding complete)
+    guide = _conversation.pop_pending_guide(sender)
+    if guide:
+        background_tasks.add_task(_twiml_send, sender, guide)
+        return _twiml_response("You're all set! Sending you a quick guide now... 📖")
 
     # Pending file clarification — user is labelling an unknown file
     if sender in _pending_files:

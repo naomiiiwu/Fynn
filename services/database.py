@@ -190,6 +190,22 @@ def load_latest_pnl(phone: str) -> Optional[dict]:
 
 # ── CSV uploads ────────────────────────────────────────────────────────────────
 
+def _period_to_month_key(period: str, platform: str, file_type: str) -> str:
+    """
+    Convert 'March 2026' + 'shopee' + 'transactions' → 'shopee_transactions_2026_03'.
+    Falls back to 'shopee_transactions_unknown' if period can't be parsed.
+    """
+    import calendar
+    month_names = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+    parts = period.strip().split()
+    if len(parts) == 2:
+        month_str, year_str = parts
+        month_num = month_names.get(month_str.lower(), 0)
+        if month_num and year_str.isdigit():
+            return f"{platform}_{file_type}_{year_str}_{month_num:02d}"
+    return f"{platform}_{file_type}_unknown"
+
+
 def save_csv(csv_bytes: bytes, period: str, platform: str = "shopee", file_type: str = "transactions") -> bool:
     """
     Persist an uploaded CSV to Supabase keyed by platform + file_type.
@@ -207,7 +223,7 @@ def save_csv(csv_bytes: bytes, period: str, platform: str = "shopee", file_type:
     if not client:
         return False
     try:
-        row_id = f"{platform}_{file_type}"
+        row_id = _period_to_month_key(period, platform, file_type)
         client.table("csv_uploads").upsert({
             "id": row_id,
             "period": period,

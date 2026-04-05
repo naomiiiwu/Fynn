@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from agents.bookkeeper import BookkeeperAgent
+from agents.orchestrator import OrchestratorAgent
 from models.user_profile import ProfileStore, UserProfile
 from services.whatsapp import WhatsAppService
 from utils.formatter import format_whatsapp_message
@@ -197,11 +197,17 @@ async def run_monthly_report() -> None:
 
     for profile in profiles:
         try:
-            agent = BookkeeperAgent()
-            result = agent.run(period=period, platform="Shopee MY")
-            pnl = result.get("pnl", {})
+            import main as _main
+            platform_list = list(_main._platform_transactions.keys()) or ["shopee"]
+            result = OrchestratorAgent().run_sync(
+                sender=profile.phone,
+                period=period,
+                platform_list=platform_list,
+                profile=profile,
+            )
+            profit = result.combined_pnl.get("profit", {}).get("net_profit", 0) if result.combined_pnl else 0
             print(f"  [Scheduler] Monthly report complete for {profile.name}. "
-                  f"Net profit: {profile.currency} {pnl.get('profit', {}).get('net_profit', 0):,.2f}")
+                  f"Net profit: {profile.currency} {profit:,.2f}")
         except Exception as exc:
             print(f"  [Scheduler] Monthly report failed for {profile.phone}: {exc}")
 
