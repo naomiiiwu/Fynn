@@ -663,11 +663,76 @@ def _run_report_background(sender: str) -> None:
         _twiml_send(sender, f"❌ Report failed: {exc}")
 
 
+def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
+    """Download, classify, parse and store a file sent via WhatsApp."""
+    global _platform_transactions
+    try:
+        import httpx
+        account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+        auth_token  = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+        resp = httpx.get(media_url, auth=(account_sid, auth_token), timeout=30)
+        resp.raise_for_status()
+        content = resp.content
+
+        classified = classify_file(filename, content)
+        platform  = classified.platform
+        file_type = classified.file_type
+
+        # Detect period
+        period = "unknown"
+        transaction_count = None
+
+        if file_type == "transactions":
+            txns = parse_shopee_csv(content)
+            _platform_transactions[platform] = txns
+            transaction_count = len(txns)
+            if txns:
+                dates = [t.date for t in txns]
+                e, l = min(dates), max(dates)
+                period = e.strftime("%B %Y") if e.month == l.month and e.year == l.year \
+                         else f"{e.strftime('%b %Y')} – {l.strftime('%b %Y')}"
+
+        save_csv(content, period, platform, file_type)
+
+        platform_labels = {
+            "shopee": "Shopee", "lazada": "Lazada", "amazon": "Amazon",
+            "shopify": "Shopify", "tiktok": "TikTok Shop", "generic": "Internal", "unknown": "?",
+        }
+        type_icons = {
+            "transactions": "🛒", "cogs": "📦", "ads": "📣", "warehouse": "🏭",
+            "payroll": "👥", "packaging": "📫", "expense": "💸", "unknown": "❓",
+        }
+        plabel = platform_labels.get(platform, platform.title())
+        ticon  = type_icons.get(file_type, "❓")
+
+        if file_type == "transactions" and transaction_count:
+            reply = (
+                f"{ticon} Got it! I've read your *{plabel}* finance file.\n"
+                f"📅 Period: {period}\n"
+                f"📊 {transaction_count} transactions loaded\n\n"
+                f"Say *run my report* and I'll generate your full P&L. 🚀"
+            )
+        else:
+            reply = (
+                f"{ticon} Got it! Classified as *{plabel} — {file_type}*.\n"
+                f"I'll factor this into your next report. 📋"
+            )
+
+        _twiml_send(sender, reply)
+
+    except Exception as exc:
+        print(f"  [Webhook] File handling failed: {exc}")
+        _twiml_send(sender, f"❌ Couldn't read that file: {exc}\nMake sure it's a CSV exported from Shopee/Lazada.")
+
+
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
     background_tasks: BackgroundTasks,
     From: str = Form(...),
-    Body: str = Form(...),
+    Body: str = Form(""),
+    NumMedia: str = Form("0"),
+    MediaUrl0: str = Form(None),
+    MediaContentType0: str = Form(None),
 ) -> Response:
     """
     Twilio webhook — receives incoming WhatsApp messages and replies as Fynn.
@@ -687,10 +752,27 @@ async def whatsapp_webhook(
     Returns:
         TwiML XML response that Twilio uses to send the reply.
     """
-    print(f"\n[Webhook] Incoming from {From}: {Body}")
+    print(f"\n[Webhook] Incoming from {From}: {Body or '[file]'}")
 
     sender = From.strip()
     message = Body.strip()
+
+    # ── Incoming file ──────────────────────────────────────────────────────────
+    if int(NumMedia or 0) > 0 and MediaUrl0:
+        content_type = MediaContentType0 or ""
+        # Only handle CSV / spreadsheet files
+        if "csv" in content_type or "spreadsheet" in content_type or "text/plain" in content_type:
+            # Guess filename from URL or content type
+            filename = MediaUrl0.split("/")[-1] + ".csv"
+            background_tasks.add_task(_handle_file_background, sender, MediaUrl0, filename)
+            return _twiml_response(
+                "📂 Got your file! Classifying it now... I'll let you know what I found in a moment."
+            )
+        else:
+            return _twiml_response(
+                "I can only read CSV files right now. "
+                "Export your data as .csv from Shopee/Lazada and send it here."
+            )
 
     # Get profile (creates new one if first contact)
     profile, is_new = _conversation.profiles.get_or_create(sender)
