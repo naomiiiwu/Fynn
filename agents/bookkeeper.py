@@ -149,7 +149,14 @@ class BookkeeperAgent:
         print(f"\n  → [Tool] {name}({json.dumps(inputs) if inputs else ''})")
 
         if name == "load_transactions":
-            self._transactions = get_mock_transactions()
+            # Use real uploaded transactions if available, otherwise fall back to mock data
+            import main as _main
+            if _main._uploaded_transactions:
+                self._transactions = _main._uploaded_transactions
+                source = "real CSV upload"
+            else:
+                self._transactions = get_mock_transactions()
+                source = "mock data"
             counts = {t.type.value: 0 for t in self._transactions}
             for t in self._transactions:
                 counts[t.type.value] += 1
@@ -160,6 +167,7 @@ class BookkeeperAgent:
                 "gross_sales_myr": round(gross, 2),
                 "period": inputs.get("period"),
                 "platform": inputs.get("platform"),
+                "source": source,
             }
 
         elif name == "reconcile_payout":

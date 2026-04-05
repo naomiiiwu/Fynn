@@ -4,6 +4,7 @@ FastAPI entry point.
 
 Endpoints:
   GET  /health                → health check
+  POST /upload/csv            → upload real Shopee Finance CSV
   POST /run-monthly-report    → full Claude agent pipeline
   POST /ask                   → conversational P&L queries (JSON)
   POST /webhook/whatsapp      → Twilio WhatsApp incoming message webhook
@@ -20,7 +21,7 @@ load_dotenv()
 
 import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import BackgroundTasks, FastAPI, Form
+from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRouter
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 
 from agents.bookkeeper import BookkeeperAgent
 from services.conversation import ConversationManager
+from services.csv_parser import parse_shopee_csv
 from services.database import load_latest_pnl_any
 from services.scheduler import create_scheduler, set_profile_store
 
@@ -68,6 +70,7 @@ app = FastAPI(
 
 # Shared state
 _last_pnl: dict = {}
+_uploaded_transactions: list = []   # real CSV transactions, replaces mock when set
 _conversation = ConversationManager()
 
 
@@ -82,6 +85,70 @@ async def health() -> dict:
         JSON with status and version.
     """
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ── CSV upload ─────────────────────────────────────────────────────────────────
+
+@app.post("/upload/csv")
+async def upload_csv(
+    file: UploadFile = File(...),
+    period: str = Form(""),
+    platform: str = Form("Shopee MY"),
+) -> JSONResponse:
+    """
+    Upload a real Shopee Finance CSV export.
+
+    How to export from Shopee:
+      Seller Center → Finance → My Income → Export → select date range → Download
+
+    Args:
+        file:     The CSV file (.csv)
+        period:   Optional period label, e.g. "March 2026". Auto-detected if blank.
+        platform: Platform name (default: "Shopee MY")
+
+    Returns:
+        JSON with transaction count breakdown and the period label detected.
+    """
+    global _uploaded_transactions
+
+    if not file.filename.endswith(".csv"):
+        return JSONResponse(
+            content={"error": "Only .csv files are supported."},
+            status_code=400,
+        )
+
+    content = await file.read()
+
+    try:
+        transactions = parse_shopee_csv(content)
+    except ValueError as exc:
+        return JSONResponse(content={"error": str(exc)}, status_code=422)
+
+    _uploaded_transactions = transactions
+
+    # Auto-detect period from date range in transactions
+    if not period and transactions:
+        dates = [t.date for t in transactions]
+        earliest = min(dates)
+        latest = max(dates)
+        if earliest.month == latest.month and earliest.year == latest.year:
+            period = earliest.strftime("%B %Y")
+        else:
+            period = f"{earliest.strftime('%b %Y')} – {latest.strftime('%b %Y')}"
+
+    from collections import Counter
+    type_counts = Counter(t.type.value for t in transactions)
+
+    print(f"\n[Upload] CSV uploaded: {len(transactions)} transactions for {period}")
+
+    return JSONResponse(content={
+        "status": "uploaded",
+        "period": period,
+        "platform": platform,
+        "transaction_count": len(transactions),
+        "breakdown": dict(type_counts),
+        "message": f"Ready! Now call POST /run-monthly-report to generate the P&L for {period}.",
+    })
 
 
 # ── Schedule status ────────────────────────────────────────────────────────────
