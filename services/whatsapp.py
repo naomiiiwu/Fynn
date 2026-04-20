@@ -34,15 +34,13 @@ class WhatsAppService:
         """
         return bool(self.account_sid and self.auth_token and self.to_number)
 
-    def send(self, message: str) -> bool:
+    def send(self, message: str, media_url: Optional[str] = None) -> bool:
         """
-        Send a WhatsApp message via Twilio.
-
-        If Twilio credentials are not configured, prints the message to the
-        console as a fallback so the pipeline can still complete.
+        Send a WhatsApp message via Twilio, optionally with a file attachment.
 
         Args:
-            message: The formatted message string to send.
+            message:   The formatted message string to send.
+            media_url: Publicly accessible URL of a file to attach (e.g. .xlsx).
 
         Returns:
             True if the message was sent (or printed) successfully, False on error.
@@ -51,19 +49,20 @@ class WhatsAppService:
             print("\n[WhatsApp] Credentials not configured — printing to console instead:\n")
             print("=" * 60)
             print(message)
+            if media_url:
+                print(f"[Attachment] {media_url}")
             print("=" * 60)
             return True  # Graceful fallback counts as success
 
         try:
-            # Import here to avoid crashing if twilio is installed but unused
             from twilio.rest import Client  # type: ignore
 
             client = Client(self.account_sid, self.auth_token)
-            msg = client.messages.create(
-                from_=self.from_number,
-                to=self.to_number,
-                body=message,
-            )
+            kwargs = dict(from_=self.from_number, to=self.to_number, body=message)
+            if media_url:
+                kwargs["media_url"] = [media_url]
+
+            msg = client.messages.create(**kwargs)
             print(f"  [WhatsApp] Message sent successfully. SID: {msg.sid}")
             return True
         except ImportError:

@@ -7,8 +7,8 @@ Replaces the monolithic BookkeeperAgent.
 Pipeline:
   1. Parallel ingestion (one IngestionAgent per platform)
   2. Per-platform: Reconciliation → Anomaly → P&L
-  3. SheetsAgent (all platforms in one call)
-  4. WhatsAppAgent (combined + per-platform message)
+  3. ExcelAgent — generate .xlsx, upload to Supabase Storage
+  4. WhatsAppAgent — send summary + Excel attachment
 """
 
 import asyncio
@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from models.user_profile import UserProfile
 
 from .anomaly_agent import AnomalyAgent
+from .excel_agent import ExcelAgent
 from .ingestion_agent import IngestionAgent, IngestionResult
 from .pnl_agent import PnLAgent
 from .reconciliation_agent import ReconciliationAgent
-from .sheets_agent import SheetsAgent
 from .whatsapp_agent import WhatsAppAgent
 
 
@@ -157,17 +157,21 @@ class OrchestratorAgent:
                 cost_totals_myr=cost_totals_myr,
             )
 
-        # ── Step 3: Google Sheets ──────────────────────────────────────────────
+        # ── Step 3: Excel workbook ─────────────────────────────────────────────
+        excel_url = None
         try:
-            sheets_result = SheetsAgent().run(pnl_reports, combined)
-            status["sheets"] = "ok" if sheets_result["success"] else "fallback_json"
+            excel_result = ExcelAgent().run(pnl_reports, combined)
+            excel_url    = excel_result.get("url")
+            status["excel"] = "ok" if excel_url else "saved_locally"
         except Exception as exc:
-            print(f"  [Orchestrator] Sheets failed: {exc}")
-            status["sheets"] = f"error: {exc}"
+            print(f"  [Orchestrator] Excel generation failed: {exc}")
+            status["excel"] = f"error: {exc}"
 
         # ── Step 4: WhatsApp ───────────────────────────────────────────────────
         try:
-            ok = WhatsAppAgent().run(pnl_reports, profile, to=sender, combined=combined)
+            ok = WhatsAppAgent().run(
+                pnl_reports, profile, to=sender, combined=combined, excel_url=excel_url
+            )
             status["whatsapp"] = "ok" if ok else "failed"
         except Exception as exc:
             print(f"  [Orchestrator] WhatsApp failed: {exc}")
