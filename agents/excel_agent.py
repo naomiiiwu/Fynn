@@ -87,3 +87,68 @@ def _upload_to_supabase(data: bytes, period: str, filename: str) -> str | None:
 
 def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w.\-]", "_", name)
+
+
+def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = None, currency: str = "SGD") -> dict:
+    """Aggregate multiple platform P&Ls into a single combined summary."""
+    if not pnl_reports:
+        return {}
+
+    base = pnl_reports[0]
+    combined = {
+        "period":             base["period"],
+        "platform":           "Combined",
+        "currency":           base.get("currency", "SGD"),
+        "generated_at":       base.get("generated_at", ""),
+        "exchange_rate_used": base.get("exchange_rate_used", {}),
+        "revenue": {
+            "gross_sales": sum(p["revenue"]["gross_sales"]  for p in pnl_reports),
+            "refunds":     sum(p["revenue"]["refunds"]       for p in pnl_reports),
+            "net_revenue": sum(p["revenue"]["net_revenue"]   for p in pnl_reports),
+        },
+        "myr_reference": {
+            "gross_sales":     sum(p.get("myr_reference", {}).get("gross_sales", 0)     for p in pnl_reports),
+            "net_revenue":     sum(p.get("myr_reference", {}).get("net_revenue", 0)     for p in pnl_reports),
+            "expected_payout": sum(p.get("myr_reference", {}).get("expected_payout", 0) for p in pnl_reports),
+            "actual_payout":   sum(p.get("myr_reference", {}).get("actual_payout", 0)   for p in pnl_reports),
+            "discrepancy":     sum(p.get("myr_reference", {}).get("discrepancy", 0)     for p in pnl_reports),
+        },
+    }
+
+    extra = cost_totals_myr or {}
+    rate  = base.get("exchange_rate_used", {}).get("rate", 1.0)
+
+    def _to_cur(myr: float) -> float:
+        return round(myr * rate, 2)
+
+    platform_fees  = sum(p["costs"].get("platform_fees", 0) for p in pnl_reports)
+    shipping       = sum(p["costs"].get("shipping", 0)      for p in pnl_reports)
+    vouchers       = sum(p["costs"].get("vouchers", 0)      for p in pnl_reports)
+    cogs           = _to_cur(extra.get("cogs", 0))
+    ads            = _to_cur(extra.get("ads", 0))
+    warehouse      = _to_cur(extra.get("warehouse", 0))
+    payroll        = _to_cur(extra.get("payroll", 0))
+    packaging      = _to_cur(extra.get("packaging", 0))
+    other_expense  = _to_cur(extra.get("expense", 0))
+    total_platform = round(platform_fees + shipping + vouchers, 2)
+    total_business = round(cogs + ads + warehouse + payroll + packaging + other_expense, 2)
+    total_costs    = round(total_platform + total_business, 2)
+
+    combined["costs"] = {
+        "platform_fees": platform_fees, "shipping": shipping, "vouchers": vouchers,
+        "cogs": cogs, "ads": ads, "warehouse": warehouse,
+        "payroll": payroll, "packaging": packaging, "other_expense": other_expense,
+        "total_platform_costs": total_platform,
+        "total_business_costs": total_business,
+        "total_costs":          total_costs,
+    }
+    combined["anomalies"]          = [a for p in pnl_reports for a in p.get("anomalies", [])]
+    combined["order_count"]        = sum(p.get("order_count", 0)  for p in pnl_reports)
+    combined["refund_count"]       = sum(p.get("refund_count", 0) for p in pnl_reports)
+    combined["platforms_included"] = [p.get("platform") for p in pnl_reports]
+
+    net_revenue = combined["revenue"]["net_revenue"]
+    net_profit  = round(net_revenue - total_costs, 2)
+    margin      = round(net_profit / net_revenue * 100, 2) if net_revenue else 0.0
+    combined["profit"] = {"net_profit": net_profit, "profit_margin_pct": margin}
+    return combined

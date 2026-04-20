@@ -138,7 +138,7 @@ class OrchestratorAgent:
             return OrchestratorResult(pipeline_status=status)
 
         # ── Build combined P&L (with business costs applied once) ─────────────
-        from agents.sheets_agent import _build_combined_pnl
+        from agents.excel_agent import _build_combined_pnl
         from services.currency import CurrencyConverter
 
         if len(pnl_reports) > 1:
