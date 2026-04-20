@@ -105,13 +105,26 @@ _conversation = ConversationManager()
 
 @app.get("/health")
 async def health() -> dict:
-    """
-    Health check endpoint.
-
-    Returns:
-        JSON with status and version.
-    """
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/debug")
+async def debug() -> dict:
+    """Live state snapshot — use this to diagnose report hangs."""
+    return {
+        "platform_transactions": {
+            platform: len(txns)
+            for platform, txns in _platform_transactions.items()
+        },
+        "cost_totals": {
+            period: {ftype: f"MYR {amt:,.2f}" for ftype, amt in costs.items()}
+            for period, costs in _cost_totals.items()
+        },
+        "last_report_period": _last_report_period,
+        "last_pnl_period": _last_pnl.get("period") if _last_pnl else None,
+        "active_users": list(_conversation.profiles._profiles.keys()),
+        "pending_files": list(_pending_files.keys()),
+    }
 
 
 # ── Web settings page ──────────────────────────────────────────────────────────
@@ -675,26 +688,46 @@ def _detect_period() -> str:
 def _run_report_background(sender: str) -> None:
     """Run the full multi-agent pipeline and send results via Twilio when done."""
     global _last_pnl, _last_report_period
+    from datetime import datetime as _dt
+
+    def _log(msg: str) -> None:
+        print(f"  [Report:{_dt.now().strftime('%H:%M:%S')}] {msg}")
+
     try:
+        _log("Starting pipeline...")
+
         profile = _conversation.profiles.get(sender)
         if not profile:
             from models.user_profile import UserProfile
             profile = UserProfile(phone=sender, onboarding_step=None)
+        _log(f"Profile loaded: {profile.name}")
 
         period = _detect_period()
-        platform_list = list(_platform_transactions.keys()) or ["shopee"]
+        # Exclude "unknown" — it's a fallback label for unclassified uploads, not a real platform
+        platform_list = [p for p in _platform_transactions.keys() if p != "unknown"] or ["shopee"]
+        _log(f"Period: {period} | Platforms: {platform_list}")
+        _log(f"Cost totals in memory: { {p: list(c.keys()) for p, c in _cost_totals.items()} }")
 
+        _log("Calling OrchestratorAgent...")
         result = OrchestratorAgent().run_sync(sender, period, platform_list, profile)
+        _log(f"Orchestrator done. Status: {result.pipeline_status}")
 
         if result.combined_pnl:
             _last_pnl = result.combined_pnl
             _last_report_period = period
             _conversation.store_pnl(sender, result.combined_pnl)
+            _log("P&L stored in memory.")
             from services.database import save_pnl
             save_pnl(sender, result.combined_pnl)
+            _log("P&L saved to Supabase.")
+        else:
+            _log("WARNING: No combined_pnl returned from orchestrator.")
 
     except Exception as exc:
-        print(f"  [Webhook] Background report failed: {exc}")
+        import traceback
+        print(f"  [Report] FAILED: {exc}")
+        print(traceback.format_exc())
+        _twiml_send(sender, f"❌ Report failed: {exc}\n\nCheck server logs for details.")
         _twiml_send(sender, f"❌ Report failed: {exc}")
 
 

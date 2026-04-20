@@ -41,23 +41,48 @@ class SheetsService:
         import json
 
         try:
-            # Prefer JSON env var (works on Railway where files aren't available)
-            if self.credentials_json:
-                info = json.loads(self.credentials_json)
-                creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-                self.client = gspread.authorize(creds)
-                print("  [Sheets] Authenticated via GOOGLE_SHEETS_CREDENTIALS_JSON.")
-                return True
+            import signal, threading
 
-            # Fall back to file path (local dev)
-            if self.credentials_path and os.path.exists(self.credentials_path):
-                creds = Credentials.from_service_account_file(self.credentials_path, scopes=SCOPES)
-                self.client = gspread.authorize(creds)
-                print("  [Sheets] Authenticated via credentials file.")
-                return True
+            def _auth(result: list) -> None:
+                try:
+                    if self.credentials_json:
+                        try:
+                            info = json.loads(self.credentials_json)
+                        except Exception:
+                            print("  [Sheets] GOOGLE_SHEETS_CREDENTIALS_JSON is not valid JSON — check Railway env vars.")
+                            result.append(("error", "invalid JSON"))
+                            return
+                        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+                        self.client = gspread.authorize(creds)
+                        result.append(("json", True))
+                    elif self.credentials_path and os.path.exists(self.credentials_path):
+                        creds = Credentials.from_service_account_file(self.credentials_path, scopes=SCOPES)
+                        self.client = gspread.authorize(creds)
+                        result.append(("file", True))
+                    else:
+                        result.append(("missing", False))
+                except Exception as exc:
+                    result.append(("error", exc))
 
-            print("  [Sheets] No credentials found — set GOOGLE_SHEETS_CREDENTIALS_JSON or GOOGLE_SHEETS_CREDENTIALS_PATH.")
-            return False
+            result: list = []
+            t = threading.Thread(target=_auth, args=(result,), daemon=True)
+            t.start()
+            t.join(timeout=15)  # 15-second cap on auth
+
+            if not result:
+                print("  [Sheets] Authentication timed out after 15s — skipping Sheets.")
+                return False
+
+            source, outcome = result[0]
+            if source == "missing":
+                print("  [Sheets] No credentials found — set GOOGLE_SHEETS_CREDENTIALS_JSON or GOOGLE_SHEETS_CREDENTIALS_PATH.")
+                return False
+            if source == "error":
+                print(f"  [Sheets] Authentication failed: {outcome}")
+                return False
+
+            print(f"  [Sheets] Authenticated via {'env JSON' if source == 'json' else 'credentials file'}.")
+            return True
 
         except Exception as exc:
             print(f"  [Sheets] Authentication failed: {exc}")

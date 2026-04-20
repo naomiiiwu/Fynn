@@ -164,20 +164,11 @@ class OrchestratorAgent:
         platform_list: list[str],
         profile: UserProfile,
     ) -> OrchestratorResult:
-        """Synchronous wrapper for use in non-async contexts (background threads)."""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're already in an async context — run in a new thread's event loop
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(
-                        asyncio.run,
-                        self.run(sender, period, platform_list, profile),
-                    )
-                    return future.result()
-            return loop.run_until_complete(
-                self.run(sender, period, platform_list, profile)
+        """Synchronous wrapper — always runs the coroutine in a fresh event loop on a new thread."""
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                self.run(sender, period, platform_list, profile),
             )
-        except RuntimeError:
-            return asyncio.run(self.run(sender, period, platform_list, profile))
+            return future.result(timeout=300)  # 5-minute hard cap

@@ -12,14 +12,14 @@ from typing import Optional
 class WhatsAppService:
     """Sends P&L summary messages via Twilio WhatsApp API."""
 
-    def __init__(self) -> None:
+    def __init__(self, to: Optional[str] = None) -> None:
         """Initialise Twilio credentials from environment variables."""
         self.account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
         self.auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
         self.from_number = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886").strip()
-        self.to_number = os.getenv("TWILIO_WHATSAPP_TO", "").strip()
+        # Prefer the explicit `to` argument (per-user), fall back to env default
+        self.to_number = to or os.getenv("TWILIO_WHATSAPP_TO", "").strip()
 
-        # Ensure whatsapp: prefix on both numbers
         if self.from_number and not self.from_number.startswith("whatsapp:"):
             self.from_number = f"whatsapp:{self.from_number}"
         if self.to_number and not self.to_number.startswith("whatsapp:"):
