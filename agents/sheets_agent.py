@@ -11,37 +11,28 @@ class SheetsAgent:
         sheets = SheetsService()
         tabs_written = []
         all_ok = True
+        period = (combined or pnl_reports[0]).get("period", "")
 
-        if len(pnl_reports) == 1:
-            pnl = combined or pnl_reports[0]
-            period = pnl.get("period", "")
-            platform = pnl.get("platform", "Report")
+        # ── Per-platform channel tabs (revenue + platform fees only) ──────────
+        for pnl in pnl_reports:
+            platform = pnl.get("platform", "Platform")
             tab = f"{platform} — {period}"
-            ok = sheets.write_pnl(pnl, tab_title=tab)
-            if not ok:
+            ok = sheets.write_pnl(pnl, tab_title=tab, show_business_costs=False)
+            if ok:
+                tabs_written.append(tab)
+            else:
                 save_pnl_json(pnl)
                 all_ok = False
-            else:
-                tabs_written.append(tab)
-        else:
-            # One tab per platform (platform costs only)
-            for pnl in pnl_reports:
-                period   = pnl.get("period", "")
-                platform = pnl.get("platform", "Platform")
-                tab = f"{platform} — {period}"
-                ok = sheets.write_pnl(pnl, tab_title=tab)
-                if ok:
-                    tabs_written.append(tab)
-                else:
-                    save_pnl_json(pnl)
-                    all_ok = False
 
-            # Combined tab — full company P&L with business costs
-            if combined:
-                period = combined.get("period", "")
-                tab = f"Combined — {period}"
-                sheets.write_pnl(combined, tab_title=tab)
-                tabs_written.append(tab)
+        # ── Company P&L tab (all revenue + all costs = true net profit) ───────
+        company_pnl = combined or pnl_reports[0]
+        company_tab = f"Company P&L — {period}"
+        ok = sheets.write_pnl(company_pnl, tab_title=company_tab, show_business_costs=True)
+        if ok:
+            tabs_written.append(company_tab)
+        else:
+            save_pnl_json(company_pnl)
+            all_ok = False
 
         print(f"  [Sheets] Tabs written: {tabs_written}")
         return {"success": all_ok, "tabs_written": tabs_written}

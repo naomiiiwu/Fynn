@@ -152,7 +152,7 @@ class SheetsService:
         except Exception as exc:
             print(f"  [Sheets] Formatting failed (non-critical): {exc}")
 
-    def write_pnl(self, pnl: dict, tab_title: str | None = None) -> bool:
+    def write_pnl(self, pnl: dict, tab_title: str | None = None, show_business_costs: bool = True) -> bool:
         """
         Write the full P&L report to Google Sheets.
 
@@ -219,49 +219,56 @@ class SheetsService:
             ["Net Revenue", rev["net_revenue"], ""],           # 17 ← bold
             ["", "", ""],                                     # 18
 
-            # ── Platform costs (rows 19-24) ──────────────────────────────────
-            ["Platform Costs", "", ""],                       # 19 ← section
-            ["", f"Amount ({cur})", ""],                      # 20
-            ["Commission & Fees", _neg(costs.get("platform_fees", 0)), ""],  # 21
-            ["Shipping", _neg(costs.get("shipping", 0)), ""], # 22
-            ["Vouchers", _neg(costs.get("vouchers", 0)), ""], # 23
-            ["", "", ""],                                     # 24
-
-            # ── Business costs (rows 25-35) ──────────────────────────────────
-            ["Business Costs", "", ""],                       # 25 ← section
-            ["", f"Amount ({cur})", ""],                      # 26
-            ["COGS (Supplier)", _neg(costs.get("cogs", 0)), ""],          # 27
-            ["Ads Spend", _neg(costs.get("ads", 0)), ""],                 # 28
-            ["Warehouse / 3PL", _neg(costs.get("warehouse", 0)), ""],     # 29
-            ["Payroll", _neg(costs.get("payroll", 0)), ""],               # 30
-            ["Packaging", _neg(costs.get("packaging", 0)), ""],           # 31
-            ["Other Expenses", _neg(costs.get("other_expense", 0)), ""],  # 32
-            ["", "", ""],                                     # 33
-            ["Total Costs", _neg(costs.get("total_costs", 0)), ""],       # 34 ← bold
-            ["", "", ""],                                     # 35
-
-            # ── Profit (rows 36-40) ──────────────────────────────────────────
-            ["Profit", "", ""],                               # 36 ← section
-            ["", f"Amount ({cur})", ""],                      # 37
-            ["Net Profit", profit["net_profit"], ""],          # 38 ← bold
-            ["Profit Margin", f"{profit['profit_margin_pct']}%", ""],  # 39
-            ["", "", ""],                                     # 40
-
-            # ── MYR Reference (rows 41-48) ───────────────────────────────────
-            ["MYR Reference (pre-conversion)", "", ""],       # 41 ← section
-            ["", "Amount (MYR)", ""],                         # 42
-            ["Gross Sales", myr_ref.get("gross_sales", 0), ""],   # 43
-            ["Net Revenue", myr_ref.get("net_revenue", 0), ""],   # 44
-            ["Expected Payout", myr_ref.get("expected_payout", 0), ""],  # 45
-            ["Actual Payout", myr_ref.get("actual_payout", 0), ""],      # 46
-            ["Discrepancy", myr_ref.get("discrepancy", 0), ""],          # 47
-            ["", "", ""],                                     # 48
-
-            # ── Anomalies (row 49+) ──────────────────────────────────────────
-            ["Anomalies", "", ""],                            # 49 ← section
+            # ── Platform costs ───────────────────────────────────────────────
+            ["Platform Costs", "", ""],
+            ["", f"Amount ({cur})", ""],
+            ["Commission & Fees", _neg(costs.get("platform_fees", 0)), ""],
+            ["Shipping",          _neg(costs.get("shipping", 0)), ""],
+            ["Vouchers",          _neg(costs.get("vouchers", 0)), ""],
+            ["", "", ""],
         ]
 
-        anomaly_start_row = 49
+        # ── Business costs — only on Company P&L tab ─────────────────────────
+        if show_business_costs:
+            rows += [
+                ["Business Costs", "", ""],
+                ["", f"Amount ({cur})", ""],
+                ["COGS (Supplier)",  _neg(costs.get("cogs", 0)), ""],
+                ["Ads Spend",        _neg(costs.get("ads", 0)), ""],
+                ["Warehouse / 3PL",  _neg(costs.get("warehouse", 0)), ""],
+                ["Payroll",          _neg(costs.get("payroll", 0)), ""],
+                ["Packaging",        _neg(costs.get("packaging", 0)), ""],
+                ["Other Expenses",   _neg(costs.get("other_expense", 0)), ""],
+                ["", "", ""],
+            ]
+
+        rows += [
+            ["Total Costs", _neg(costs.get("total_costs", 0) if show_business_costs
+                                 else costs.get("total_platform_costs", 0)), ""],
+            ["", "", ""],
+
+            # ── Profit ───────────────────────────────────────────────────────
+            ["Profit", "", ""],
+            ["", f"Amount ({cur})", ""],
+            ["Net Profit",     profit["net_profit"], ""],
+            ["Profit Margin",  f"{profit['profit_margin_pct']}%", ""],
+            ["", "", ""],
+
+            # ── MYR Reference ────────────────────────────────────────────────
+            ["MYR Reference (pre-conversion)", "", ""],
+            ["", "Amount (MYR)", ""],
+            ["Gross Sales",     myr_ref.get("gross_sales", 0), ""],
+            ["Net Revenue",     myr_ref.get("net_revenue", 0), ""],
+            ["Expected Payout", myr_ref.get("expected_payout", 0), ""],
+            ["Actual Payout",   myr_ref.get("actual_payout", 0), ""],
+            ["Discrepancy",     myr_ref.get("discrepancy", 0), ""],
+            ["", "", ""],
+
+            # ── Anomalies ────────────────────────────────────────────────────
+            ["Anomalies", "", ""],
+        ]
+
+        anomaly_start_row = len(rows)  # dynamic — correct regardless of business costs section
         if anomalies:
             for a in anomalies:
                 rows.append([f"⚠️ {a['type']} [{a['severity']}]", a["description"], ""])

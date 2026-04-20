@@ -80,12 +80,16 @@ class OrchestratorAgent:
         sensitivity = getattr(profile, "anomaly_sensitivity", "normal")
         currency    = getattr(profile, "currency", "SGD")
 
-        # Load business cost totals — specific period first, fall back to 'unknown'
+        # Load business cost totals — merge 'unknown' + period-specific
+        # (unknown = uploaded before period detection; period-specific takes precedence for same key)
         import main as _main
         all_cost_totals: dict[str, dict[str, float]] = getattr(_main, "_cost_totals", {})
-        cost_totals_myr: dict[str, float] = all_cost_totals.get(period) or all_cost_totals.get("unknown", {})
+        cost_totals_myr: dict[str, float] = {
+            **all_cost_totals.get("unknown", {}),
+            **all_cost_totals.get(period, {}),
+        }
         if cost_totals_myr:
-            print(f"  [Orchestrator] Business costs for {period} (MYR): { {k: f'{v:,.2f}' for k, v in cost_totals_myr.items()} }")
+            print(f"  [Orchestrator] Business costs for {period} (MYR): { {k: f'MYR {v:,.2f}' for k, v in cost_totals_myr.items()} }")
         else:
             print(f"  [Orchestrator] No cost files for {period} — P&L will show platform costs only.")
 
