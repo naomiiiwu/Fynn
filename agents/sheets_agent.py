@@ -14,26 +14,34 @@ class SheetsAgent:
 
         if len(pnl_reports) == 1:
             pnl = combined or pnl_reports[0]
-            ok = sheets.write_pnl(pnl)
+            period = pnl.get("period", "")
+            platform = pnl.get("platform", "Report")
+            tab = f"{platform} — {period}"
+            ok = sheets.write_pnl(pnl, tab_title=tab)
             if not ok:
                 save_pnl_json(pnl)
                 all_ok = False
             else:
-                tabs_written.append(pnl.get("platform", "Sheet"))
+                tabs_written.append(tab)
         else:
-            # Write each platform tab (platform costs only)
+            # One tab per platform (platform costs only)
             for pnl in pnl_reports:
-                ok = sheets.write_pnl(pnl)
+                period   = pnl.get("period", "")
+                platform = pnl.get("platform", "Platform")
+                tab = f"{platform} — {period}"
+                ok = sheets.write_pnl(pnl, tab_title=tab)
                 if ok:
-                    tabs_written.append(pnl.get("platform", "Sheet"))
+                    tabs_written.append(tab)
                 else:
                     save_pnl_json(pnl)
                     all_ok = False
 
-            # Write combined tab (with business costs)
+            # Combined tab — full company P&L with business costs
             if combined:
-                sheets.write_pnl(combined)
-                tabs_written.append("Combined")
+                period = combined.get("period", "")
+                tab = f"Combined — {period}"
+                sheets.write_pnl(combined, tab_title=tab)
+                tabs_written.append(tab)
 
         print(f"  [Sheets] Tabs written: {tabs_written}")
         return {"success": all_ok, "tabs_written": tabs_written}
@@ -46,13 +54,23 @@ def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = 
 
     base = pnl_reports[0]
     combined = {
-        "period":   base["period"],
-        "platform": "Combined",
-        "currency": base.get("currency", "SGD"),
+        "period":             base["period"],
+        "platform":           "Combined",
+        "currency":           base.get("currency", "SGD"),
+        "generated_at":       base.get("generated_at", ""),
+        "exchange_rate_used": base.get("exchange_rate_used", {}),
         "revenue": {
             "gross_sales": sum(p["revenue"]["gross_sales"]  for p in pnl_reports),
             "refunds":     sum(p["revenue"]["refunds"]       for p in pnl_reports),
             "net_revenue": sum(p["revenue"]["net_revenue"]   for p in pnl_reports),
+        },
+        # MYR reference — sum raw MYR figures across all platforms
+        "myr_reference": {
+            "gross_sales":      sum(p.get("myr_reference", {}).get("gross_sales", 0)      for p in pnl_reports),
+            "net_revenue":      sum(p.get("myr_reference", {}).get("net_revenue", 0)      for p in pnl_reports),
+            "expected_payout":  sum(p.get("myr_reference", {}).get("expected_payout", 0)  for p in pnl_reports),
+            "actual_payout":    sum(p.get("myr_reference", {}).get("actual_payout", 0)    for p in pnl_reports),
+            "discrepancy":      sum(p.get("myr_reference", {}).get("discrepancy", 0)      for p in pnl_reports),
         },
     }
 
@@ -83,11 +101,10 @@ def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = 
         "total_business_costs": total_business,
         "total_costs": total_costs,
     }
-    combined["anomalies"]    = [a for p in pnl_reports for a in p.get("anomalies", [])]
-    combined["order_count"]  = sum(p.get("order_count", 0)  for p in pnl_reports)
-    combined["refund_count"] = sum(p.get("refund_count", 0) for p in pnl_reports)
-    combined["generated_at"] = base.get("generated_at", "")
-    combined["platforms_included"] = [p.get("platform") for p in pnl_reports]
+    combined["anomalies"]           = [a for p in pnl_reports for a in p.get("anomalies", [])]
+    combined["order_count"]         = sum(p.get("order_count", 0)  for p in pnl_reports)
+    combined["refund_count"]        = sum(p.get("refund_count", 0) for p in pnl_reports)
+    combined["platforms_included"]  = [p.get("platform") for p in pnl_reports]
 
     net_revenue = combined["revenue"]["net_revenue"]
     net_profit  = round(net_revenue - total_costs, 2)

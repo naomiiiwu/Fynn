@@ -152,7 +152,7 @@ class SheetsService:
         except Exception as exc:
             print(f"  [Sheets] Formatting failed (non-critical): {exc}")
 
-    def write_pnl(self, pnl: dict) -> bool:
+    def write_pnl(self, pnl: dict, tab_title: str | None = None) -> bool:
         """
         Write the full P&L report to Google Sheets.
 
@@ -166,7 +166,7 @@ class SheetsService:
             return False
 
         period = pnl.get("period", "Unknown Period")
-        sheet_title = f"Fynn - {period}"
+        sheet_title = tab_title or f"Fynn - {period}"
         sheet = self._get_or_create_sheet(sheet_title)
 
         if sheet is None:
