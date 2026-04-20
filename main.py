@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from agents.orchestrator import OrchestratorAgent
 from services.conversation import FILE_TYPE_LABELS, ConversationManager
-from services.csv_parser import parse_csv
+from services.csv_parser import detect_cost_period, parse_cost_total, parse_csv
 from services.database import load_all_csvs, load_latest_pnl_any, save_csv
 from services.file_classifier import classify_file
 from services.scheduler import create_scheduler, set_profile_store
@@ -53,14 +53,21 @@ async def lifespan(app: FastAPI):
         print("  [Fynn] No previous P&L found in Supabase.")
 
     # Restore all uploaded CSVs from Supabase
+    _cost_types = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
     for row in load_all_csvs():
         try:
-            platform = row.get("platform", "shopee")
+            platform  = row.get("platform", "shopee")
             file_type = row.get("file_type", "transactions")
+            raw_bytes = row["csv_data"].encode("utf-8")
             if file_type == "transactions":
-                txns = parse_csv(row["csv_data"].encode("utf-8"), platform)
+                txns = parse_csv(raw_bytes, platform)
                 _platform_transactions[platform] = txns
                 print(f"  [Fynn] Restored {platform} transactions ({row.get('period')}, {len(txns)} rows)")
+            elif file_type in _cost_types:
+                period = row.get("period") or detect_cost_period(raw_bytes)
+                total  = parse_cost_total(raw_bytes, file_type)
+                _cost_totals.setdefault(period, {})[file_type] = total
+                print(f"  [Fynn] Restored {file_type} cost for {period}: MYR {total:,.2f}")
         except Exception as exc:
             print(f"  [Fynn] Failed to restore CSV {row.get('id')}: {exc}")
 
@@ -85,6 +92,10 @@ app = FastAPI(
 _last_pnl: dict = {}
 # Per-platform transaction store: {"shopee": [...], "lazada": [...], ...}
 _platform_transactions: dict[str, list] = {}
+# Cost totals keyed by period then type: {"March 2026": {"cogs": 8680.0, "payroll": 14540.0}}
+_cost_totals: dict[str, dict[str, float]] = {}
+# Period of the last completed report — used to warn on stale uploads
+_last_report_period: str = ""
 # Holds the raw bytes of the last unclassified file per sender, pending user clarification
 _pending_files: dict[str, bytes] = {}
 _conversation = ConversationManager()
@@ -445,7 +456,8 @@ async def upload_classify(file: UploadFile = File(...)) -> JSONResponse:
     platform  = classified.platform
     file_type = classified.file_type
 
-    # Parse and store transaction files
+    # Parse and store files
+    _cost_file_types = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
     transaction_count = None
     period = "unknown"
     if file_type == "transactions":
@@ -462,6 +474,10 @@ async def upload_classify(file: UploadFile = File(...)) -> JSONResponse:
                     period = f"{earliest.strftime('%b %Y')} – {latest.strftime('%b %Y')}"
         except ValueError as exc:
             return JSONResponse(content={"error": str(exc)}, status_code=422)
+    elif file_type in _cost_file_types:
+        period = detect_cost_period(content)
+        total  = parse_cost_total(content, file_type)
+        _cost_totals.setdefault(period, {})[file_type] = total
 
     # Persist to Supabase
     save_csv(content, period, platform, file_type)
@@ -658,7 +674,7 @@ def _detect_period() -> str:
 
 def _run_report_background(sender: str) -> None:
     """Run the full multi-agent pipeline and send results via Twilio when done."""
-    global _last_pnl
+    global _last_pnl, _last_report_period
     try:
         profile = _conversation.profiles.get(sender)
         if not profile:
@@ -672,6 +688,7 @@ def _run_report_background(sender: str) -> None:
 
         if result.combined_pnl:
             _last_pnl = result.combined_pnl
+            _last_report_period = period
             _conversation.store_pnl(sender, result.combined_pnl)
             from services.database import save_pnl
             save_pnl(sender, result.combined_pnl)
@@ -696,9 +713,10 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         platform  = classified.platform
         file_type = classified.file_type
 
-        # Detect period
+        # Detect period and populate in-memory stores
         period = "unknown"
         transaction_count = None
+        _wa_cost_types = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
 
         if file_type == "transactions":
             txns = parse_csv(content, platform)
@@ -709,6 +727,10 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
                 e, l = min(dates), max(dates)
                 period = e.strftime("%B %Y") if e.month == l.month and e.year == l.year \
                          else f"{e.strftime('%b %Y')} – {l.strftime('%b %Y')}"
+        elif file_type in _wa_cost_types:
+            period = detect_cost_period(content)
+            total  = parse_cost_total(content, file_type)
+            _cost_totals.setdefault(period, {})[file_type] = total
 
         save_csv(content, period, platform, file_type)
 
@@ -746,16 +768,22 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
                 f"• *expense* — Other business expense"
             )
         elif file_type == "transactions" and transaction_count:
+            stale = (_last_report_period and _last_report_period == period)
             reply = (
                 f"{ticon} Got it! *{plabel}* finance file received.\n"
                 f"📅 Period: {period}\n"
                 f"📊 {transaction_count} transactions loaded\n\n"
-                f"Send more files, or say *run my report* to generate your P&L. 🚀"
+                + (f"⚠️ You already ran a report for *{period}*. Say *run my report* again to refresh it.\n"
+                   if stale else
+                   f"Send more files, or say *run my report* to generate your P&L. 🚀")
             )
         else:
+            stale = (_last_report_period and _last_report_period == period and period != "unknown")
             reply = (
-                f"{ticon} Got it! Logged as *{plabel} — {file_type}*.\n"
-                f"I'll factor this into your next report. Send more files or say *run my report*. 📋"
+                f"{ticon} Got it! *{file_type.title()}* costs for *{period}* saved.\n"
+                + (f"⚠️ Your *{period}* report is now outdated — say *run my report* to refresh it. 🔄"
+                   if stale else
+                   f"I'll factor this into your next report. Send more files or say *run my report*. 📋")
             )
 
         _twiml_send(sender, reply)
@@ -865,6 +893,12 @@ async def whatsapp_webhook(
     # Pending file clarification — user is labelling an unknown file
     if sender in _pending_files:
         label = message.strip().lower()
+
+        # Allow user to dismiss the file
+        if label in {"cancel", "skip", "ignore", "nevermind", "never mind", "discard"}:
+            _pending_files.pop(sender)
+            return _twiml_response("No problem — file discarded. Send another file whenever you're ready. 👍")
+
         if label in FILE_TYPE_LABELS:
             raw = _pending_files.pop(sender)
             platform_key, file_type_key = FILE_TYPE_LABELS[label]
@@ -882,9 +916,22 @@ async def whatsapp_webhook(
                 except Exception as exc:
                     reply = f"❌ Couldn't parse that file as transactions: {exc}"
             else:
+                _manual_cost_types = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
+                if file_type_key in _manual_cost_types:
+                    _period = detect_cost_period(raw)
+                    total = parse_cost_total(raw, file_type_key)
+                    _cost_totals.setdefault(_period, {})[file_type_key] = total
                 save_csv(raw, "unknown", platform_key, file_type_key)
                 reply = f"{ticon} Got it — saved as *{file_type_key}*. I'll include it in your next report. 📋"
             return _twiml_response(reply)
+
+        # Unrecognised label — remind user of valid options rather than silently falling through
+        return _twiml_response(
+            f"I didn't recognise *{label}*. Please reply with one of:\n"
+            f"• *shopee* • *lazada* • *cogs* • *ads*\n"
+            f"• *warehouse* • *payroll* • *packaging* • *expense*\n\n"
+            f"Or reply *cancel* to discard the file."
+        )
 
     # Onboarded user — check for report trigger
     if _conversation.is_report_trigger(message, profile):

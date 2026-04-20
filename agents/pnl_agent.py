@@ -18,6 +18,7 @@ class PnLAgent(BaseAgent):
         anomalies: list[Anomaly],
         transactions: list[Transaction],
         currency: str = "SGD",
+        cost_totals_myr: dict[str, float] | None = None,
     ) -> dict:
         # Currency conversion
         converter = CurrencyConverter()
@@ -35,6 +36,7 @@ class PnLAgent(BaseAgent):
             sgd_conversion=conversion,
             period=period,
             platform=platform,
+            additional_costs_myr=cost_totals_myr or {},
         )
         pnl["currency"] = currency
 

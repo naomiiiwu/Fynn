@@ -80,6 +80,15 @@ class OrchestratorAgent:
         sensitivity = getattr(profile, "anomaly_sensitivity", "normal")
         currency    = getattr(profile, "currency", "SGD")
 
+        # Load cost totals for this specific period from in-memory store
+        import main as _main
+        all_cost_totals: dict[str, dict[str, float]] = getattr(_main, "_cost_totals", {})
+        cost_totals_myr: dict[str, float] = all_cost_totals.get(period, {})
+        if cost_totals_myr:
+            print(f"  [Orchestrator] Cost totals for {period} (MYR): { {k: f'{v:,.2f}' for k, v in cost_totals_myr.items()} }")
+        else:
+            print(f"  [Orchestrator] No cost files uploaded for {period} — P&L will show platform costs only.")
+
         for ingest in ingestion_results:
             platform = ingest.platform
             print(f"\n  [Orchestrator] Processing {platform}...")
@@ -108,6 +117,7 @@ class OrchestratorAgent:
                     anomalies=anomalies,
                     transactions=ingest.transactions,
                     currency=currency,
+                    cost_totals_myr=cost_totals_myr,
                 )
                 pnl_reports.append(pnl)
                 status[f"pnl_{platform}"] = "ok"

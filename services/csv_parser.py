@@ -315,6 +315,131 @@ def parse_lazada_csv(content: bytes | str) -> List[Transaction]:
     return transactions
 
 
+# ── Cost period detector ───────────────────────────────────────────────────────
+
+_DATE_COL_CANDIDATES = [
+    "Date", "Invoice Date", "Month", "Created At", "Transaction Date",
+    "Create Time", "Payment Date", "Period",
+]
+
+
+def detect_cost_period(content: bytes | str) -> str:
+    """
+    Detect the dominant month/year from a cost CSV's date column.
+
+    Tries common date column names, parses every date, and returns the
+    month that appears most frequently as "March 2026". Falls back to
+    "unknown" if no date column is found or dates can't be parsed.
+
+    Args:
+        content: Raw CSV bytes or string.
+
+    Returns:
+        Period string e.g. "March 2026", or "unknown".
+    """
+    if isinstance(content, bytes):
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = content
+
+    reader = csv.DictReader(io.StringIO(text))
+    headers = list(reader.fieldnames or [])
+    col = _find_column(headers, _DATE_COL_CANDIDATES)
+    if not col:
+        return "unknown"
+
+    from collections import Counter
+    month_counts: Counter = Counter()
+
+    for row in reader:
+        raw = (row.get(col) or "").strip()
+        if not raw:
+            continue
+        # Try "March 2026" / "March" style first (payroll Month column)
+        for fmt in ("%B %Y", "%b %Y"):
+            try:
+                dt = datetime.strptime(raw, fmt)
+                month_counts[dt.strftime("%B %Y")] += 1
+                break
+            except ValueError:
+                continue
+        else:
+            # Try full date formats
+            try:
+                dt = _parse_date(raw)
+                month_counts[dt.strftime("%B %Y")] += 1
+            except ValueError:
+                continue
+
+    if not month_counts:
+        return "unknown"
+
+    period = month_counts.most_common(1)[0][0]
+    return period
+
+
+# ── Generic cost total parser ──────────────────────────────────────────────────
+
+# Priority-ordered column name candidates per cost type
+_COST_AMOUNT_COLS: dict[str, list[str]] = {
+    "cogs":      ["Total Cost (MYR)", "Total (MYR)", "Amount (MYR)", "Total Cost", "Amount"],
+    "ads":       ["Ad Spend (MYR)", "Spend (MYR)", "Amount (MYR)", "Ad Spend", "Spend", "Amount"],
+    "warehouse": ["Amount (MYR)", "Total (MYR)", "Amount", "Total"],
+    "payroll":   ["Total Cost (MYR)", "Amount (MYR)", "Total Cost", "Amount"],
+    "packaging": ["Total (MYR)", "Total Cost (MYR)", "Amount (MYR)", "Total", "Amount"],
+    "expense":   ["Amount (MYR)", "Total (MYR)", "Amount", "Total"],
+}
+_GENERIC_AMOUNT_COLS = ["Amount (MYR)", "Total (MYR)", "Total Cost (MYR)", "Amount", "Total", "Cost"]
+
+
+def parse_cost_total(content: bytes | str, file_type: str) -> float:
+    """
+    Sum the total MYR amount from any cost CSV.
+
+    Tries known column names for the given file_type, then falls back to
+    a generic search. Returns 0.0 if no amount column can be found.
+
+    Args:
+        content:   Raw CSV bytes or string.
+        file_type: One of cogs, ads, warehouse, payroll, packaging, expense.
+
+    Returns:
+        Total MYR amount (sum of all positive numeric rows).
+    """
+    if isinstance(content, bytes):
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = content
+
+    reader = csv.DictReader(io.StringIO(text))
+    headers = list(reader.fieldnames or [])
+
+    candidates = _COST_AMOUNT_COLS.get(file_type, []) + _GENERIC_AMOUNT_COLS
+    col = _find_column(headers, candidates)
+
+    if not col:
+        print(f"  [CostParser] No amount column found in {file_type} CSV. Headers: {headers}")
+        return 0.0
+
+    total = 0.0
+    for row in reader:
+        try:
+            val = _parse_amount(row.get(col, "") or "")
+            if val > 0:
+                total += val
+        except (ValueError, TypeError):
+            continue
+
+    print(f"  [CostParser] {file_type}: summed {col} → MYR {total:,.2f}")
+    return round(total, 2)
+
+
 # ── Dispatch ────────────────────────────────────────────────────────────────────
 
 def parse_csv(content: bytes | str, platform: str) -> List[Transaction]:
