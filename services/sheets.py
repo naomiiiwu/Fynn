@@ -112,52 +112,42 @@ class SheetsService:
             print(f"  [Sheets] Failed to get/create sheet: {exc}")
             return None
 
-    def _apply_formatting(self, sheet: gspread.Worksheet) -> None:
-        """
-        Apply bold formatting to header rows and currency formatting to data cells.
-
-        Args:
-            sheet: The worksheet to format.
-        """
+    def _apply_formatting(self, sheet: gspread.Worksheet, anomaly_start_row: int) -> None:
+        """Apply formatting: title, section headers, bold totals, column widths."""
         try:
-            # Main title — dark blue bg, white bold text
             sheet.format("A1:C1", {
                 "backgroundColor": {"red": 0.13, "green": 0.29, "blue": 0.53},
                 "textFormat": {
-                    "bold": True,
-                    "fontSize": 13,
+                    "bold": True, "fontSize": 13,
                     "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
                 },
             })
 
-            # Section header rows: Orders(8), Revenue(13), Costs(19), Profit(26), MYR Ref(31), Anomalies(39)
-            section_rows = [8, 13, 19, 26, 31, 39]
+            # Layout (fixed rows — see write_pnl for row map):
+            # 8=Orders, 13=Revenue, 19=Platform Costs, 25=Business Costs, 36=Profit, 41=MYR Ref, anomaly_start_row=Anomalies
+            section_rows = [8, 13, 19, 25, 36, 41, anomaly_start_row]
             for row in section_rows:
                 sheet.format(f"A{row}:C{row}", {
                     "backgroundColor": {"red": 0.85, "green": 0.91, "blue": 0.98},
                     "textFormat": {"bold": True},
                 })
 
-            # Total rows bold: Net Revenue(17), Total Costs(25), Net Profit(28)
-            for row in [17, 25, 28]:
+            # Bold totals: Net Revenue(17), Total Costs(34), Net Profit(38)
+            for row in [17, 34, 38]:
                 sheet.format(f"A{row}:B{row}", {"textFormat": {"bold": True}})
 
-            # Column widths via batchUpdate
             spreadsheet = sheet.spreadsheet
             sheet_id = sheet.id
             spreadsheet.batch_update({"requests": [
                 {"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-                    "properties": {"pixelSize": 220},
-                    "fields": "pixelSize",
+                    "properties": {"pixelSize": 230}, "fields": "pixelSize",
                 }},
                 {"updateDimensionProperties": {
                     "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
-                    "properties": {"pixelSize": 160},
-                    "fields": "pixelSize",
+                    "properties": {"pixelSize": 160}, "fields": "pixelSize",
                 }},
             ]})
-
             print("  [Sheets] Formatting applied.")
         except Exception as exc:
             print(f"  [Sheets] Formatting failed (non-critical): {exc}")
@@ -182,71 +172,96 @@ class SheetsService:
         if sheet is None:
             return False
 
-        rev = pnl["revenue"]
-        costs = pnl["costs"]
-        profit = pnl["profit"]
-        ex = pnl.get("exchange_rate_used", {})
+        rev     = pnl["revenue"]
+        costs   = pnl["costs"]
+        profit  = pnl["profit"]
+        ex      = pnl.get("exchange_rate_used", {})
         anomalies = pnl.get("anomalies", [])
         myr_ref = pnl.get("myr_reference", {})
+        cur     = pnl.get("currency", "SGD")
+        rate    = ex.get("rate", "N/A")
 
-        cur = pnl["currency"]
-        rate = ex.get("rate", "N/A")
+        def _neg(val: float) -> float:
+            """Show costs as negative numbers so they read as deductions."""
+            return -abs(val) if val else 0
 
+        # ── Row map (1-indexed, must match _apply_formatting section_rows) ──
+        # 1-7:   Title block
+        # 8-12:  Orders summary
+        # 13-18: Revenue
+        # 19-24: Platform costs
+        # 25-35: Business costs
+        # 36-40: Profit
+        # 41-48: MYR reference
+        # 49+:   Anomalies
         rows = [
-            # Title block
-            ["Fynn Bookkeeping Report", "", ""],
-            ["Period", period, ""],
-            ["Platform", pnl["platform"], ""],
-            ["Currency", cur, ""],
-            ["MYR → SGD Rate", rate, ""],
-            ["Generated", pnl["generated_at"][:10], ""],
-            ["", "", ""],
+            # ── Title block (rows 1-7) ──────────────────────────────────────
+            ["Fynn Bookkeeping Report", "", ""],              # 1
+            ["Period", period, ""],                           # 2
+            ["Platform", pnl.get("platform", ""), ""],       # 3
+            ["Currency", cur, ""],                            # 4
+            [f"MYR → {cur} Rate", rate, ""],                 # 5
+            ["Generated", pnl.get("generated_at", "")[:10], ""],  # 6
+            ["", "", ""],                                     # 7
 
-            # Orders summary
-            ["Orders Summary", "", ""],
-            ["", "Count", ""],
-            ["Total Orders", pnl.get("order_count", 0), ""],
-            ["Refund Orders", pnl.get("refund_count", 0), ""],
-            ["", "", ""],
+            # ── Orders summary (rows 8-12) ──────────────────────────────────
+            ["Orders Summary", "", ""],                       # 8  ← section
+            ["", "Count", ""],                                # 9
+            ["Total Orders", pnl.get("order_count", 0), ""], # 10
+            ["Refund Orders", pnl.get("refund_count", 0), ""],# 11
+            ["", "", ""],                                     # 12
 
-            # Revenue
-            ["Revenue", "", ""],
-            ["", f"Amount ({cur})", ""],
-            ["Gross Sales", rev["gross_sales"], ""],
-            ["Refunds", -rev["refunds"], ""],
-            ["Net Revenue", rev["net_revenue"], ""],
-            ["", "", ""],
+            # ── Revenue (rows 13-18) ─────────────────────────────────────────
+            ["Revenue", "", ""],                              # 13 ← section
+            ["", f"Amount ({cur})", ""],                      # 14
+            ["Gross Sales", rev["gross_sales"], ""],           # 15
+            ["Refunds", _neg(rev["refunds"]), ""],            # 16
+            ["Net Revenue", rev["net_revenue"], ""],           # 17 ← bold
+            ["", "", ""],                                     # 18
 
-            # Costs
-            ["Costs", "", ""],
-            ["", f"Amount ({cur})", ""],
-            ["Platform Fees", -costs["platform_fees"], ""],
-            ["Shipping", -costs["shipping"], ""],
-            ["Vouchers", -costs["vouchers"], ""],
-            ["Total Costs", -costs["total_costs"], ""],
-            ["", "", ""],
+            # ── Platform costs (rows 19-24) ──────────────────────────────────
+            ["Platform Costs", "", ""],                       # 19 ← section
+            ["", f"Amount ({cur})", ""],                      # 20
+            ["Commission & Fees", _neg(costs.get("platform_fees", 0)), ""],  # 21
+            ["Shipping", _neg(costs.get("shipping", 0)), ""], # 22
+            ["Vouchers", _neg(costs.get("vouchers", 0)), ""], # 23
+            ["", "", ""],                                     # 24
 
-            # Profit
-            ["Profit", "", ""],
-            ["", f"Amount ({cur})", ""],
-            ["Net Profit", profit["net_profit"], ""],
-            ["Profit Margin", f"{profit['profit_margin_pct']}%", ""],
-            ["", "", ""],
+            # ── Business costs (rows 25-35) ──────────────────────────────────
+            ["Business Costs", "", ""],                       # 25 ← section
+            ["", f"Amount ({cur})", ""],                      # 26
+            ["COGS (Supplier)", _neg(costs.get("cogs", 0)), ""],          # 27
+            ["Ads Spend", _neg(costs.get("ads", 0)), ""],                 # 28
+            ["Warehouse / 3PL", _neg(costs.get("warehouse", 0)), ""],     # 29
+            ["Payroll", _neg(costs.get("payroll", 0)), ""],               # 30
+            ["Packaging", _neg(costs.get("packaging", 0)), ""],           # 31
+            ["Other Expenses", _neg(costs.get("other_expense", 0)), ""],  # 32
+            ["", "", ""],                                     # 33
+            ["Total Costs", _neg(costs.get("total_costs", 0)), ""],       # 34 ← bold
+            ["", "", ""],                                     # 35
 
-            # MYR Reference
-            ["MYR Reference (pre-conversion)", "", ""],
-            ["", "Amount (MYR)", ""],
-            ["Gross Sales", myr_ref.get("gross_sales", 0), ""],
-            ["Net Revenue", myr_ref.get("net_revenue", 0), ""],
-            ["Expected Payout", myr_ref.get("expected_payout", 0), ""],
-            ["Actual Payout", myr_ref.get("actual_payout", 0), ""],
-            ["Discrepancy", myr_ref.get("discrepancy", 0), ""],
-            ["", "", ""],
+            # ── Profit (rows 36-40) ──────────────────────────────────────────
+            ["Profit", "", ""],                               # 36 ← section
+            ["", f"Amount ({cur})", ""],                      # 37
+            ["Net Profit", profit["net_profit"], ""],          # 38 ← bold
+            ["Profit Margin", f"{profit['profit_margin_pct']}%", ""],  # 39
+            ["", "", ""],                                     # 40
 
-            # Anomalies
-            ["Anomalies", "", ""],
+            # ── MYR Reference (rows 41-48) ───────────────────────────────────
+            ["MYR Reference (pre-conversion)", "", ""],       # 41 ← section
+            ["", "Amount (MYR)", ""],                         # 42
+            ["Gross Sales", myr_ref.get("gross_sales", 0), ""],   # 43
+            ["Net Revenue", myr_ref.get("net_revenue", 0), ""],   # 44
+            ["Expected Payout", myr_ref.get("expected_payout", 0), ""],  # 45
+            ["Actual Payout", myr_ref.get("actual_payout", 0), ""],      # 46
+            ["Discrepancy", myr_ref.get("discrepancy", 0), ""],          # 47
+            ["", "", ""],                                     # 48
+
+            # ── Anomalies (row 49+) ──────────────────────────────────────────
+            ["Anomalies", "", ""],                            # 49 ← section
         ]
 
+        anomaly_start_row = 49
         if anomalies:
             for a in anomalies:
                 rows.append([f"⚠️ {a['type']} [{a['severity']}]", a["description"], ""])
@@ -255,7 +270,7 @@ class SheetsService:
 
         try:
             sheet.update("A1", rows, value_input_option="USER_ENTERED")
-            self._apply_formatting(sheet)
+            self._apply_formatting(sheet, anomaly_start_row)
             url = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}"
             print(f"  [Sheets] P&L written successfully → {url}")
             return True
