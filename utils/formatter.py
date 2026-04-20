@@ -217,7 +217,6 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports:
         f"📦 Orders:        {order_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"\n{anomaly_block}\n"
-        f"\n📎 Full breakdown attached as Excel file.\n"
         f"— Fynn 🤖"
     )
     return message

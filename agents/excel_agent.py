@@ -67,12 +67,17 @@ def _upload_to_supabase(data: bytes, period: str, filename: str) -> str | None:
         if client is None:
             return None
 
-        # Sanitise period for use as a folder name
-        folder   = re.sub(r"[^\w\-]", "_", period)
-        path     = f"{folder}/{filename}"
+        # Ensure the bucket exists (creates it if not — safe to call every time)
+        try:
+            client.storage.create_bucket(_BUCKET, options={"public": True})
+            print(f"  [Excel] Created Supabase Storage bucket '{_BUCKET}'.")
+        except Exception:
+            pass  # bucket already exists — that's fine
+
+        folder       = re.sub(r"[^\w\-]", "_", period)
+        path         = f"{folder}/{filename}"
         content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-        # Upsert — overwrite if the same month's file already exists
         client.storage.from_(_BUCKET).upload(
             path=path,
             file=data,
