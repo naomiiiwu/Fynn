@@ -109,15 +109,17 @@ def _infer_from_signals(filename: str, headers: list[str], rows: list[dict]) -> 
         platform = "tiktok"
 
     file_type = "unknown"
-    # Most-specific signals first to avoid false-positive fallthrough
+    # Most-specific signals first — warehouse before packaging because 3PL invoices
+    # often list "Bubble Wrap Insert" as a line-item service, which must not override
+    # the stronger 3PL/Pick-and-Pack column signals.
     if any(token in combined for token in ["payroll", "basic pay", "epf", "socso", "salary", "employee", "headcount", "labour", "labor"]):
         file_type = "payroll"
+    elif any(token in combined for token in ["pick and pack", "3pl", "3pl provider", "fulfilment", "fulfillment", "inbound receiving", "outbound labelling", "outbound"]):
+        file_type = "warehouse"
+    elif any(token in combined for token in ["warehouse", "storage fee", "storage cost", "monthly storage"]):
+        file_type = "warehouse"
     elif any(token in combined for token in ["poly mailer", "bubble wrap", "desiccant", "packing material", "poly bag", "thank you card"]):
         file_type = "packaging"
-    elif any(token in combined for token in ["pick and pack", "3pl", "fulfilment", "fulfillment", "inbound receiving", "outbound"]):
-        file_type = "warehouse"
-    elif any(token in combined for token in ["warehouse", "storage fee", "storage cost"]):
-        file_type = "warehouse"
     elif any(token in combined for token in ["buyer payment", "order income", "shopee commission", "lazada commission", "payout", "settlement", "withdrawal", "bank transfer"]):
         file_type = "transactions"
     elif any(token in combined for token in ["transaction", "refund", "commission"]) and platform != "unknown":
@@ -201,8 +203,9 @@ CRITICAL RULES:
 - If file_type is cogs/payroll/warehouse/packaging/expense/ads → set platform to "generic", NOT "unknown"
 - "Supplier Name", "Invoice No.", "Unit Cost", "SKU", "Quantity" columns = cogs, confidence >= 0.92
 - "Employee", "Basic Pay", "EPF", "SOCSO" columns = payroll, confidence >= 0.95
+- "3PL Provider", "Pick and Pack", "Storage", "Inbound", "Outbound", "Fulfilment" columns = warehouse, confidence >= 0.95
 - "Poly Mailer", "Bubble Wrap", "Carton", "Desiccant" columns = packaging, confidence >= 0.95
-- "Pick and Pack", "3PL", "Storage", "Fulfilment" columns = warehouse, confidence >= 0.92
+- IMPORTANT: A 3PL/warehouse invoice may list "Bubble Wrap" or "Poly Mailer" as a SERVICE LINE ITEM inside a Service Type column — this does NOT make it a packaging file. If the file has a "3PL Provider" or "Service Type" column with warehouse services, it is "warehouse" even if bubble wrap appears as one line item.
 
 Be decisive. Strong column signals → confidence >= 0.88. Only use "unknown" if genuinely unreadable."""
 
