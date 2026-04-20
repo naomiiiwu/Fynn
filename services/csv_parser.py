@@ -1,26 +1,14 @@
 """
-Shopee CSV parser for Fynn.
+CSV parsers for Fynn — Shopee and Lazada.
 
-Parses the Finance / My Income CSV exported from Shopee Seller Center
-(Finance → My Income → Export) into a list of Transaction objects.
+Shopee MY Finance CSV (Finance → My Income → Export):
+  Transaction Date | Type | Order SN | Amount | Status
 
-Shopee MY Finance CSV columns (as of 2025):
-  Transaction Date | Type | Order SN | Amount | Status | Description (optional)
+Lazada MY Statement CSV (Finance → Transactions → Export):
+  Created At | Transaction Type | Order No. | Amount | Status
+  OR: Date | Type | Order ID | Credit | Debit
 
-Type values Shopee uses:
-  "Buyer Payment"         → ORDER
-  "Refund to Buyer"       → REFUND
-  "Shopee Commission"     → PLATFORM_FEE
-  "Transaction Fee"       → PLATFORM_FEE
-  "Shipping Fee"          → SHIPPING
-  "Shipping Rebate"       → SHIPPING
-  "Voucher"               → VOUCHER
-  "Seller Voucher"        → VOUCHER
-  "Withdrawal"            → SETTLEMENT
-  "Bank Transfer"         → SETTLEMENT
-  everything else         → OTHER
-
-Amount sign: Shopee uses positive for credits, negative for debits.
+Amount sign: positive = credit, negative = debit (both platforms).
 """
 
 import csv
@@ -184,3 +172,162 @@ def parse_shopee_csv(content: bytes | str) -> List[Transaction]:
     transactions.sort(key=lambda t: t.date)
     print(f"  [CSV] Parsed {len(transactions)} transactions ({skipped} skipped).")
     return transactions
+
+
+# ── Lazada parser ──────────────────────────────────────────────────────────────
+
+_LAZADA_TYPE_MAP = {
+    "payment":              TransactionType.ORDER,
+    "item price":           TransactionType.ORDER,
+    "order income":         TransactionType.ORDER,
+    "cashback":             TransactionType.ORDER,
+    "refund":               TransactionType.REFUND,
+    "return":               TransactionType.REFUND,
+    "reversal":             TransactionType.REFUND,
+    "commission":           TransactionType.PLATFORM_FEE,
+    "service fee":          TransactionType.PLATFORM_FEE,
+    "payment fee":          TransactionType.PLATFORM_FEE,
+    "transaction fee":      TransactionType.PLATFORM_FEE,
+    "lazada commission":    TransactionType.PLATFORM_FEE,
+    "shipping fee":         TransactionType.SHIPPING,
+    "shipping":             TransactionType.SHIPPING,
+    "shipping rebate":      TransactionType.SHIPPING,
+    "voucher":              TransactionType.VOUCHER,
+    "seller voucher":       TransactionType.VOUCHER,
+    "lazada voucher":       TransactionType.VOUCHER,
+    "transfer":             TransactionType.SETTLEMENT,
+    "payout":               TransactionType.SETTLEMENT,
+    "lazwallet":            TransactionType.SETTLEMENT,
+    "bank transfer":        TransactionType.SETTLEMENT,
+    "settlement":           TransactionType.SETTLEMENT,
+}
+
+
+def _map_lazada_type(raw_type: str) -> TransactionType:
+    key = raw_type.strip().lower()
+    for pattern, txn_type in _LAZADA_TYPE_MAP.items():
+        if pattern in key:
+            return txn_type
+    return TransactionType.OTHER
+
+
+def parse_lazada_csv(content: bytes | str) -> List[Transaction]:
+    """
+    Parse a Lazada Finance statement CSV into Transaction objects.
+
+    Handles both Credit/Debit split columns and a single Amount column.
+    Lazada MY columns (typical export):
+      Created At | Transaction Type | Order No. | Credit | Debit | Status
+    Alternative layout:
+      Date | Type | Order ID | Amount | Status
+
+    Args:
+        content: Raw CSV bytes or string.
+
+    Returns:
+        List of Transaction objects sorted by date ascending.
+    """
+    if isinstance(content, bytes):
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = content
+
+    reader = csv.DictReader(io.StringIO(text))
+    headers = reader.fieldnames or []
+
+    col_date   = _find_column(headers, ["Created At", "Date", "Transaction Date", "Create Time"])
+    col_type   = _find_column(headers, ["Transaction Type", "Type", "Description", "Remarks"])
+    col_order  = _find_column(headers, ["Order No.", "Order No", "Order ID", "Order Number", "Reference No."])
+    col_credit = _find_column(headers, ["Credit", "Credit (MYR)", "Credit Amount"])
+    col_debit  = _find_column(headers, ["Debit", "Debit (MYR)", "Debit Amount"])
+    col_amount = _find_column(headers, ["Amount", "Total Amount", "Amount (MYR)"])
+    col_status = _find_column(headers, ["Status", "Transaction Status"])
+
+    if not col_date or not col_type:
+        raise ValueError(
+            f"Lazada CSV missing required columns. Found: {headers}. "
+            "Expected: Created At / Date, Transaction Type / Type"
+        )
+
+    # Must have either split credit/debit OR a single amount column
+    if not col_amount and not (col_credit or col_debit):
+        raise ValueError(
+            f"Lazada CSV missing amount column. Found: {headers}. "
+            "Expected: Amount OR Credit + Debit"
+        )
+
+    transactions: List[Transaction] = []
+    skipped = 0
+
+    for i, row in enumerate(reader):
+        try:
+            raw_type   = row.get(col_type, "").strip()
+            raw_date   = row.get(col_date, "").strip()
+            raw_order  = row.get(col_order, "").strip() if col_order else ""
+            raw_status = row.get(col_status, "").strip() if col_status else ""
+
+            if not raw_date or not raw_type:
+                skipped += 1
+                continue
+
+            if raw_status.lower() in {"pending", "cancelled", "canceled", "failed", "processing"}:
+                skipped += 1
+                continue
+
+            # Resolve amount: prefer Credit − Debit, fall back to Amount
+            if col_credit or col_debit:
+                credit = _parse_amount(row.get(col_credit, "0") or "0")
+                debit  = _parse_amount(row.get(col_debit, "0") or "0")
+                # Lazada debits are usually stored as positive numbers
+                amount = credit - abs(debit)
+            else:
+                raw_amount = row.get(col_amount, "").strip()
+                if not raw_amount:
+                    skipped += 1
+                    continue
+                amount = _parse_amount(raw_amount)
+
+            date     = _parse_date(raw_date)
+            txn_type = _map_lazada_type(raw_type)
+
+            transactions.append(Transaction(
+                transaction_id=f"LAZ-{i+1:04d}",
+                order_id=raw_order or None,
+                date=date,
+                type=txn_type,
+                description=raw_type,
+                amount_myr=amount,
+            ))
+
+        except (ValueError, KeyError) as exc:
+            skipped += 1
+            print(f"  [CSV/Lazada] Skipped row {i+1}: {exc}")
+            continue
+
+    if not transactions:
+        raise ValueError("No valid Lazada transactions found. Check column names and data.")
+
+    transactions.sort(key=lambda t: t.date)
+    print(f"  [CSV/Lazada] Parsed {len(transactions)} transactions ({skipped} skipped).")
+    return transactions
+
+
+# ── Dispatch ────────────────────────────────────────────────────────────────────
+
+def parse_csv(content: bytes | str, platform: str) -> List[Transaction]:
+    """
+    Route to the correct platform parser.
+
+    Args:
+        content:  Raw CSV bytes or string.
+        platform: One of "shopee", "lazada", or anything else (falls back to Shopee parser).
+
+    Returns:
+        List of Transaction objects.
+    """
+    if platform.lower() == "lazada":
+        return parse_lazada_csv(content)
+    return parse_shopee_csv(content)

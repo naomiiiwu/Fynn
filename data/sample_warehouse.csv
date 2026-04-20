@@ -1,0 +1,13 @@
+Date,3PL Provider,Invoice No.,Service Type,Units,Rate (MYR),Amount (MYR),Remarks
+2026-03-01,EasyParcel 3PL,WH-2026-031,Inbound Receiving,350,0.50,175.00,March stock intake
+2026-03-01,EasyParcel 3PL,WH-2026-031,Monthly Storage - Standard,1200,0.30,360.00,Standard shelf storage
+2026-03-01,EasyParcel 3PL,WH-2026-031,Monthly Storage - Oversize,80,0.80,64.00,Oversize item storage
+2026-03-05,EasyParcel 3PL,WH-2026-032,Pick and Pack - Standard,320,1.20,384.00,Orders fulfilled 1–5 Mar
+2026-03-05,EasyParcel 3PL,WH-2026-032,Bubble Wrap Insert,320,0.20,64.00,Per-order protection
+2026-03-10,EasyParcel 3PL,WH-2026-033,Pick and Pack - Standard,285,1.20,342.00,Orders fulfilled 6–10 Mar
+2026-03-10,EasyParcel 3PL,WH-2026-033,Outbound Labelling,285,0.30,85.50,Shipping label print & affix
+2026-03-15,EasyParcel 3PL,WH-2026-034,Pick and Pack - Standard,310,1.20,372.00,Orders fulfilled 11–15 Mar
+2026-03-20,EasyParcel 3PL,WH-2026-035,Pick and Pack - Standard,298,1.20,357.60,Orders fulfilled 16–20 Mar
+2026-03-25,EasyParcel 3PL,WH-2026-036,Pick and Pack - Standard,275,1.20,330.00,Orders fulfilled 21–25 Mar
+2026-03-31,EasyParcel 3PL,WH-2026-037,Pick and Pack - Standard,260,1.20,312.00,Orders fulfilled 26–31 Mar
+2026-03-31,EasyParcel 3PL,WH-2026-037,Returns Processing,18,2.50,45.00,Returned items restocked

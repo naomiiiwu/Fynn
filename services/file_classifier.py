@@ -109,28 +109,46 @@ def _infer_from_signals(filename: str, headers: list[str], rows: list[dict]) -> 
         platform = "tiktok"
 
     file_type = "unknown"
-    if any(token in combined for token in ["transaction", "buyer payment", "refund", "commission", "payout", "settlement", "withdrawal", "order income"]):
-        file_type = "transactions"
-    elif any(token in combined for token in ["supplier", "purchase", "cogs", "cost of goods", "invoice", "unit cost"]):
-        file_type = "cogs"
-    elif any(token in combined for token in ["ads", "advertising", "marketing", "campaign", "spend", "impression", "roas", "click"]):
-        file_type = "ads"
-    elif any(token in combined for token in ["warehouse", "storage", "fulfilment", "fulfillment", "3pl", "pick and pack"]):
-        file_type = "warehouse"
-    elif any(token in combined for token in ["payroll", "salary", "staff", "labour", "labor", "employee", "headcount"]):
+    # Most-specific signals first to avoid false-positive fallthrough
+    if any(token in combined for token in ["payroll", "basic pay", "epf", "socso", "salary", "employee", "headcount", "labour", "labor"]):
         file_type = "payroll"
-    elif any(token in combined for token in ["packaging", "package", "box", "poly", "mailer", "bubble wrap"]):
+    elif any(token in combined for token in ["poly mailer", "bubble wrap", "desiccant", "packing material", "poly bag", "thank you card"]):
         file_type = "packaging"
-    elif any(token in combined for token in ["expense", "cost", "fee", "overhead"]):
+    elif any(token in combined for token in ["pick and pack", "3pl", "fulfilment", "fulfillment", "inbound receiving", "outbound"]):
+        file_type = "warehouse"
+    elif any(token in combined for token in ["warehouse", "storage fee", "storage cost"]):
+        file_type = "warehouse"
+    elif any(token in combined for token in ["buyer payment", "order income", "shopee commission", "lazada commission", "payout", "settlement", "withdrawal", "bank transfer"]):
+        file_type = "transactions"
+    elif any(token in combined for token in ["transaction", "refund", "commission"]) and platform != "unknown":
+        file_type = "transactions"
+    elif any(token in combined for token in ["roas", "cpc", "cpm", "ad spend", "impression", "shopee ads", "lazada ads", "sponsored"]):
+        file_type = "ads"
+    elif any(token in combined for token in ["ads", "advertising", "campaign", "click"]):
+        file_type = "ads"
+    elif any(token in combined for token in ["unit cost", "cost of goods", "cogs", "sku cost", "product cost", "purchase order"]):
+        file_type = "cogs"
+    elif any(token in combined for token in ["supplier", "invoice", "purchase"]):
+        file_type = "cogs"
+    elif any(token in combined for token in ["packaging", "carton", "mailer", "tape"]):
+        file_type = "packaging"
+    elif any(token in combined for token in ["overhead", "utilities", "subscription", "miscellaneous", "rental"]):
+        file_type = "expense"
+    elif any(token in combined for token in ["expense"]):
         file_type = "expense"
 
     if platform != "unknown" and file_type == "unknown":
         file_type = "transactions"
 
+    # Cost files are platform-agnostic — override any spurious platform match
+    _cost_types = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
+    if file_type in _cost_types:
+        platform = "generic"
+
     if platform != "unknown" and file_type != "unknown":
         confidence = 0.95
     elif platform != "unknown" or file_type != "unknown":
-        confidence = 0.8
+        confidence = 0.85
     else:
         confidence = 0.3
 
@@ -161,28 +179,32 @@ Classify this file and respond with ONLY valid JSON in this exact format:
   "notes": "brief explanation"
 }}
 
-Platform rules — check BOTH headers AND the actual cell values in sample rows:
-- "shopee": any of "Shopee Commission", "Buyer Payment", "shopee" in filename, Type column contains Shopee-specific values
-- "lazada": any of "Lazada", "LazWallet", "LazPay" anywhere in data
-- "amazon": any of "Amazon", "ASIN", "FBA" anywhere in data
-- "shopify": any of "Shopify", "Shop Pay" anywhere in data
-- "tiktok": any of "TikTok", "TikShop" anywhere in data
-- "generic": internal cost file with no platform branding (payroll, warehouse, supplier, etc.)
-- "unknown": truly cannot determine after reading both headers and values
+STEP 1 — Identify file_type first (most important):
+- "transactions" = platform finance export: orders, refunds, commissions, payouts, settlements, withdrawals
+- "cogs"         = supplier/product costs: columns like Supplier, Invoice No., SKU, Unit Cost, Quantity, Total Cost, Product Name, Purchase Order
+- "ads"          = advertising: columns like Campaign, Impressions, Clicks, Ad Spend, ROAS, CPC, CPM
+- "warehouse"    = fulfilment/storage: columns like 3PL, Pick and Pack, Storage, Inbound, Outbound, Fulfilment
+- "payroll"      = staff costs: columns like Employee, Salary, Basic Pay, EPF, SOCSO, Allowance, Headcount
+- "packaging"    = packing materials: columns like Poly Mailer, Bubble Wrap, Carton, Tape, Desiccant, Packing Material
+- "expense"      = other overhead: columns like Category, Description, Vendor, Subscription, Utilities, Rental, Miscellaneous
 
-IMPORTANT: "Buyer Payment" and "Shopee Commission" as values in a Type/Description column = shopee platform.
+STEP 2 — Identify platform (only matters for "transactions" files):
+- "shopee"  = "Shopee Commission", "Buyer Payment", "shopee" in filename or data
+- "lazada"  = "Lazada", "LazWallet", "LazPay" anywhere
+- "amazon"  = "Amazon", "ASIN", "FBA" anywhere
+- "shopify" = "Shopify", "Shop Pay" anywhere
+- "tiktok"  = "TikTok", "TikShop" anywhere
+- "generic" = internal cost file with no platform branding — USE THIS for cogs/payroll/warehouse/packaging/expense/ads files
+- "unknown" = truly cannot determine
 
-File type rules:
-- "transactions" = orders, refunds, platform fees, settlements, payouts — typical platform finance export
-- "cogs"         = supplier invoices, unit cost, purchase orders, cost of goods
-- "ads"          = ad spend, campaign, impressions, clicks, ROAS
-- "warehouse"    = storage fees, fulfilment, 3PL, pick and pack
-- "payroll"      = salary, staff, labour, employee, headcount
-- "packaging"    = packaging, poly mailer, box, bubble wrap
-- "expense"      = any other business cost
+CRITICAL RULES:
+- If file_type is cogs/payroll/warehouse/packaging/expense/ads → set platform to "generic", NOT "unknown"
+- "Supplier Name", "Invoice No.", "Unit Cost", "SKU", "Quantity" columns = cogs, confidence >= 0.92
+- "Employee", "Basic Pay", "EPF", "SOCSO" columns = payroll, confidence >= 0.95
+- "Poly Mailer", "Bubble Wrap", "Carton", "Desiccant" columns = packaging, confidence >= 0.95
+- "Pick and Pack", "3PL", "Storage", "Fulfilment" columns = warehouse, confidence >= 0.92
 
-Be decisive. If the signals strongly point to a category, use confidence >= 0.85.
-Only use "unknown" if you genuinely cannot tell after reading the data."""
+Be decisive. Strong column signals → confidence >= 0.88. Only use "unknown" if genuinely unreadable."""
 
     try:
         response = client.messages.create(

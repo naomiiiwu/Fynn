@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from agents.orchestrator import OrchestratorAgent
 from services.conversation import FILE_TYPE_LABELS, ConversationManager
-from services.csv_parser import parse_shopee_csv
+from services.csv_parser import parse_csv
 from services.database import load_all_csvs, load_latest_pnl_any, save_csv
 from services.file_classifier import classify_file
 from services.scheduler import create_scheduler, set_profile_store
@@ -58,7 +58,7 @@ async def lifespan(app: FastAPI):
             platform = row.get("platform", "shopee")
             file_type = row.get("file_type", "transactions")
             if file_type == "transactions":
-                txns = parse_shopee_csv(row["csv_data"].encode("utf-8"))
+                txns = parse_csv(row["csv_data"].encode("utf-8"), platform)
                 _platform_transactions[platform] = txns
                 print(f"  [Fynn] Restored {platform} transactions ({row.get('period')}, {len(txns)} rows)")
         except Exception as exc:
@@ -450,7 +450,7 @@ async def upload_classify(file: UploadFile = File(...)) -> JSONResponse:
     period = "unknown"
     if file_type == "transactions":
         try:
-            txns = parse_shopee_csv(content)
+            txns = parse_csv(content, platform)
             _platform_transactions[platform] = txns
             transaction_count = len(txns)
             if txns:
@@ -701,7 +701,7 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         transaction_count = None
 
         if file_type == "transactions":
-            txns = parse_shopee_csv(content)
+            txns = parse_csv(content, platform)
             _platform_transactions[platform] = txns
             transaction_count = len(txns)
             if txns:
@@ -723,7 +723,12 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         plabel = platform_labels.get(platform, platform.title())
         ticon  = type_icons.get(file_type, "❓")
 
-        truly_unknown = platform == "unknown" or file_type == "unknown" or classified.confidence < 0.6
+        # Cost files (cogs, payroll, etc.) are platform-agnostic — only file_type matters
+        _platform_agnostic = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
+        if file_type in _platform_agnostic:
+            truly_unknown = file_type == "unknown" or classified.confidence < 0.6
+        else:
+            truly_unknown = platform == "unknown" or file_type == "unknown" or classified.confidence < 0.6
         if truly_unknown:
             # Store raw bytes so we can re-process once user clarifies
             _pending_files[sender] = content
@@ -870,7 +875,7 @@ async def whatsapp_webhook(
             ticon = type_icons.get(file_type_key, "📄")
             if file_type_key == "transactions":
                 try:
-                    txns = parse_shopee_csv(raw)
+                    txns = parse_csv(raw, platform_key)
                     _platform_transactions[platform_key] = txns
                     save_csv(raw, "unknown", platform_key, file_type_key)
                     reply = f"{ticon} Got it — saved as *{label.title()}* transactions ({len(txns)} rows). Say *run my report* when ready. 🚀"

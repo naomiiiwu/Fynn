@@ -1,0 +1,12 @@
+Invoice Date,Supplier Name,Invoice No.,Product Name,SKU,Quantity,Unit Cost (MYR),Total Cost (MYR),Payment Status
+2026-03-01,Guangzhou Textile Co.,INV-2026-031,Women Crop Top - White S,SKU-001-WS,50,12.50,625.00,Paid
+2026-03-01,Guangzhou Textile Co.,INV-2026-031,Women Crop Top - White M,SKU-001-WM,80,12.50,1000.00,Paid
+2026-03-01,Guangzhou Textile Co.,INV-2026-031,Women Crop Top - White L,SKU-001-WL,40,12.50,500.00,Paid
+2026-03-01,Guangzhou Textile Co.,INV-2026-031,Women Crop Top - Black S,SKU-002-BS,50,12.50,625.00,Paid
+2026-03-01,Guangzhou Textile Co.,INV-2026-031,Women Crop Top - Black M,SKU-002-BM,80,12.50,1000.00,Paid
+2026-03-05,Shenzhen Electronics Ltd.,INV-2026-032,USB-C Cable 1m,SKU-010-UC1,200,3.80,760.00,Paid
+2026-03-05,Shenzhen Electronics Ltd.,INV-2026-032,USB-C Cable 2m,SKU-010-UC2,100,5.20,520.00,Paid
+2026-03-10,Local Supplier MY,INV-2026-033,Wireless Earbuds Model A,SKU-020-WEA,30,45.00,1350.00,Paid
+2026-03-15,Guangzhou Textile Co.,INV-2026-034,Men Polo Shirt - Navy M,SKU-030-PNM,60,18.00,1080.00,Pending
+2026-03-15,Guangzhou Textile Co.,INV-2026-034,Men Polo Shirt - Navy L,SKU-030-PNL,40,18.00,720.00,Pending
+2026-03-20,Shenzhen Electronics Ltd.,INV-2026-035,Power Bank 10000mAh,SKU-040-PB1,25,28.00,700.00,Paid

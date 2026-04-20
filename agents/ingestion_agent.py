@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from models.transaction import Transaction
-from services.csv_parser import parse_shopee_csv
+from services.csv_parser import parse_csv
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
