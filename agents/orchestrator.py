@@ -80,15 +80,18 @@ class OrchestratorAgent:
         sensitivity = getattr(profile, "anomaly_sensitivity", "normal")
         currency    = getattr(profile, "currency", "SGD")
 
-        # Load cost totals for this specific period from in-memory store
+        # Load business cost totals — specific period first, fall back to 'unknown'
         import main as _main
         all_cost_totals: dict[str, dict[str, float]] = getattr(_main, "_cost_totals", {})
-        cost_totals_myr: dict[str, float] = all_cost_totals.get(period, {})
+        cost_totals_myr: dict[str, float] = all_cost_totals.get(period) or all_cost_totals.get("unknown", {})
         if cost_totals_myr:
-            print(f"  [Orchestrator] Cost totals for {period} (MYR): { {k: f'{v:,.2f}' for k, v in cost_totals_myr.items()} }")
+            print(f"  [Orchestrator] Business costs for {period} (MYR): { {k: f'{v:,.2f}' for k, v in cost_totals_myr.items()} }")
         else:
-            print(f"  [Orchestrator] No cost files uploaded for {period} — P&L will show platform costs only.")
+            print(f"  [Orchestrator] No cost files for {period} — P&L will show platform costs only.")
 
+        # Business costs (COGS, payroll, ads, etc.) are company-level, not per-platform.
+        # Individual platform P&Ls show only their own platform fees/shipping/vouchers.
+        # Business costs are applied once to the combined P&L at the end.
         for ingest in ingestion_results:
             platform = ingest.platform
             print(f"\n  [Orchestrator] Processing {platform}...")
@@ -110,6 +113,7 @@ class OrchestratorAgent:
                 status[f"anomalies_{platform}"] = f"error: {exc}"
 
             try:
+                # No business costs here — applied to combined P&L only
                 pnl = PnLAgent().run(
                     platform=platform,
                     period=period,
@@ -117,7 +121,7 @@ class OrchestratorAgent:
                     anomalies=anomalies,
                     transactions=ingest.transactions,
                     currency=currency,
-                    cost_totals_myr=cost_totals_myr,
+                    cost_totals_myr={},
                 )
                 pnl_reports.append(pnl)
                 status[f"pnl_{platform}"] = "ok"
@@ -129,9 +133,29 @@ class OrchestratorAgent:
             print("  [Orchestrator] No P&L reports generated — aborting.")
             return OrchestratorResult(pipeline_status=status)
 
+        # ── Build combined P&L (with business costs applied once) ─────────────
+        from agents.sheets_agent import _build_combined_pnl
+        from services.currency import CurrencyConverter
+
+        if len(pnl_reports) > 1:
+            combined = _build_combined_pnl(pnl_reports, cost_totals_myr, currency)
+        else:
+            # Single platform — re-run PnL with business costs included
+            combined = PnLAgent().run(
+                platform=pnl_reports[0]["platform"],
+                period=period,
+                reconciliation=ReconciliationAgent().run(
+                    ingestion_results[0].transactions, pnl_reports[0]["platform"], period
+                ),
+                anomalies=[a for p in pnl_reports for a in p.get("anomalies", [])],
+                transactions=ingestion_results[0].transactions,
+                currency=currency,
+                cost_totals_myr=cost_totals_myr,
+            )
+
         # ── Step 3: Google Sheets ──────────────────────────────────────────────
         try:
-            sheets_result = SheetsAgent().run(pnl_reports)
+            sheets_result = SheetsAgent().run(pnl_reports, combined)
             status["sheets"] = "ok" if sheets_result["success"] else "fallback_json"
         except Exception as exc:
             print(f"  [Orchestrator] Sheets failed: {exc}")
@@ -139,7 +163,7 @@ class OrchestratorAgent:
 
         # ── Step 4: WhatsApp ───────────────────────────────────────────────────
         try:
-            ok = WhatsAppAgent().run(pnl_reports, profile, to=sender)
+            ok = WhatsAppAgent().run(pnl_reports, profile, to=sender, combined=combined)
             status["whatsapp"] = "ok" if ok else "failed"
         except Exception as exc:
             print(f"  [Orchestrator] WhatsApp failed: {exc}")
@@ -147,15 +171,12 @@ class OrchestratorAgent:
 
         print(f"\n[Orchestrator] Pipeline complete. Status: {status}")
 
-        # Build combined P&L for storage
-        from agents.sheets_agent import _build_combined_pnl
-        combined = _build_combined_pnl(pnl_reports) if len(pnl_reports) > 1 else pnl_reports[0]
-
         return OrchestratorResult(
             pnl_reports=pnl_reports,
             pipeline_status=status,
             combined_pnl=combined,
         )
+
 
     def run_sync(
         self,

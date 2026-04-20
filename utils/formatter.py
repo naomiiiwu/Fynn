@@ -129,7 +129,7 @@ def generate_pnl(
     return pnl
 
 
-def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
+def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports: list = None) -> str:
     """
     Format the P&L data into a WhatsApp-ready summary message.
 
@@ -159,13 +159,30 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
         if spreadsheet_id else "📄 Full P&L saved to Google Sheets"
     )
 
-    if anomalies:
-        anomaly_lines = "\n".join(f"⚠️ {a['description']}" for a in anomalies)
+    # Anomalies — cap at 2 to stay under 1600 chars; full list is in Sheets
+    all_anomalies = anomalies
+    if pnl_reports:
+        all_anomalies = [a for p in pnl_reports for a in p.get("anomalies", [])]
+    if all_anomalies:
+        shown = all_anomalies[:2]
+        extra = len(all_anomalies) - len(shown)
+        anomaly_lines = "\n".join(f"⚠️ {a['description'][:80]}" for a in shown)
         anomaly_block = f"*Heads up:*\n{anomaly_lines}"
+        if extra:
+            anomaly_block += f"\n_...and {extra} more — see full report in Sheets_"
     else:
         anomaly_block = "✅ All clear — no anomalies detected."
 
     platform_label = pnl.get("platform", "Platform")
+    # For multi-platform, add a compact per-platform revenue line
+    platform_lines = ""
+    if pnl_reports and len(pnl_reports) > 1:
+        lines = []
+        for p in pnl_reports:
+            label = p.get("platform", "?")
+            rev   = p["revenue"]["net_revenue"]
+            lines.append(f"   {label}: {currency} {rev:,.2f}")
+        platform_lines = "\n".join(lines) + "\n"
 
     # Build cost breakdown — only show lines that have a non-zero value
     def cost_line(label: str, key: str) -> str:
@@ -195,20 +212,19 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller") -> str:
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *{platform_label} — {period}*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Gross Sales:    {currency} {gross_sales:>8,.2f}\n"
-        f"↩️  Refunds:        {refund_count} order{'s' if refund_count != 1 else ''}\n"
-        f"💵 Net Revenue:    {currency} {net_revenue:>8,.2f}\n"
+        f"💰 Gross Sales:   {currency} {gross_sales:,.2f}\n"
+        f"↩️  Refunds:       {refund_count} order{'s' if refund_count != 1 else ''}\n"
+        f"💵 Net Revenue:   {currency} {net_revenue:,.2f}\n"
+        f"{platform_lines}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{cost_block}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 Net Profit:     {currency} {net_profit:>8,.2f}\n"
-        f"📉 Profit Margin:  {profit_margin}%\n"
-        f"📦 Orders:         {order_count}\n"
+        f"📈 Net Profit:    {currency} {net_profit:,.2f}\n"
+        f"📉 Margin:        {profit_margin}%\n"
+        f"📦 Orders:        {order_count}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"\n"
-        f"{anomaly_block}\n"
-        f"\n"
-        f"{sheets_line}\n"
+        f"\n{anomaly_block}\n"
+        f"\n{sheets_line}\n"
         f"— Fynn 🤖"
     )
     return message
