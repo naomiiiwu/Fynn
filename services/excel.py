@@ -37,8 +37,9 @@ def _write_sheet(
     profit    = pnl["profit"]
     ex        = pnl.get("exchange_rate_used", {})
     anomalies = pnl.get("anomalies", [])
-    myr_ref   = pnl.get("myr_reference", {})
+    local_ref = pnl.get("local_reference", pnl.get("myr_reference", {}))  # backward compat
     cur       = pnl.get("currency", "SGD")
+    src_cur   = local_ref.get("currency") or ex.get("from", "MYR")
     rate      = ex.get("rate", "N/A")
     period    = pnl.get("period", "")
 
@@ -92,7 +93,7 @@ def _write_sheet(
     data_row("Period", period, number=False)
     data_row("Platform", pnl.get("platform", ""), number=False)
     data_row("Currency", cur, number=False)
-    data_row(f"MYR → {cur} Rate", rate, number=False)
+    data_row(f"{src_cur} → {cur} Rate", rate, number=False)
     generated = pnl.get("generated_at", "")
     data_row("Generated", generated[:10] if generated else "", number=False)
     blank()
@@ -146,15 +147,15 @@ def _write_sheet(
     data_row("Profit Margin", f"{profit['profit_margin_pct']}%", number=False)
     blank()
 
-    # ── MYR Reference ──────────────────────────────────────────────────────────
-    section_row("MYR Reference (pre-conversion)")
+    # ── Local Reference ────────────────────────────────────────────────────────
+    section_row(f"{src_cur} Reference (pre-conversion)")
     r = ws.max_row + 1
-    ws.cell(r, 2, "Amount (MYR)").font = Font(bold=True, italic=True)
-    data_row("Gross Sales",     myr_ref.get("gross_sales", 0))
-    data_row("Net Revenue",     myr_ref.get("net_revenue", 0))
-    data_row("Expected Payout", myr_ref.get("expected_payout", 0))
-    data_row("Actual Payout",   myr_ref.get("actual_payout", 0))
-    data_row("Discrepancy",     myr_ref.get("discrepancy", 0))
+    ws.cell(r, 2, f"Amount ({src_cur})").font = Font(bold=True, italic=True)
+    data_row("Gross Sales",     local_ref.get("gross_sales", 0))
+    data_row("Net Revenue",     local_ref.get("net_revenue", 0))
+    data_row("Expected Payout", local_ref.get("expected_payout", 0))
+    data_row("Actual Payout",   local_ref.get("actual_payout", 0))
+    data_row("Discrepancy",     local_ref.get("discrepancy", 0))
     blank()
 
     # ── Anomalies ──────────────────────────────────────────────────────────────

@@ -20,11 +20,11 @@ class PnLAgent(BaseAgent):
         currency: str = "SGD",
         cost_totals_myr: dict[str, float] | None = None,
     ) -> dict:
-        # Currency conversion
+        # Currency conversion — from the platform's source currency to the user's target currency
         converter = CurrencyConverter()
         conversion = converter.convert(
             reconciliation.actual_payout_myr,
-            from_currency="MYR",
+            from_currency=reconciliation.source_currency,
             to_currency=currency,
         )
 
@@ -37,6 +37,7 @@ class PnLAgent(BaseAgent):
             period=period,
             platform=platform,
             additional_costs_myr=cost_totals_myr or {},
+            source_currency=reconciliation.source_currency,
         )
         pnl["currency"] = currency
 

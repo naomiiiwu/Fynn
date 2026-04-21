@@ -47,9 +47,9 @@ class AnomalyAgent:
                         anomalies.append(Anomaly(
                             type="LARGE_REFUND",
                             description=(
-                                f"Refund {t.transaction_id} is MYR {abs(t.amount_myr):.2f} "
+                                f"Refund {t.transaction_id} is {reconciliation.source_currency} {abs(t.amount_myr):.2f} "
                                 f"({refund_pct:.1f}% of order {t.order_id} value "
-                                f"MYR {order_amount:.2f}). "
+                                f"{reconciliation.source_currency} {order_amount:.2f}). "
                                 f"This is above the {large_refund_threshold:.0f}% threshold "
                                 f"— worth reviewing with the buyer."
                             ),
@@ -65,7 +65,7 @@ class AnomalyAgent:
                     type="HIGH_PLATFORM_FEE",
                     description=(
                         f"Platform fees are {fee_pct:.1f}% of gross sales "
-                        f"(MYR {reconciliation.total_platform_fees_myr:,.2f}). "
+                        f"({reconciliation.source_currency} {reconciliation.total_platform_fees_myr:,.2f}). "
                         f"Normal range is below {high_fee_threshold:.0f}%."
                     ),
                     severity="MEDIUM",
@@ -76,8 +76,8 @@ class AnomalyAgent:
             anomalies.append(Anomaly(
                 type="PAYOUT_DISCREPANCY",
                 description=(
-                    f"Actual payout MYR {reconciliation.actual_payout_myr:,.2f} is "
-                    f"MYR {abs(reconciliation.discrepancy_myr):,.2f} "
+                    f"Actual payout {reconciliation.source_currency} {reconciliation.actual_payout_myr:,.2f} is "
+                    f"{reconciliation.source_currency} {abs(reconciliation.discrepancy_myr):,.2f} "
                     f"({reconciliation.discrepancy_pct:.1f}%) away from expected. "
                     f"Contact Shopee support if this persists."
                 ),

@@ -12,6 +12,13 @@ from models.transaction import ReconciliationResult, Transaction, TransactionTyp
 DISCREPANCY_THRESHOLD_PCT = 2.0  # flag if discrepancy exceeds this %
 
 
+def _detect_source_currency(transactions: List[Transaction]) -> str:
+    """Return the most common currency across the transaction list."""
+    from collections import Counter
+    counts = Counter(t.currency for t in transactions if t.currency)
+    return counts.most_common(1)[0][0] if counts else "MYR"
+
+
 def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
     """
     Reconcile a list of Shopee transactions and verify the settlement payout.
@@ -25,7 +32,8 @@ def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
     Returns:
         ReconciliationResult with computed totals and discrepancy flags.
     """
-    print("\n[Reconciliation] Starting payout reconciliation...")
+    src = _detect_source_currency(transactions)
+    print(f"\n[Reconciliation] Starting payout reconciliation (source currency: {src})...")
 
     gross_sales: float = 0.0
     total_refunds: float = 0.0
@@ -53,14 +61,14 @@ def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
     discrepancy_pct = (abs(discrepancy) / expected_payout * 100) if expected_payout != 0 else 0.0
     is_flagged = discrepancy_pct > DISCREPANCY_THRESHOLD_PCT
 
-    print(f"  Gross Sales:       MYR {gross_sales:>10,.2f}")
-    print(f"  Refunds:         - MYR {total_refunds:>10,.2f}")
-    print(f"  Platform Fees:   - MYR {total_platform_fees:>10,.2f}")
-    print(f"  Shipping:        - MYR {total_shipping:>10,.2f}")
-    print(f"  Vouchers:        - MYR {total_vouchers:>10,.2f}")
-    print(f"  Expected Payout:   MYR {expected_payout:>10,.2f}")
-    print(f"  Actual Payout:     MYR {actual_payout:>10,.2f}")
-    print(f"  Discrepancy:       MYR {discrepancy:>10,.2f} ({discrepancy_pct:.2f}%)")
+    print(f"  Gross Sales:       {src} {gross_sales:>10,.2f}")
+    print(f"  Refunds:         - {src} {total_refunds:>10,.2f}")
+    print(f"  Platform Fees:   - {src} {total_platform_fees:>10,.2f}")
+    print(f"  Shipping:        - {src} {total_shipping:>10,.2f}")
+    print(f"  Vouchers:        - {src} {total_vouchers:>10,.2f}")
+    print(f"  Expected Payout:   {src} {expected_payout:>10,.2f}")
+    print(f"  Actual Payout:     {src} {actual_payout:>10,.2f}")
+    print(f"  Discrepancy:       {src} {discrepancy:>10,.2f} ({discrepancy_pct:.2f}%)")
 
     if is_flagged:
         print(f"  ⚠️  DISCREPANCY FLAGGED — {discrepancy_pct:.2f}% exceeds {DISCREPANCY_THRESHOLD_PCT}% threshold!")
@@ -68,6 +76,7 @@ def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
         print(f"  ✅ Payout reconciled within acceptable range ({discrepancy_pct:.2f}% discrepancy).")
 
     return ReconciliationResult(
+        source_currency=src,
         gross_sales_myr=round(gross_sales, 2),
         total_refunds_myr=round(total_refunds, 2),
         total_platform_fees_myr=round(total_platform_fees, 2),

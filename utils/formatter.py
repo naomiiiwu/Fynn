@@ -19,6 +19,7 @@ def generate_pnl(
     period: str = "March 2026",
     platform: str = "Shopee MY",
     additional_costs_myr: dict = None,
+    source_currency: str | None = None,
 ) -> dict:
     """
     Build the canonical P&L report dictionary in SGD.
@@ -36,6 +37,7 @@ def generate_pnl(
     """
     print("\n[Formatter] Generating P&L report...")
 
+    src = source_currency or getattr(reconciliation, "source_currency", "MYR")
     rate = sgd_conversion["exchange_rate"]
 
     def to_sgd(myr_amount: float) -> float:
@@ -77,7 +79,7 @@ def generate_pnl(
         "period":   period,
         "platform": platform,
         "currency": "SGD",
-        "exchange_rate_used": {"from": "MYR", "to": "SGD", "rate": rate, "source": sgd_conversion["source"]},
+        "exchange_rate_used": {"from": src, "to": sgd_conversion.get("to_currency", "SGD"), "rate": rate, "source": sgd_conversion["source"]},
         "revenue": {
             "gross_sales": gross_sales_sgd,
             "refunds":     refunds_sgd,
@@ -108,7 +110,8 @@ def generate_pnl(
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "order_count":  order_count,
         "refund_count": refund_count,
-        "myr_reference": {
+        "local_reference": {
+            "currency":         src,
             "gross_sales":      reconciliation.gross_sales_myr,
             "net_revenue":      round(reconciliation.gross_sales_myr - reconciliation.total_refunds_myr, 2),
             "expected_payout":  reconciliation.expected_payout_myr,

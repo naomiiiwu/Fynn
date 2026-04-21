@@ -49,7 +49,8 @@ class Transaction(BaseModel):
 class ReconciliationResult(BaseModel):
     """Result of the payout reconciliation process."""
 
-    gross_sales_myr: float
+    source_currency: str = "MYR"    # native currency of the platform CSV (e.g. MYR, SGD, USD)
+    gross_sales_myr: float          # amounts are in source_currency despite the _myr suffix
     total_refunds_myr: float
     total_platform_fees_myr: float
     total_shipping_myr: float

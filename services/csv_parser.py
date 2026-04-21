@@ -442,17 +442,39 @@ def parse_cost_total(content: bytes | str, file_type: str) -> float:
 
 # ── Dispatch ────────────────────────────────────────────────────────────────────
 
-def parse_csv(content: bytes | str, platform: str) -> List[Transaction]:
+# Default source currency per platform (MY market).
+# Override by passing currency= explicitly if the platform operates in a different market.
+PLATFORM_CURRENCIES: dict[str, str] = {
+    "shopee":  "MYR",
+    "lazada":  "MYR",
+    "amazon":  "USD",
+    "shopify": "USD",
+    "tiktok":  "USD",
+}
+
+
+def parse_csv(content: bytes | str, platform: str, currency: str | None = None) -> List[Transaction]:
     """
-    Route to the correct platform parser.
+    Route to the correct platform parser and stamp each transaction with the source currency.
 
     Args:
         content:  Raw CSV bytes or string.
-        platform: One of "shopee", "lazada", or anything else (falls back to Shopee parser).
+        platform: One of "shopee", "lazada", etc.
+        currency: Override source currency (e.g. "SGD" for Shopee SG). Defaults to
+                  PLATFORM_CURRENCIES[platform] or "MYR" if unknown.
 
     Returns:
-        List of Transaction objects.
+        List of Transaction objects with currency set.
     """
+    src_currency = currency or PLATFORM_CURRENCIES.get(platform.lower(), "MYR")
+
     if platform.lower() == "lazada":
-        return parse_lazada_csv(content)
-    return parse_shopee_csv(content)
+        txns = parse_lazada_csv(content)
+    else:
+        txns = parse_shopee_csv(content)
+
+    # Stamp each transaction with the resolved source currency
+    for t in txns:
+        t.currency = src_currency
+
+    return txns

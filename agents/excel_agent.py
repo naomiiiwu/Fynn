@@ -111,12 +111,13 @@ def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = 
             "refunds":     sum(p["revenue"]["refunds"]       for p in pnl_reports),
             "net_revenue": sum(p["revenue"]["net_revenue"]   for p in pnl_reports),
         },
-        "myr_reference": {
-            "gross_sales":     sum(p.get("myr_reference", {}).get("gross_sales", 0)     for p in pnl_reports),
-            "net_revenue":     sum(p.get("myr_reference", {}).get("net_revenue", 0)     for p in pnl_reports),
-            "expected_payout": sum(p.get("myr_reference", {}).get("expected_payout", 0) for p in pnl_reports),
-            "actual_payout":   sum(p.get("myr_reference", {}).get("actual_payout", 0)   for p in pnl_reports),
-            "discrepancy":     sum(p.get("myr_reference", {}).get("discrepancy", 0)     for p in pnl_reports),
+        "local_reference": {
+            "currency":        base.get("local_reference", {}).get("currency") or base.get("exchange_rate_used", {}).get("from", "MYR"),
+            "gross_sales":     sum(p.get("local_reference", p.get("myr_reference", {})).get("gross_sales", 0)     for p in pnl_reports),
+            "net_revenue":     sum(p.get("local_reference", p.get("myr_reference", {})).get("net_revenue", 0)     for p in pnl_reports),
+            "expected_payout": sum(p.get("local_reference", p.get("myr_reference", {})).get("expected_payout", 0) for p in pnl_reports),
+            "actual_payout":   sum(p.get("local_reference", p.get("myr_reference", {})).get("actual_payout", 0)   for p in pnl_reports),
+            "discrepancy":     sum(p.get("local_reference", p.get("myr_reference", {})).get("discrepancy", 0)     for p in pnl_reports),
         },
     }
 
