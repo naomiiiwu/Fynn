@@ -4,22 +4,23 @@ Fynn scheduled job service.
 Runs the bookkeeping pipeline automatically on three cadences:
   - Daily   : quick WhatsApp ping with today's order count (if any)
   - Weekly  : sends a 7-day rolling summary via WhatsApp
-  - Monthly : full P&L report — reconcile, Sheets, WhatsApp summary
+  - Monthly : full P&L report — reconcile, Excel export, WhatsApp summary
 
-All schedules are configurable via .env so you can adjust timing
-without touching code.
+All times are in the seller's timezone (default: Asia/Kuala_Lumpur).
+The daily job runs every hour and filters users whose report_time_hour
+matches the current local hour — so per-user time settings are respected.
 
-Schedule env vars (24h format, server local time):
-  SCHEDULE_DAILY_HOUR      default: 8   (8:00 AM every day)
+Schedule env vars:
+  SELLER_TIMEZONE          default: Asia/Kuala_Lumpur
   SCHEDULE_WEEKLY_DAY      default: mon (every Monday)
-  SCHEDULE_WEEKLY_HOUR     default: 8   (8:00 AM)
+  SCHEDULE_WEEKLY_HOUR     default: 8   (8:00 AM seller time)
   SCHEDULE_MONTHLY_DAY     default: 1   (1st of each month)
-  SCHEDULE_MONTHLY_HOUR    default: 8   (8:00 AM)
+  SCHEDULE_MONTHLY_HOUR    default: 8   (8:00 AM seller time)
 """
 
 import os
 from datetime import datetime
-from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -79,25 +80,42 @@ def _get_profiles_for_job(job_type: str) -> list[UserProfile]:
     ]
 
 
+def _seller_tz() -> ZoneInfo:
+    return ZoneInfo(os.getenv("SELLER_TIMEZONE", "Asia/Kuala_Lumpur"))
+
+
+def _now_local() -> datetime:
+    return datetime.now(_seller_tz())
+
+
 async def run_daily_ping() -> None:
     """
-    Daily job: send a short WhatsApp ping to each seller who enabled daily reports.
-
-    Loads today's transactions and sends a brief update per seller.
-    Falls back to global .env config if no profiles exist yet.
+    Hourly job: send the daily ping to sellers whose report_time_hour matches
+    the current local hour. This lets each user set their own preferred time.
     """
-    print(f"\n[Scheduler] ⏰ Daily ping — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    now_local = _now_local()
+    current_hour = now_local.hour
+    print(f"\n[Scheduler] ⏰ Daily ping check — {now_local.strftime('%Y-%m-%d %H:%M %Z')}")
 
-    profiles = _get_profiles_for_job("daily")
+    all_daily_profiles = _get_profiles_for_job("daily")
+
+    # Only ping users whose configured hour matches right now (seller local time)
+    profiles = [p for p in all_daily_profiles if getattr(p, "report_time_hour", 8) == current_hour]
 
     # Fallback to env config if no profiles yet
-    if not profiles:
+    if not all_daily_profiles:
+        fallback_hour = _env_int("SCHEDULE_DAILY_HOUR", 8)
+        if current_hour != fallback_hour:
+            return  # not the right hour for the fallback
         profiles = [UserProfile(
             phone=os.getenv("TWILIO_WHATSAPP_TO", "").strip(),
             name=_env_str("SELLER_NAME", "Seller"),
             daily_enabled=True,
             onboarding_step=None,
         )]
+
+    if not profiles:
+        return  # no one to ping at this hour
 
     try:
         from data.mock_shopee_data import get_mock_transactions
@@ -216,49 +234,44 @@ async def run_monthly_report() -> None:
 
 def create_scheduler() -> AsyncIOScheduler:
     """
-    Create and configure the APScheduler instance with all three jobs.
-
-    Schedule is read from environment variables so it can be tuned
-    without code changes. Call scheduler.start() to activate.
-
-    Returns:
-        Configured AsyncIOScheduler (not yet started).
+    Create and configure the APScheduler instance.
+    All times are in SELLER_TIMEZONE (default: Asia/Kuala_Lumpur).
     """
-    scheduler = AsyncIOScheduler()
+    tz = _seller_tz()
+    scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Daily ping
-    daily_hour = _env_int("SCHEDULE_DAILY_HOUR", 8)
+    # Daily ping — runs every hour; the job itself filters by each user's report_time_hour
     scheduler.add_job(
         run_daily_ping,
-        trigger=CronTrigger(hour=daily_hour, minute=0),
+        trigger=CronTrigger(minute=0, timezone=tz),
         id="daily_ping",
         name="Daily order ping",
         replace_existing=True,
     )
-    print(f"  [Scheduler] Daily ping scheduled at {daily_hour:02d}:00 every day.")
+    print(f"  [Scheduler] Daily ping: checks every hour ({tz}) and sends at each user's configured time.")
 
     # Weekly summary
-    weekly_day = _env_str("SCHEDULE_WEEKLY_DAY", "mon")
+    weekly_day  = _env_str("SCHEDULE_WEEKLY_DAY", "mon")
     weekly_hour = _env_int("SCHEDULE_WEEKLY_HOUR", 8)
     scheduler.add_job(
         run_weekly_summary,
-        trigger=CronTrigger(day_of_week=weekly_day, hour=weekly_hour, minute=0),
+        trigger=CronTrigger(day_of_week=weekly_day, hour=weekly_hour, minute=0, timezone=tz),
         id="weekly_summary",
         name="Weekly P&L summary",
         replace_existing=True,
     )
-    print(f"  [Scheduler] Weekly summary scheduled at {weekly_hour:02d}:00 every {weekly_day.capitalize()}.")
+    print(f"  [Scheduler] Weekly summary: {weekly_hour:02d}:00 {tz} every {weekly_day.capitalize()}.")
 
     # Monthly full report
-    monthly_day = _env_int("SCHEDULE_MONTHLY_DAY", 1)
+    monthly_day  = _env_int("SCHEDULE_MONTHLY_DAY", 1)
     monthly_hour = _env_int("SCHEDULE_MONTHLY_HOUR", 8)
     scheduler.add_job(
         run_monthly_report,
-        trigger=CronTrigger(day=monthly_day, hour=monthly_hour, minute=0),
+        trigger=CronTrigger(day=monthly_day, hour=monthly_hour, minute=0, timezone=tz),
         id="monthly_report",
         name="Full monthly P&L report",
         replace_existing=True,
     )
-    print(f"  [Scheduler] Monthly report scheduled at {monthly_hour:02d}:00 on day {monthly_day} of each month.")
+    print(f"  [Scheduler] Monthly report: {monthly_hour:02d}:00 {tz} on day {monthly_day} of each month.")
 
     return scheduler
