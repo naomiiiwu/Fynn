@@ -100,6 +100,8 @@ _last_report_period: str = ""
 _pending_files: dict[str, dict] = {}
 # Holds reconciliation requests waiting for the user's "proceed anyway" confirmation
 _pending_reconciliations: dict[str, dict] = {}
+# Debounces auto-refresh when WhatsApp delivers several files close together
+_refresh_timers: dict[str, object] = {}
 _conversation = ConversationManager()
 
 STRICT_CONFIDENCE_THRESHOLD = 0.90
@@ -573,7 +575,7 @@ async def settings_save(
     guide = GUIDE_ZH if language == "zh" else GUIDE_EN
     _twiml_send(phone, guide)
     if _has_uploaded_transactions():
-        background_tasks.add_task(_auto_refresh_report, phone)
+        background_tasks.add_task(_schedule_auto_refresh, phone)
 
     return HTMLResponse(_settings_html(phone, profile, saved=True))
 
@@ -846,7 +848,7 @@ async def upload_classify(
 
     auto_refresh = bool(phone and file_type != "unknown")
     if auto_refresh:
-        background_tasks.add_task(_auto_refresh_report, _canonical_whatsapp_phone(phone))
+        background_tasks.add_task(_schedule_auto_refresh, _canonical_whatsapp_phone(phone))
 
     # Badge colors and icons for the UI
     platform_colors = {
@@ -1127,6 +1129,24 @@ def _auto_refresh_report(sender: str, force: bool = False) -> None:
     _run_report_background(sender, allow_mock=False)
 
 
+def _schedule_auto_refresh(sender: str, delay_seconds: float = 8.0) -> None:
+    """Debounce report refreshes so batches of WhatsApp files settle first."""
+    import threading
+
+    existing = _refresh_timers.get(sender)
+    if existing:
+        existing.cancel()
+
+    def _run() -> None:
+        _refresh_timers.pop(sender, None)
+        _auto_refresh_report(sender)
+
+    timer = threading.Timer(delay_seconds, _run)
+    timer.daemon = True
+    _refresh_timers[sender] = timer
+    timer.start()
+
+
 def _run_report_background(sender: str, allow_mock: bool = True) -> None:
     """Run the full multi-agent pipeline and send results via Twilio when done."""
     global _last_pnl, _last_report_period
@@ -1252,26 +1272,20 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
             return
 
         if file_type == "transactions" and transaction_count:
-            stale = (_last_report_period and _last_report_period == period)
             reply = (
                 f"{ticon} Got it! *{plabel}* finance file received.\n"
                 f"📅 Period: {period}\n"
                 f"📊 {transaction_count} transactions loaded\n\n"
-                + (f"Refreshing your report for *{period}* now. 🔄"
-                   if stale else
-                   f"I’ll reconcile it and refresh your P&L now. 🚀")
+                "Saved. I’ll check your required files shortly and refresh when ready."
             )
         else:
-            stale = (_last_report_period and _last_report_period == period and period != "unknown")
             reply = (
                 f"{ticon} Got it! *{file_type.title()}* costs for *{period}* saved.\n"
-                + (f"Refreshing your *{period}* report now. 🔄"
-                   if stale else
-                   f"I’ll factor this into your refreshed report. 📋")
-        )
+                "Saved. I’ll check your required files shortly and refresh when ready."
+            )
 
         _twiml_send(sender, reply)
-        _auto_refresh_report(sender)
+        _schedule_auto_refresh(sender)
 
     except Exception as exc:
         print(f"  [Webhook] File handling failed: {exc}")
@@ -1426,10 +1440,10 @@ async def whatsapp_webhook(
 
             _save_inspected_upload(pending["content"], pending["inspected"])
             _pending_files.pop(sender)
-            background_tasks.add_task(_auto_refresh_report, sender)
+            background_tasks.add_task(_schedule_auto_refresh, sender)
             return _twiml_response(
                 _classification_preview(pending["classified"], pending["inspected"])
-                + "\n\nConfirmed and saved. I’ll refresh your P&L now."
+                + "\n\nConfirmed and saved. I’ll check your required files shortly and refresh when ready."
             )
 
         if label in FILE_TYPE_LABELS:
@@ -1461,17 +1475,17 @@ async def whatsapp_webhook(
             if file_type_key == "transactions":
                 reply = (
                     f"{ticon} Got it — saved as *{label.title()}* transactions "
-                    f"({inspected['transaction_count']} rows). I’ll refresh your P&L now. 🚀"
+                    f"({inspected['transaction_count']} rows). I’ll check your required files shortly."
                 )
             else:
                 reply = (
                     f"{ticon} Got it — saved as *{file_type_key}* "
-                    f"for *{inspected['period']}*. I’ll include it in your refreshed report. 📋"
+                    f"for *{inspected['period']}*. I’ll check your required files shortly."
                 )
 
             _save_inspected_upload(raw, inspected)
             _pending_files.pop(sender)
-            background_tasks.add_task(_auto_refresh_report, sender)
+            background_tasks.add_task(_schedule_auto_refresh, sender)
             return _twiml_response(reply)
 
         # Unrecognised label — remind user of valid options rather than silently falling through

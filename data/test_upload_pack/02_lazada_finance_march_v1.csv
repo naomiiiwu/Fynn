@@ -1,0 +1,9 @@
+Created At,Transaction Type,Order No.,Credit (MYR),Debit (MYR),Status,Remarks
+2026-03-01 12:10:00,Payment,LAZ-2001,150.00,,Completed,Order payment received
+2026-03-01 12:10:00,Lazada Commission,LAZ-2001,,12.00,Completed,Commission
+2026-03-01 12:10:00,Shipping Fee,LAZ-2001,,7.00,Completed,Shipping charge
+2026-03-02 14:45:00,Payment,LAZ-2002,95.00,,Completed,Order payment received
+2026-03-02 14:45:00,Payment Fee,LAZ-2002,,2.85,Completed,Payment processing fee
+2026-03-06 09:30:00,Payment,LAZ-2003,180.00,,Completed,Order payment received
+2026-03-06 09:30:00,Refund,LAZ-2003,,30.00,Completed,Customer refund
+2026-03-31 20:00:00,Transfer,,372.15,,Completed,LazWallet bank transfer
