@@ -21,7 +21,7 @@ load_dotenv()
 
 import anthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import BackgroundTasks, FastAPI, File, Form, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.routing import APIRouter
 from contextlib import asynccontextmanager
@@ -1280,12 +1280,8 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(
+    request: Request,
     background_tasks: BackgroundTasks,
-    From: str = Form(...),
-    Body: str = Form(""),
-    NumMedia: str = Form("0"),
-    MediaUrl0: str = Form(None),
-    MediaContentType0: str = Form(None),
 ) -> Response:
     """
     Twilio webhook — receives incoming WhatsApp messages and replies as Fynn.
@@ -1305,27 +1301,50 @@ async def whatsapp_webhook(
     Returns:
         TwiML XML response that Twilio uses to send the reply.
     """
+    form = await request.form()
+    From = str(form.get("From", "")).strip()
+    Body = str(form.get("Body", "")).strip()
+    NumMedia = str(form.get("NumMedia", "0"))
+
     print(f"\n[Webhook] Incoming from {From}: {Body or '[file]'}")
 
-    sender = From.strip()
-    message = Body.strip()
+    sender = From
+    message = Body
 
     # ── Incoming file ──────────────────────────────────────────────────────────
-    if int(NumMedia or 0) > 0 and MediaUrl0:
-        content_type = MediaContentType0 or ""
-        # Only handle CSV / spreadsheet files
-        if "csv" in content_type or "spreadsheet" in content_type or "text/plain" in content_type:
-            # Guess filename from URL or content type
-            filename = MediaUrl0.split("/")[-1] + ".csv"
-            background_tasks.add_task(_handle_file_background, sender, MediaUrl0, filename)
+    try:
+        media_count = int(NumMedia or 0)
+    except ValueError:
+        media_count = 0
+    if media_count > 0:
+        queued = 0
+        rejected = 0
+        for idx in range(media_count):
+            media_url = str(form.get(f"MediaUrl{idx}", "")).strip()
+            content_type = str(form.get(f"MediaContentType{idx}", "")).strip()
+            if not media_url:
+                continue
+            if "csv" in content_type or "spreadsheet" in content_type or "text/plain" in content_type:
+                filename = media_url.split("/")[-1] + ".csv"
+                background_tasks.add_task(_handle_file_background, sender, media_url, filename)
+                queued += 1
+            else:
+                rejected += 1
+
+        if queued:
+            if rejected:
+                return _twiml_response(
+                    f"📂 Got {queued} CSV/spreadsheet file(s). Classifying them now.\n"
+                    f"I skipped {rejected} unsupported attachment(s)."
+                )
             return _twiml_response(
-                "📂 Got your file! Classifying it now... I'll let you know what I found in a moment."
+                f"📂 Got {queued} file(s)! Classifying them now... I'll let you know what I find."
             )
-        else:
-            return _twiml_response(
-                "I can only read CSV files right now. "
-                "Export your data as .csv from Shopee/Lazada and send it here."
-            )
+
+        return _twiml_response(
+            "I can only read CSV files right now. "
+            "Export your data as .csv from Shopee/Lazada and send it here."
+        )
 
     # Get profile (creates new one if first contact)
     profile, is_new = _conversation.profiles.get_or_create(sender)
