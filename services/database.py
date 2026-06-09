@@ -73,9 +73,20 @@ def save_profile(profile) -> bool:
             "weekly_day":          profile.weekly_day,
             "monthly_day":         profile.monthly_day,
             "anomaly_sensitivity": profile.anomaly_sensitivity,
+            "platforms":           profile.platforms,
+            "required_cost_files":  profile.required_cost_files,
             "onboarding_step":     profile.onboarding_step,
         }
-        client.table("seller_profiles").upsert(data).execute()
+        try:
+            client.table("seller_profiles").upsert(data).execute()
+        except Exception as exc:
+            # Older deployments may not have the onboarding-plan columns yet.
+            # Retry the legacy shape so core profile saves still work.
+            if "platforms" not in str(exc) and "required_cost_files" not in str(exc):
+                raise
+            data.pop("platforms", None)
+            data.pop("required_cost_files", None)
+            client.table("seller_profiles").upsert(data).execute()
         print(f"  [DB] Profile saved for {profile.phone}")
         return True
     except Exception as exc:

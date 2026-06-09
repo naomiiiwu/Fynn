@@ -38,6 +38,10 @@ class UserProfile:
     # Anomaly sensitivity: "strict", "normal", "relaxed"
     anomaly_sensitivity: str = "normal"
 
+    # Onboarding collection plan
+    platforms: list[str] = field(default_factory=lambda: ["shopee"])
+    required_cost_files: list[str] = field(default_factory=lambda: ["cogs", "ads"])
+
     # Onboarding state machine step
     # None = onboarding complete, otherwise tracks current step
     onboarding_step: Optional[str] = "ask_name"
@@ -77,6 +81,8 @@ class UserProfile:
             f"👤 Name: {self.name}\n"
             f"🌐 Language: {lang_label}\n"
             f"💱 Currency: {self.currency}\n"
+            f"🛒 Platforms: {', '.join(p.title() for p in self.platforms)}\n"
+            f"📎 Required files: {', '.join(self.required_cost_files) or 'Marketplace finance export only'}\n"
             f"📅 Reports:\n  • {cadence_str}\n"
             f"🔔 Anomaly alerts: {sensitivity_label}"
         )
@@ -119,6 +125,8 @@ class ProfileStore:
             weekly_day=data.get("weekly_day", "mon"),
             monthly_day=data.get("monthly_day", 1),
             anomaly_sensitivity=data.get("anomaly_sensitivity", "normal"),
+            platforms=data.get("platforms") or ["shopee"],
+            required_cost_files=data.get("required_cost_files") or ["cogs", "ads"],
             onboarding_step=data.get("onboarding_step", "ask_name"),
         )
 
