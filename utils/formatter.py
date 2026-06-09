@@ -11,6 +11,17 @@ from typing import List
 from models.transaction import Anomaly, ReconciliationResult, Transaction, TransactionType
 
 
+def _model_to_dict(value) -> dict:
+    """Serialize Pydantic models and already-plain dicts consistently."""
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
 def generate_pnl(
     transactions: List[Transaction],
     reconciliation: ReconciliationResult,
@@ -106,7 +117,7 @@ def generate_pnl(
             "net_profit":        net_profit_sgd,
             "profit_margin_pct": profit_margin_pct,
         },
-        "anomalies":    [a.model_dump() for a in anomalies],
+        "anomalies":    [_model_to_dict(a) for a in anomalies],
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "order_count":  order_count,
         "refund_count": refund_count,

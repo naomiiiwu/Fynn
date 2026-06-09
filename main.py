@@ -1196,7 +1196,6 @@ def _run_report_background(sender: str, allow_mock: bool = True) -> None:
         print(f"  [Report] FAILED: {exc}")
         print(traceback.format_exc())
         _twiml_send(sender, f"❌ Report failed: {exc}\n\nCheck server logs for details.")
-        _twiml_send(sender, f"❌ Report failed: {exc}")
 
 
 def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
