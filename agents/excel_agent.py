@@ -14,7 +14,7 @@ import re
 import tempfile
 from datetime import datetime
 
-from services.excel import generate
+from services.excel import generate, generate_summary
 
 
 class ExcelAgent:
@@ -23,29 +23,37 @@ class ExcelAgent:
     def run(self, pnl_reports: list[dict], combined: dict) -> dict:
         """
         Args:
-            pnl_reports: Per-platform P&L dicts.
-            combined:    Company-level P&L dict.
+            pnl_reports: Per-(platform × period) P&L dicts.
+            combined:    Combined P&L dict (output of _build_combined_pnl).
 
         Returns:
             {
                 "url":      str | None,   # public download URL (None if Supabase unavailable)
                 "filename": str,
-                "bytes":    bytes,        # always present — caller can use directly if needed
+                "bytes":    bytes,        # always present
             }
         """
         period   = combined.get("period", "report")
-        filename = _safe_filename(f"Fynn_{period}.xlsx")
+        breakdown = combined.get("monthly_breakdown", [])
+        is_multi_period = len({r["period"] for r in breakdown}) > 1
 
-        print(f"  [Excel] Generating workbook: {filename}")
-        xlsx_bytes = generate(pnl_reports, combined)
+        if is_multi_period:
+            # Summary-only Excel: one row per (platform × period) — stays small forever
+            filename   = _safe_filename(f"Fynn_Summary_{period}.xlsx")
+            print(f"  [Excel] Generating consolidated summary workbook: {filename}")
+            xlsx_bytes = generate_summary(breakdown, combined)
+        else:
+            # Single period: full detail workbook (existing behaviour)
+            filename   = _safe_filename(f"Fynn_{period}.xlsx")
+            print(f"  [Excel] Generating detail workbook: {filename}")
+            xlsx_bytes = generate(pnl_reports, combined)
+
         print(f"  [Excel] Workbook generated ({len(xlsx_bytes):,} bytes)")
-
         url = _upload_to_supabase(xlsx_bytes, period, filename)
 
         if url:
             print(f"  [Excel] Uploaded → {url}")
         else:
-            # Save locally as fallback
             path = os.path.join(tempfile.gettempdir(), filename)
             with open(path, "wb") as f:
                 f.write(xlsx_bytes)
@@ -94,48 +102,52 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w.\-]", "_", name)
 
 
-def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = None, currency: str = "SGD") -> dict:
-    """Aggregate multiple platform P&Ls into a single combined summary."""
+def _build_combined_pnl(pnl_reports: list[dict], period_label: str = "", currency: str = "SGD") -> dict:
+    """
+    Aggregate per-(platform × period) P&L dicts into a single combined summary.
+
+    Costs are already converted and baked into each report by PnLAgent,
+    so this function purely sums — no extra currency conversion needed.
+    """
     if not pnl_reports:
         return {}
 
     base = pnl_reports[0]
+    label = period_label or base["period"]
+
     combined = {
-        "period":             base["period"],
+        "period":             label,
         "platform":           "Combined",
-        "currency":           base.get("currency", "SGD"),
+        "currency":           base.get("currency", currency),
         "generated_at":       base.get("generated_at", ""),
         "exchange_rate_used": base.get("exchange_rate_used", {}),
         "revenue": {
-            "gross_sales": sum(p["revenue"]["gross_sales"]  for p in pnl_reports),
-            "refunds":     sum(p["revenue"]["refunds"]       for p in pnl_reports),
-            "net_revenue": sum(p["revenue"]["net_revenue"]   for p in pnl_reports),
+            "gross_sales": round(sum(p["revenue"]["gross_sales"]  for p in pnl_reports), 2),
+            "refunds":     round(sum(p["revenue"]["refunds"]       for p in pnl_reports), 2),
+            "net_revenue": round(sum(p["revenue"]["net_revenue"]   for p in pnl_reports), 2),
         },
         "local_reference": {
             "currency":        base.get("local_reference", {}).get("currency") or base.get("exchange_rate_used", {}).get("from", "MYR"),
-            "gross_sales":     sum(p.get("local_reference", p.get("myr_reference", {})).get("gross_sales", 0)     for p in pnl_reports),
-            "net_revenue":     sum(p.get("local_reference", p.get("myr_reference", {})).get("net_revenue", 0)     for p in pnl_reports),
-            "expected_payout": sum(p.get("local_reference", p.get("myr_reference", {})).get("expected_payout", 0) for p in pnl_reports),
-            "actual_payout":   sum(p.get("local_reference", p.get("myr_reference", {})).get("actual_payout", 0)   for p in pnl_reports),
-            "discrepancy":     sum(p.get("local_reference", p.get("myr_reference", {})).get("discrepancy", 0)     for p in pnl_reports),
+            "gross_sales":     sum(p.get("local_reference", {}).get("gross_sales", 0)     for p in pnl_reports),
+            "net_revenue":     sum(p.get("local_reference", {}).get("net_revenue", 0)     for p in pnl_reports),
+            "expected_payout": sum(p.get("local_reference", {}).get("expected_payout", 0) for p in pnl_reports),
+            "actual_payout":   sum(p.get("local_reference", {}).get("actual_payout", 0)   for p in pnl_reports),
+            "discrepancy":     sum(p.get("local_reference", {}).get("discrepancy", 0)     for p in pnl_reports),
         },
     }
 
-    extra = cost_totals_myr or {}
-    rate  = base.get("exchange_rate_used", {}).get("rate", 1.0)
+    def _sum(key: str) -> float:
+        return round(sum(p["costs"].get(key, 0) for p in pnl_reports), 2)
 
-    def _to_cur(myr: float) -> float:
-        return round(myr * rate, 2)
-
-    platform_fees  = sum(p["costs"].get("platform_fees", 0) for p in pnl_reports)
-    shipping       = sum(p["costs"].get("shipping", 0)      for p in pnl_reports)
-    vouchers       = sum(p["costs"].get("vouchers", 0)      for p in pnl_reports)
-    cogs           = _to_cur(extra.get("cogs", 0))
-    ads            = _to_cur(extra.get("ads", 0))
-    warehouse      = _to_cur(extra.get("warehouse", 0))
-    payroll        = _to_cur(extra.get("payroll", 0))
-    packaging      = _to_cur(extra.get("packaging", 0))
-    other_expense  = _to_cur(extra.get("expense", 0))
+    platform_fees  = _sum("platform_fees")
+    shipping       = _sum("shipping")
+    vouchers       = _sum("vouchers")
+    cogs           = _sum("cogs")
+    ads            = _sum("ads")
+    warehouse      = _sum("warehouse")
+    payroll        = _sum("payroll")
+    packaging      = _sum("packaging")
+    other_expense  = _sum("other_expense")
     total_platform = round(platform_fees + shipping + vouchers, 2)
     total_business = round(cogs + ads + warehouse + payroll + packaging + other_expense, 2)
     total_costs    = round(total_platform + total_business, 2)
@@ -151,10 +163,25 @@ def _build_combined_pnl(pnl_reports: list[dict], cost_totals_myr: dict | None = 
     combined["anomalies"]          = [a for p in pnl_reports for a in p.get("anomalies", [])]
     combined["order_count"]        = sum(p.get("order_count", 0)  for p in pnl_reports)
     combined["refund_count"]       = sum(p.get("refund_count", 0) for p in pnl_reports)
-    combined["platforms_included"] = [p.get("platform") for p in pnl_reports]
+    combined["platforms_included"] = list({p.get("platform") for p in pnl_reports})
 
     net_revenue = combined["revenue"]["net_revenue"]
     net_profit  = round(net_revenue - total_costs, 2)
     margin      = round(net_profit / net_revenue * 100, 2) if net_revenue else 0.0
     combined["profit"] = {"net_profit": net_profit, "profit_margin_pct": margin}
+
+    # Per-(platform × period) breakdown — used by summary Excel and WhatsApp
+    combined["monthly_breakdown"] = [
+        {
+            "period":       p["period"],
+            "platform":     p["platform"],
+            "net_revenue":  p["revenue"]["net_revenue"],
+            "total_costs":  p["costs"]["total_costs"],
+            "net_profit":   p["profit"]["net_profit"],
+            "margin_pct":   p["profit"]["profit_margin_pct"],
+            "order_count":  p.get("order_count", 0),
+        }
+        for p in pnl_reports
+    ]
+
     return combined

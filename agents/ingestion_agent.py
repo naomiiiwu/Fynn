@@ -36,10 +36,19 @@ class IngestionAgent:
     def _load_sync(self, platform: str, period: str) -> IngestionResult:
         import main as _main
 
-        # Try exact match first, then any available platform
-        txns = _main._platform_transactions.get(platform)
+        # Try exact (platform, period) match first, then any period for the platform
+        platform_periods = _main._platform_transactions.get(platform, {})
+        txns = platform_periods.get(period)
         if txns is None:
-            txns = next(iter(_main._platform_transactions.values()), None)
+            # Fall back to any period for this platform (e.g. when period label differs slightly)
+            txns = next(iter(platform_periods.values()), None)
+        if txns is None:
+            # Try any other platform as last resort before mock
+            for other_periods in _main._platform_transactions.values():
+                candidate = other_periods.get(period) or next(iter(other_periods.values()), None)
+                if candidate:
+                    txns = candidate
+                    break
 
         if txns:
             print(f"  [Ingestion:{platform}] Loaded {len(txns)} transactions from upload")

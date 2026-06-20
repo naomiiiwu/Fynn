@@ -61,8 +61,8 @@ async def lifespan(app: FastAPI):
             raw_bytes = row["csv_data"].encode("utf-8")
             if file_type == "transactions":
                 txns = parse_csv(raw_bytes, platform)
-                _platform_transactions[platform] = txns
-                print(f"  [Fynn] Restored {platform} transactions ({row.get('period')}, {len(txns)} rows)")
+                _platform_transactions.setdefault(platform, {})[period] = txns
+                print(f"  [Fynn] Restored {platform} transactions ({period}, {len(txns)} rows)")
             elif file_type in _cost_types:
                 period = row.get("period") or detect_cost_period(raw_bytes)
                 total  = parse_cost_total(raw_bytes, file_type)
@@ -90,8 +90,8 @@ app = FastAPI(
 
 # Shared state
 _last_pnl: dict = {}
-# Per-platform transaction store: {"shopee": [...], "lazada": [...], ...}
-_platform_transactions: dict[str, list] = {}
+# Per-platform, per-period transaction store: {"shopee": {"March 2026": [...], "April 2026": [...]}}
+_platform_transactions: dict[str, dict[str, list]] = {}
 # Cost totals keyed by period then type: {"March 2026": {"cogs": 8680.0, "payroll": 14540.0}}
 _cost_totals: dict[str, dict[str, float]] = {}
 # Period of the last completed report — used to warn on stale uploads
@@ -102,6 +102,12 @@ _pending_files: dict[str, dict] = {}
 _pending_reconciliations: dict[str, dict] = {}
 # Debounces auto-refresh when WhatsApp delivers several files close together
 _refresh_timers: dict[str, object] = {}
+# Batches per-file confirmation messages into one summary (keyed by sender)
+_pending_confirmations: dict[str, list[str]] = {}
+_confirmation_timers: dict[str, object] = {}
+# Tracks when we last sent a "classifying" ack, to suppress duplicates from rapid file sends
+_last_file_ack: dict[str, float] = {}
+_twilio_daily_limit_exhausted: bool = False
 _conversation = ConversationManager()
 
 STRICT_CONFIDENCE_THRESHOLD = 0.90
@@ -293,7 +299,7 @@ def _save_inspected_upload(content: bytes, inspected: dict) -> None:
     period = inspected["period"]
 
     if file_type == "transactions":
-        _platform_transactions[platform] = inspected["txns"] or []
+        _platform_transactions.setdefault(platform, {})[period] = inspected["txns"] or []
     elif file_type in _COST_FILE_TYPES:
         _cost_totals.setdefault(period, {})[file_type] = inspected["total"] or 0.0
 
@@ -347,6 +353,23 @@ def _pending_upload_options() -> str:
     )
 
 
+def _is_supported_upload_media(content_type: str, media_url: str) -> bool:
+    """Return True for media Twilio may use for CSV-style document uploads."""
+    ct = (content_type or "").strip().lower()
+    url = (media_url or "").strip().lower()
+    accepted_tokens = (
+        "csv",
+        "spreadsheet",
+        "text/plain",
+        "text/comma-separated-values",
+        "application/vnd.ms-excel",
+        "application/octet-stream",
+    )
+    if any(token in ct for token in accepted_tokens):
+        return True
+    return url.endswith(".csv")
+
+
 def _onboarding_file_checklist(profile) -> str:
     """Return the file list Fynn expects after onboarding."""
     lines = [
@@ -374,8 +397,8 @@ async def debug() -> dict:
     """Live state snapshot — use this to diagnose report hangs."""
     return {
         "platform_transactions": {
-            platform: len(txns)
-            for platform, txns in _platform_transactions.items()
+            platform: {period: len(txns) for period, txns in periods.items()}
+            for platform, periods in _platform_transactions.items()
         },
         "cost_totals": {
             period: {ftype: f"MYR {amt:,.2f}" for ftype, amt in costs.items()}
@@ -806,7 +829,6 @@ async def upload_classify(
 
     Returns classification result with platform, file_type, and row counts.
     """
-    global _platform_transactions
 
     if not file.filename.endswith(".csv"):
         return JSONResponse(content={"error": "Only .csv files are supported."}, status_code=400)
@@ -934,11 +956,7 @@ async def trigger_job(job_id: str) -> JSONResponse:
 @app.post("/run-monthly-report")
 async def run_monthly_report() -> JSONResponse:
     """
-    Trigger the full Fynn agent pipeline for March 2026 (Shopee MY mock data).
-
-    Claude orchestrates all 7 steps via tool calls:
-      load_transactions → reconcile_payout → detect_anomalies →
-      convert_currency → generate_pnl → write_to_sheets → send_whatsapp
+    Trigger the full Fynn agent pipeline using all uploaded data (or mock data as fallback).
 
     Returns:
         JSON with full P&L report and pipeline status.
@@ -949,20 +967,27 @@ async def run_monthly_report() -> JSONResponse:
     print("  FYNN — Agent Pipeline Starting")
     print("=" * 60)
 
-    agent = BookkeeperAgent()
-    result = agent.run(period="March 2026", platform="Shopee MY")
+    from models.user_profile import UserProfile
+    periods      = _detect_periods()
+    platform_list = list(_platform_transactions.keys()) or ["shopee"]
+    profile       = UserProfile(phone="system", onboarding_step=None)
 
-    _last_pnl = result.get("pnl", {})
+    result = OrchestratorAgent().run_sync("system", periods, platform_list, profile)
 
-    # Persist P&L to Supabase
-    from services.database import save_pnl
-    save_pnl("system", _last_pnl)
+    if result.combined_pnl:
+        _last_pnl = result.combined_pnl
+        from services.database import save_pnl
+        save_pnl("system", _last_pnl)
 
     print("\n" + "=" * 60)
     print("  FYNN — Agent Pipeline Complete ✅")
     print("=" * 60 + "\n")
 
-    return JSONResponse(content={"status": "success", **result})
+    return JSONResponse(content={
+        "status": "success",
+        "pipeline_status": result.pipeline_status,
+        "pnl": result.combined_pnl,
+    })
 
 
 # ── JSON ask endpoint (for API/testing use) ────────────────────────────────────
@@ -1030,22 +1055,30 @@ Seller's question: {body.question}"""
 
 # ── WhatsApp webhook ───────────────────────────────────────────────────────────
 
-def _detect_period() -> str:
-    """Detect reporting period from uploaded transactions, fallback to current month."""
+def _detect_periods() -> list[str]:
+    """Return all uploaded periods sorted chronologically, fallback to current month."""
     from datetime import datetime as dt
-    for txns in _platform_transactions.values():
-        if txns:
-            dates = [t.date for t in txns]
-            e = min(dates)
-            return e.strftime("%B %Y")
-    return dt.now().strftime("%B %Y")
+
+    seen: set[str] = set()
+    for periods in _platform_transactions.values():
+        seen.update(periods.keys())
+    if not seen:
+        return [dt.now().strftime("%B %Y")]
+
+    def _parse(p: str) -> dt:
+        try:
+            return dt.strptime(p, "%B %Y")
+        except ValueError:
+            return dt.min
+
+    return sorted(seen, key=_parse)
 
 
 def _has_uploaded_transactions() -> bool:
     """Return True when at least one real platform transaction CSV is loaded."""
     return any(
-        platform != "unknown" and bool(txns)
-        for platform, txns in _platform_transactions.items()
+        platform != "unknown" and bool(periods)
+        for platform, periods in _platform_transactions.items()
     )
 
 
@@ -1059,7 +1092,7 @@ def _missing_reconciliation_requirements(profile) -> tuple[list[str], list[str]]
     missing_essential = [
         platform
         for platform in (profile.platforms or ["shopee"])
-        if not _platform_transactions.get(platform)
+        if not _platform_transactions.get(platform)  # no periods at all for this platform
     ]
     missing_support = [
         file_type
@@ -1129,6 +1162,37 @@ def _auto_refresh_report(sender: str, force: bool = False) -> None:
     _run_report_background(sender, allow_mock=False)
 
 
+def _queue_file_confirmation(sender: str, summary: str) -> None:
+    """
+    Queue a per-file confirmation line and debounce into one batched message.
+
+    When WhatsApp delivers several files in rapid succession (each as its own
+    webhook call), this collects all summaries and sends them as a single message
+    once the stream of files settles, then triggers the auto-refresh.
+    """
+    import threading
+
+    _pending_confirmations.setdefault(sender, []).append(summary)
+
+    existing = _confirmation_timers.get(sender)
+    if existing:
+        existing.cancel()
+
+    def _flush() -> None:
+        _confirmation_timers.pop(sender, None)
+        lines = _pending_confirmations.pop(sender, [])
+        if not lines:
+            return
+        bullet_list = "\n".join(f"• {line}" for line in lines)
+        _twiml_send(sender, f"Here's what I saved:\n{bullet_list}\n\nChecking your required files and refreshing the report...")
+        _auto_refresh_report(sender)
+
+    timer = threading.Timer(4.0, _flush)
+    timer.daemon = True
+    _confirmation_timers[sender] = timer
+    timer.start()
+
+
 def _schedule_auto_refresh(sender: str, delay_seconds: float = 8.0) -> None:
     """Debounce report refreshes so batches of WhatsApp files settle first."""
     import threading
@@ -1168,16 +1232,16 @@ def _run_report_background(sender: str, allow_mock: bool = True) -> None:
             profile = UserProfile(phone=sender, onboarding_step=None)
         _log(f"Profile loaded: {profile.name}")
 
-        period = _detect_period()
+        periods = _detect_periods()
         platform_list = [
             p for p in (profile.platforms or [])
             if p != "unknown" and _platform_transactions.get(p)
         ] or ["shopee"]
-        _log(f"Period: {period} | Platforms: {platform_list}")
+        _log(f"Periods: {periods} | Platforms: {platform_list}")
         _log(f"Cost totals in memory: { {p: list(c.keys()) for p, c in _cost_totals.items()} }")
 
         _log("Calling OrchestratorAgent...")
-        result = OrchestratorAgent().run_sync(sender, period, platform_list, profile)
+        result = OrchestratorAgent().run_sync(sender, periods, platform_list, profile)
         _log(f"Orchestrator done. Status: {result.pipeline_status}")
 
         if result.combined_pnl:
@@ -1270,21 +1334,17 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
             )
             return
 
+        # Build a one-line summary for this file to include in the batched confirmation
         if file_type == "transactions" and transaction_count:
-            reply = (
-                f"{ticon} Got it! *{plabel}* finance file received.\n"
-                f"📅 Period: {period}\n"
-                f"📊 {transaction_count} transactions loaded\n\n"
-                "Saved. I’ll check your required files shortly and refresh when ready."
-            )
+            summary = f"{ticon} {plabel} finance file — {period} ({transaction_count} rows)"
+            print(f"  [Upload] Saved {plabel} finance file for {period} ({transaction_count} transactions).")
         else:
-            reply = (
-                f"{ticon} Got it! *{file_type.title()}* costs for *{period}* saved.\n"
-                "Saved. I’ll check your required files shortly and refresh when ready."
-            )
+            total = inspected.get("total")
+            total_str = f" — MYR {total:,.2f}" if total is not None else ""
+            summary = f"{ticon} {file_type.title()} costs — {period}{total_str}"
+            print(f"  [Upload] Saved {file_type} costs for {period}.")
 
-        _twiml_send(sender, reply)
-        _schedule_auto_refresh(sender)
+        _queue_file_confirmation(sender, summary)
 
     except Exception as exc:
         print(f"  [Webhook] File handling failed: {exc}")
@@ -1337,7 +1397,8 @@ async def whatsapp_webhook(
             content_type = str(form.get(f"MediaContentType{idx}", "")).strip()
             if not media_url:
                 continue
-            if "csv" in content_type or "spreadsheet" in content_type or "text/plain" in content_type:
+            print(f"  [Webhook] Media {idx}: content_type={content_type or 'unknown'} url={media_url}")
+            if _is_supported_upload_media(content_type, media_url):
                 filename = media_url.split("/")[-1] + ".csv"
                 background_tasks.add_task(_handle_file_background, sender, media_url, filename)
                 queued += 1
@@ -1345,17 +1406,27 @@ async def whatsapp_webhook(
                 rejected += 1
 
         if queued:
+            import time as _time
+            now = _time.monotonic()
+            last_ack = _last_file_ack.get(sender, 0.0)
+            already_acked = (now - last_ack) < 15.0  # suppress duplicate acks within 15s
+            _last_file_ack[sender] = now
+
+            if already_acked:
+                # Return empty TwiML — user already got the "classifying" message
+                return Response(content='<?xml version="1.0" encoding="UTF-8"?><Response/>', media_type="application/xml")
+
             if rejected:
                 return _twiml_response(
                     f"📂 Got {queued} CSV/spreadsheet file(s). Classifying them now.\n"
                     f"I skipped {rejected} unsupported attachment(s)."
                 )
             return _twiml_response(
-                f"📂 Got {queued} file(s)! Classifying them now... I'll let you know what I find."
+                f"📂 Got your files! Classifying them now... I'll send you a summary when done."
             )
 
         return _twiml_response(
-            "I can only read CSV files right now. "
+            f"I received {media_count} attachment(s), but none looked like CSV files. "
             "Export your data as .csv from Shopee/Lazada and send it here."
         )
 
@@ -1537,6 +1608,11 @@ def _twiml_send(to: str, message: str) -> None:
         to:      Recipient WhatsApp number (e.g. 'whatsapp:+6591234567').
         message: Message text to send.
     """
+    global _twilio_daily_limit_exhausted
+    if _twilio_daily_limit_exhausted:
+        print("  [Webhook] Twilio daily limit already exhausted — skipping out-of-band send.")
+        return
+
     try:
         from twilio.rest import Client
         client = Client(
@@ -1549,4 +1625,6 @@ def _twiml_send(to: str, message: str) -> None:
             body=message,
         )
     except Exception as exc:
+        if "exceeded the 50 daily messages limit" in str(exc) or "HTTP 429" in str(exc):
+            _twilio_daily_limit_exhausted = True
         print(f"  [Webhook] Out-of-band send failed: {exc}")

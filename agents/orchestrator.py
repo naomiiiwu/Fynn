@@ -48,76 +48,76 @@ class OrchestratorAgent:
     async def run(
         self,
         sender: str,
-        period: str,
+        periods: list[str],
         platform_list: list[str],
         profile: UserProfile,
     ) -> OrchestratorResult:
-        print(f"\n[Orchestrator] Starting pipeline for {profile.name} — {platform_list} — {period}")
+        period_label = periods[0] if len(periods) == 1 else f"{periods[0]} – {periods[-1]}"
+        print(f"\n[Orchestrator] Starting pipeline for {profile.name} — {platform_list} — {period_label}")
         status: dict[str, str] = {}
 
-        # ── Step 1: Parallel ingestion ─────────────────────────────────────────
-        ingestion_tasks = [
-            IngestionAgent().run(platform, period)
-            for platform in platform_list
-        ]
+        # ── Step 1: Parallel ingestion — one task per (platform × period) ─────
+        pairs = [(platform, period) for platform in platform_list for period in periods]
+        ingestion_tasks = [IngestionAgent().run(platform, period) for platform, period in pairs]
         raw_results = await asyncio.gather(*ingestion_tasks, return_exceptions=True)
 
         ingestion_results: list[IngestionResult] = []
-        for platform, result in zip(platform_list, raw_results):
+        for (platform, period), result in zip(pairs, raw_results):
+            key = f"{platform}_{period}"
             if isinstance(result, Exception):
-                print(f"  [Orchestrator] Ingestion failed for {platform}: {result}")
-                status[f"ingestion_{platform}"] = f"error: {result}"
+                print(f"  [Orchestrator] Ingestion failed for {key}: {result}")
+                status[f"ingestion_{key}"] = f"error: {result}"
             else:
                 ingestion_results.append(result)
-                status[f"ingestion_{platform}"] = f"ok ({result.row_count} rows, {result.source})"
+                status[f"ingestion_{key}"] = f"ok ({result.row_count} rows, {result.source})"
 
         if not ingestion_results:
             print("  [Orchestrator] All ingestion failed — aborting.")
             return OrchestratorResult(pipeline_status=status)
 
-        # ── Step 2: Per-platform processing ───────────────────────────────────
+        # ── Step 2: Per-(platform × period) processing ────────────────────────
         pnl_reports: list[dict] = []
         sensitivity = getattr(profile, "anomaly_sensitivity", "normal")
         currency    = getattr(profile, "currency", "SGD")
 
-        # Load business cost totals — merge 'unknown' + period-specific
-        # (unknown = uploaded before period detection; period-specific takes precedence for same key)
         import main as _main
         all_cost_totals: dict[str, dict[str, float]] = getattr(_main, "_cost_totals", {})
-        cost_totals_myr: dict[str, float] = {
-            **all_cost_totals.get("unknown", {}),
-            **all_cost_totals.get(period, {}),
-        }
-        if cost_totals_myr:
-            print(f"  [Orchestrator] Business costs for {period} (MYR): { {k: f'MYR {v:,.2f}' for k, v in cost_totals_myr.items()} }")
-        else:
-            print(f"  [Orchestrator] No cost files for {period} — P&L will show platform costs only.")
+        unknown_costs = all_cost_totals.get("unknown", {})
 
-        # Business costs (COGS, payroll, ads, etc.) are company-level, not per-platform.
-        # Individual platform P&Ls show only their own platform fees/shipping/vouchers.
-        # Business costs are applied once to the combined P&L at the end.
+        def _cost_for_period(period: str) -> dict[str, float]:
+            """Merge 'unknown' costs with period-specific costs (period takes precedence)."""
+            return {**unknown_costs, **all_cost_totals.get(period, {})}
+
+        # Business costs are company-level: applied per-period to each period's P&L
+        # so the combined total correctly reflects per-period expenses.
         for ingest in ingestion_results:
             platform = ingest.platform
-            print(f"\n  [Orchestrator] Processing {platform}...")
+            period   = ingest.period
+            key      = f"{platform}_{period}"
+            cost_totals_myr = _cost_for_period(period)
+            print(f"\n  [Orchestrator] Processing {key}...")
+            if cost_totals_myr:
+                print(f"    Business costs: { {k: f'MYR {v:,.2f}' for k, v in cost_totals_myr.items()} }")
+            else:
+                print(f"    No cost files for {period} — platform costs only.")
 
             try:
                 recon = ReconciliationAgent().run(ingest.transactions, platform, period)
-                status[f"reconciliation_{platform}"] = "ok"
+                status[f"reconciliation_{key}"] = "ok"
             except Exception as exc:
-                print(f"  [Orchestrator] Reconciliation failed for {platform}: {exc}")
-                status[f"reconciliation_{platform}"] = f"error: {exc}"
+                print(f"  [Orchestrator] Reconciliation failed for {key}: {exc}")
+                status[f"reconciliation_{key}"] = f"error: {exc}"
                 continue
 
             try:
                 anomalies = AnomalyAgent().run(ingest.transactions, recon, sensitivity)
-                status[f"anomalies_{platform}"] = f"ok ({len(anomalies)} found)"
+                status[f"anomalies_{key}"] = f"ok ({len(anomalies)} found)"
             except Exception as exc:
-                print(f"  [Orchestrator] Anomaly detection failed for {platform}: {exc}")
+                print(f"  [Orchestrator] Anomaly detection failed for {key}: {exc}")
                 anomalies = []
-                status[f"anomalies_{platform}"] = f"error: {exc}"
+                status[f"anomalies_{key}"] = f"error: {exc}"
 
             try:
-                # No business costs here — applied to combined P&L only
                 pnl = PnLAgent().run(
                     platform=platform,
                     period=period,
@@ -125,37 +125,22 @@ class OrchestratorAgent:
                     anomalies=anomalies,
                     transactions=ingest.transactions,
                     currency=currency,
-                    cost_totals_myr={},
+                    cost_totals_myr=cost_totals_myr,
                 )
                 pnl_reports.append(pnl)
-                status[f"pnl_{platform}"] = "ok"
+                status[f"pnl_{key}"] = "ok"
             except Exception as exc:
-                print(f"  [Orchestrator] P&L generation failed for {platform}: {exc}")
-                status[f"pnl_{platform}"] = f"error: {exc}"
+                print(f"  [Orchestrator] P&L generation failed for {key}: {exc}")
+                status[f"pnl_{key}"] = f"error: {exc}"
 
         if not pnl_reports:
             print("  [Orchestrator] No P&L reports generated — aborting.")
             return OrchestratorResult(pipeline_status=status)
 
-        # ── Build combined P&L (with business costs applied once) ─────────────
+        # ── Build combined P&L across all periods and platforms ───────────────
         from agents.excel_agent import _build_combined_pnl
-        from services.currency import CurrencyConverter
 
-        if len(pnl_reports) > 1:
-            combined = _build_combined_pnl(pnl_reports, cost_totals_myr, currency)
-        else:
-            # Single platform — re-run PnL with business costs included
-            combined = PnLAgent().run(
-                platform=pnl_reports[0]["platform"],
-                period=period,
-                reconciliation=ReconciliationAgent().run(
-                    ingestion_results[0].transactions, pnl_reports[0]["platform"], period
-                ),
-                anomalies=[a for p in pnl_reports for a in p.get("anomalies", [])],
-                transactions=ingestion_results[0].transactions,
-                currency=currency,
-                cost_totals_myr=cost_totals_myr,
-            )
+        combined = _build_combined_pnl(pnl_reports, period_label=period_label, currency=currency)
 
         # ── Step 3: Excel workbook ─────────────────────────────────────────────
         excel_url = None
@@ -189,7 +174,7 @@ class OrchestratorAgent:
     def run_sync(
         self,
         sender: str,
-        period: str,
+        periods: list[str],
         platform_list: list[str],
         profile: UserProfile,
     ) -> OrchestratorResult:
@@ -198,6 +183,6 @@ class OrchestratorAgent:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
                 asyncio.run,
-                self.run(sender, period, platform_list, profile),
+                self.run(sender, periods, platform_list, profile),
             )
             return future.result(timeout=300)  # 5-minute hard cap

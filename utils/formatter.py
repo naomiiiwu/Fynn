@@ -181,9 +181,29 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports:
         anomaly_block = "✅ All clear — no anomalies detected."
 
     platform_label = pnl.get("platform", "Platform")
-    # For multi-platform, add a compact per-platform revenue line
+
+    # Per-month breakdown — shown when the combined report spans multiple periods
+    monthly_breakdown = pnl.get("monthly_breakdown", [])
+    unique_periods = list(dict.fromkeys(r["period"] for r in monthly_breakdown))
+    is_multi_period = len(unique_periods) > 1
+
     platform_lines = ""
-    if pnl_reports and len(pnl_reports) > 1:
+    if is_multi_period:
+        # Group by period so each period shows as one block
+        from collections import defaultdict
+        by_period: dict[str, list[dict]] = defaultdict(list)
+        for r in monthly_breakdown:
+            by_period[r["period"]].append(r)
+
+        lines = []
+        for p in unique_periods:
+            rows = by_period[p]
+            rev = sum(r["net_revenue"] for r in rows)
+            profit = sum(r["net_profit"] for r in rows)
+            lines.append(f"   {p[:3]}:  {currency} {rev:>10,.2f} rev | {currency} {profit:>8,.2f} profit")
+        platform_lines = "\n".join(lines) + "\n"
+    elif pnl_reports and len(pnl_reports) > 1:
+        # Multi-platform, single period — show per-platform revenue line
         lines = []
         for p in pnl_reports:
             label = p.get("platform", "?")
@@ -213,8 +233,21 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports:
     if business_costs:
         cost_block += f"*Business costs:*\n{business_costs}"
 
-    message = (
+    header_intro = (
+        f"Hey {seller_name}! 👋 Your *{period}* consolidated report is ready.\n"
+        if is_multi_period else
         f"Hey {seller_name}! 👋 Your *{period}* books are done.\n"
+    )
+    breakdown_divider = (
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 *Monthly breakdown:*\n"
+        f"{platform_lines}"
+        if is_multi_period and platform_lines else
+        f"{platform_lines}"
+    )
+
+    message = (
+        f"{header_intro}"
         f"\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *{platform_label} — {period}*\n"
@@ -222,7 +255,7 @@ def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports:
         f"💰 Gross Sales:   {currency} {gross_sales:,.2f}\n"
         f"↩️  Refunds:       {refund_count} order{'s' if refund_count != 1 else ''}\n"
         f"💵 Net Revenue:   {currency} {net_revenue:,.2f}\n"
-        f"{platform_lines}"
+        f"{breakdown_divider}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{cost_block}"
         f"━━━━━━━━━━━━━━━━━━━━\n"

@@ -167,6 +167,88 @@ def _write_sheet(
         data_row("✓ No anomalies detected", "", number=False)
 
 
+def generate_summary(monthly_breakdown: list[dict], combined: dict) -> bytes:
+    """
+    Build a lightweight consolidated summary workbook.
+
+    One row per (platform × period) entry — stays small regardless of how many
+    months of data accumulate. No transaction detail is included.
+
+    Args:
+        monthly_breakdown: List of per-(platform × period) summary dicts from _build_combined_pnl.
+        combined:          Combined P&L dict (totals row).
+
+    Returns:
+        Raw .xlsx bytes.
+    """
+    cur = combined.get("currency", "SGD")
+    wb  = Workbook()
+    ws  = wb.active
+    ws.title = "Consolidated Summary"
+
+    ws.column_dimensions["A"].width = 18
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 18
+    ws.column_dimensions["E"].width = 18
+    ws.column_dimensions["F"].width = 12
+    ws.column_dimensions["G"].width = 10
+
+    # Title
+    ws.merge_cells("A1:G1")
+    title_cell = ws["A1"]
+    title_cell.value = f"Fynn — Consolidated Report  |  {combined.get('period', '')}  |  {cur}"
+    title_cell.font  = Font(bold=True, color=_WHITE, size=13)
+    title_cell.fill  = _header_fill(_DARK_BLUE)
+    title_cell.alignment = Alignment(horizontal="left")
+
+    # Column headers
+    headers = ["Period", "Platform", f"Net Revenue ({cur})", f"Total Costs ({cur})", f"Net Profit ({cur})", "Margin %", "Orders"]
+    ws.append(headers)
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(ws.max_row, col)
+        cell.font = Font(bold=True, color=_WHITE)
+        cell.fill = _header_fill(_DARK_BLUE)
+
+    # Data rows
+    for row in monthly_breakdown:
+        ws.append([
+            row.get("period", ""),
+            row.get("platform", ""),
+            row.get("net_revenue", 0),
+            row.get("total_costs", 0),
+            row.get("net_profit", 0),
+            f"{row.get('margin_pct', 0):.1f}%",
+            row.get("order_count", 0),
+        ])
+        data_row_idx = ws.max_row
+        for col in [3, 4, 5]:
+            ws.cell(data_row_idx, col).number_format = _NUMBER_FMT
+
+    # Totals row
+    rev = combined["revenue"]
+    pft = combined["profit"]
+    ws.append([
+        "TOTAL", "All Platforms",
+        rev["net_revenue"],
+        combined["costs"]["total_costs"],
+        pft["net_profit"],
+        f"{pft['profit_margin_pct']:.1f}%",
+        combined.get("order_count", 0),
+    ])
+    total_row = ws.max_row
+    for col in range(1, 8):
+        cell = ws.cell(total_row, col)
+        cell.font = Font(bold=True, color=_WHITE)
+        cell.fill = _header_fill(_DARK_BLUE)
+    for col in [3, 4, 5]:
+        ws.cell(total_row, col).number_format = _NUMBER_FMT
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def generate(pnl_reports: list[dict], combined: dict) -> bytes:
     """
     Build a workbook with one tab per platform + one Company P&L tab.
