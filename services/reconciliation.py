@@ -50,7 +50,8 @@ def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
         elif txn.type == TransactionType.PLATFORM_FEE:
             total_platform_fees += abs(txn.amount_myr)
         elif txn.type == TransactionType.SHIPPING:
-            total_shipping += abs(txn.amount_myr)
+            # Use signed amount: fees are negative (cost), rebates/vouchers are positive (credit)
+            total_shipping -= txn.amount_myr
         elif txn.type == TransactionType.VOUCHER:
             total_vouchers += abs(txn.amount_myr)
         elif txn.type == TransactionType.SETTLEMENT:

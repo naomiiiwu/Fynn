@@ -267,6 +267,41 @@ def load_all_csvs() -> list[dict]:
         return []
 
 
+def load_pnl_by_period(phone: str, period: str) -> Optional[dict]:
+    """
+    Load the most recent cached P&L for a specific sender + period.
+
+    Used by the orchestrator to skip reprocessing clean (non-dirty) periods.
+
+    Args:
+        phone:  Sender's WhatsApp number.
+        period: Period label e.g. "March 2026".
+
+    Returns:
+        P&L dict or None if no cached report exists for this period.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        result = (
+            client.table("pnl_reports")
+            .select("report_data")
+            .eq("phone", phone)
+            .eq("period", period)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return json.loads(result.data[0]["report_data"])
+        return None
+    except Exception as exc:
+        print(f"  [DB] Failed to load cached P&L for {period}: {exc}")
+        return None
+
+
 def load_latest_pnl_any() -> Optional[dict]:
     """
     Load the most recent P&L report across all sellers.

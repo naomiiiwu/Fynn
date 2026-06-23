@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
             if file_type == "transactions":
                 txns = parse_csv(raw_bytes, platform)
                 _platform_transactions.setdefault(platform, {})[period] = txns
+                _dirty_periods.add(period)  # recompute after restart until first successful run
                 print(f"  [Fynn] Restored {platform} transactions ({period}, {len(txns)} rows)")
             elif file_type in _cost_types:
                 period = row.get("period") or detect_cost_period(raw_bytes)
@@ -100,6 +101,8 @@ _last_report_period: str = ""
 _pending_files: dict[str, dict] = {}
 # Holds reconciliation requests waiting for the user's "proceed anyway" confirmation
 _pending_reconciliations: dict[str, dict] = {}
+# Periods that have new uploads since their last P&L was computed — must be reprocessed
+_dirty_periods: set[str] = set()
 # Debounces auto-refresh when WhatsApp delivers several files close together
 _refresh_timers: dict[str, object] = {}
 # Batches per-file confirmation messages into one summary (keyed by sender)
@@ -303,6 +306,8 @@ def _save_inspected_upload(content: bytes, inspected: dict) -> None:
     elif file_type in _COST_FILE_TYPES:
         _cost_totals.setdefault(period, {})[file_type] = inspected["total"] or 0.0
 
+    # Any new upload invalidates the cached P&L for that period
+    _dirty_periods.add(period)
     save_csv(content, period, platform, file_type)
 
 

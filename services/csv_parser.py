@@ -177,29 +177,51 @@ def parse_shopee_csv(content: bytes | str) -> List[Transaction]:
 # ── Lazada parser ──────────────────────────────────────────────────────────────
 
 _LAZADA_TYPE_MAP = {
-    "payment":              TransactionType.ORDER,
-    "item price":           TransactionType.ORDER,
-    "order income":         TransactionType.ORDER,
-    "cashback":             TransactionType.ORDER,
-    "refund":               TransactionType.REFUND,
-    "return":               TransactionType.REFUND,
-    "reversal":             TransactionType.REFUND,
-    "commission":           TransactionType.PLATFORM_FEE,
-    "service fee":          TransactionType.PLATFORM_FEE,
-    "payment fee":          TransactionType.PLATFORM_FEE,
-    "transaction fee":      TransactionType.PLATFORM_FEE,
-    "lazada commission":    TransactionType.PLATFORM_FEE,
-    "shipping fee":         TransactionType.SHIPPING,
-    "shipping":             TransactionType.SHIPPING,
-    "shipping rebate":      TransactionType.SHIPPING,
-    "voucher":              TransactionType.VOUCHER,
-    "seller voucher":       TransactionType.VOUCHER,
-    "lazada voucher":       TransactionType.VOUCHER,
-    "transfer":             TransactionType.SETTLEMENT,
-    "payout":               TransactionType.SETTLEMENT,
-    "lazwallet":            TransactionType.SETTLEMENT,
-    "bank transfer":        TransactionType.SETTLEMENT,
-    "settlement":           TransactionType.SETTLEMENT,
+    # Specific entries must come before short overlapping ones
+    # (matching is substring-based, so "payment" would match "payment fee" too)
+
+    # Settlement / payout
+    "lazwallet":              TransactionType.SETTLEMENT,
+    "bank transfer":          TransactionType.SETTLEMENT,
+    "transfer":               TransactionType.SETTLEMENT,
+    "payout":                 TransactionType.SETTLEMENT,
+    "settlement":             TransactionType.SETTLEMENT,
+
+    # Platform fees — specific before generic
+    "lazada commission":      TransactionType.PLATFORM_FEE,
+    "payment fee":            TransactionType.PLATFORM_FEE,
+    "transaction fee":        TransactionType.PLATFORM_FEE,
+    "service fee":            TransactionType.PLATFORM_FEE,
+    "commission":             TransactionType.PLATFORM_FEE,
+    "marketing fee":          TransactionType.PLATFORM_FEE,
+    "sponsored":              TransactionType.PLATFORM_FEE,
+    "storage fee":            TransactionType.PLATFORM_FEE,
+    "late dispatch":          TransactionType.PLATFORM_FEE,
+
+    # Shipping
+    "shipping fee voucher":   TransactionType.SHIPPING,
+    "shipping rebate":        TransactionType.SHIPPING,
+    "shipping fee":           TransactionType.SHIPPING,
+    "shipping":               TransactionType.SHIPPING,
+
+    # Vouchers
+    "seller voucher":         TransactionType.VOUCHER,
+    "lazada voucher":         TransactionType.VOUCHER,
+    "voucher":                TransactionType.VOUCHER,
+
+    # Refunds
+    "charge back":            TransactionType.REFUND,
+    "chargeback":             TransactionType.REFUND,
+    "reversal":               TransactionType.REFUND,
+    "return":                 TransactionType.REFUND,
+    "refund":                 TransactionType.REFUND,
+
+    # Orders / income — "payment" last so it doesn't swallow "payment fee"
+    "compensation":           TransactionType.ORDER,
+    "cashback":               TransactionType.ORDER,
+    "order income":           TransactionType.ORDER,
+    "item price":             TransactionType.ORDER,
+    "payment":                TransactionType.ORDER,
 }
 
 

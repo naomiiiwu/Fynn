@@ -56,91 +56,99 @@ class OrchestratorAgent:
         print(f"\n[Orchestrator] Starting pipeline for {profile.name} — {platform_list} — {period_label}")
         status: dict[str, str] = {}
 
-        # ── Step 1: Parallel ingestion — one task per (platform × period) ─────
-        pairs = [(platform, period) for platform in platform_list for period in periods]
-        ingestion_tasks = [IngestionAgent().run(platform, period) for platform, period in pairs]
-        raw_results = await asyncio.gather(*ingestion_tasks, return_exceptions=True)
+        import main as _main
+        from agents.excel_agent import _build_combined_pnl
+        from services.database import load_pnl_by_period, save_pnl
 
-        ingestion_results: list[IngestionResult] = []
-        for (platform, period), result in zip(pairs, raw_results):
-            key = f"{platform}_{period}"
-            if isinstance(result, Exception):
-                print(f"  [Orchestrator] Ingestion failed for {key}: {result}")
-                status[f"ingestion_{key}"] = f"error: {result}"
-            else:
-                ingestion_results.append(result)
-                status[f"ingestion_{key}"] = f"ok ({result.row_count} rows, {result.source})"
-
-        if not ingestion_results:
-            print("  [Orchestrator] All ingestion failed — aborting.")
-            return OrchestratorResult(pipeline_status=status)
-
-        # ── Step 2: Per-(platform × period) processing ────────────────────────
-        pnl_reports: list[dict] = []
         sensitivity = getattr(profile, "anomaly_sensitivity", "normal")
         currency    = getattr(profile, "currency", "SGD")
-
-        import main as _main
+        dirty_periods: set[str] = getattr(_main, "_dirty_periods", set())
         all_cost_totals: dict[str, dict[str, float]] = getattr(_main, "_cost_totals", {})
         unknown_costs = all_cost_totals.get("unknown", {})
 
-        def _cost_for_period(period: str) -> dict[str, float]:
-            """Merge 'unknown' costs with period-specific costs (period takes precedence)."""
-            return {**unknown_costs, **all_cost_totals.get(period, {})}
+        def _cost_for_period(p: str) -> dict[str, float]:
+            return {**unknown_costs, **all_cost_totals.get(p, {})}
 
-        # Business costs are company-level: applied per-period to each period's P&L
-        # so the combined total correctly reflects per-period expenses.
-        for ingest in ingestion_results:
-            platform = ingest.platform
-            period   = ingest.period
-            key      = f"{platform}_{period}"
-            cost_totals_myr = _cost_for_period(period)
-            print(f"\n  [Orchestrator] Processing {key}...")
-            if cost_totals_myr:
-                print(f"    Business costs: { {k: f'MYR {v:,.2f}' for k, v in cost_totals_myr.items()} }")
-            else:
-                print(f"    No cost files for {period} — platform costs only.")
+        # ── Steps 1+2: Per-period — cache check then pipeline if needed ────────
+        # Each period is processed independently so clean periods can be served
+        # from the Supabase cache without re-running any agents.
+        period_pnls: list[dict] = []  # one combined P&L per period
 
-            try:
-                recon = ReconciliationAgent().run(ingest.transactions, platform, period)
-                status[f"reconciliation_{key}"] = "ok"
-            except Exception as exc:
-                print(f"  [Orchestrator] Reconciliation failed for {key}: {exc}")
-                status[f"reconciliation_{key}"] = f"error: {exc}"
+        for period in periods:
+            is_dirty = period in dirty_periods
+
+            if not is_dirty:
+                cached = load_pnl_by_period(sender, period)
+                if cached:
+                    print(f"  [Orchestrator] Cache hit for {period} — skipping pipeline.")
+                    status[f"period_{period}"] = "cached"
+                    period_pnls.append(cached)
+                    continue
+
+            print(f"\n  [Orchestrator] Processing {period} (dirty={is_dirty})...")
+
+            # Ingest all platforms for this period in parallel
+            ingestion_tasks = [IngestionAgent().run(platform, period) for platform in platform_list]
+            raw_results = await asyncio.gather(*ingestion_tasks, return_exceptions=True)
+
+            platform_pnls: list[dict] = []
+            for platform, result in zip(platform_list, raw_results):
+                key = f"{platform}_{period}"
+                if isinstance(result, Exception):
+                    print(f"    Ingestion failed for {key}: {result}")
+                    status[f"ingestion_{key}"] = f"error: {result}"
+                    continue
+                status[f"ingestion_{key}"] = f"ok ({result.row_count} rows, {result.source})"
+
+                cost_totals_myr = _cost_for_period(period)
+
+                try:
+                    recon = ReconciliationAgent().run(result.transactions, platform, period)
+                    status[f"reconciliation_{key}"] = "ok"
+                except Exception as exc:
+                    print(f"    Reconciliation failed for {key}: {exc}")
+                    status[f"reconciliation_{key}"] = f"error: {exc}"
+                    continue
+
+                try:
+                    anomalies = AnomalyAgent().run(result.transactions, recon, sensitivity)
+                    status[f"anomalies_{key}"] = f"ok ({len(anomalies)} found)"
+                except Exception as exc:
+                    anomalies = []
+                    status[f"anomalies_{key}"] = f"error: {exc}"
+
+                try:
+                    pnl = PnLAgent().run(
+                        platform=platform, period=period,
+                        reconciliation=recon, anomalies=anomalies,
+                        transactions=result.transactions,
+                        currency=currency, cost_totals_myr=cost_totals_myr,
+                    )
+                    platform_pnls.append(pnl)
+                    status[f"pnl_{key}"] = "ok"
+                except Exception as exc:
+                    print(f"    P&L failed for {key}: {exc}")
+                    status[f"pnl_{key}"] = f"error: {exc}"
+
+            if not platform_pnls:
+                print(f"  [Orchestrator] No P&L generated for {period} — skipping.")
                 continue
 
-            try:
-                anomalies = AnomalyAgent().run(ingest.transactions, recon, sensitivity)
-                status[f"anomalies_{key}"] = f"ok ({len(anomalies)} found)"
-            except Exception as exc:
-                print(f"  [Orchestrator] Anomaly detection failed for {key}: {exc}")
-                anomalies = []
-                status[f"anomalies_{key}"] = f"error: {exc}"
+            # Combine platforms within this period and cache the result
+            period_combined = _build_combined_pnl(platform_pnls, period_label=period, currency=currency)
+            save_pnl(sender, period_combined)
+            dirty_periods.discard(period)
+            period_pnls.append(period_combined)
+            status[f"period_{period}"] = f"ok ({len(platform_pnls)} platform(s))"
 
-            try:
-                pnl = PnLAgent().run(
-                    platform=platform,
-                    period=period,
-                    reconciliation=recon,
-                    anomalies=anomalies,
-                    transactions=ingest.transactions,
-                    currency=currency,
-                    cost_totals_myr=cost_totals_myr,
-                )
-                pnl_reports.append(pnl)
-                status[f"pnl_{key}"] = "ok"
-            except Exception as exc:
-                print(f"  [Orchestrator] P&L generation failed for {key}: {exc}")
-                status[f"pnl_{key}"] = f"error: {exc}"
-
-        if not pnl_reports:
+        if not period_pnls:
             print("  [Orchestrator] No P&L reports generated — aborting.")
             return OrchestratorResult(pipeline_status=status)
 
-        # ── Build combined P&L across all periods and platforms ───────────────
-        from agents.excel_agent import _build_combined_pnl
-
-        combined = _build_combined_pnl(pnl_reports, period_label=period_label, currency=currency)
+        # ── Build final combined P&L across all periods ───────────────────────
+        combined = _build_combined_pnl(period_pnls, period_label=period_label, currency=currency)
+        # pnl_reports carries the flat per-platform list for Excel detail sheets
+        pnl_reports = [p for pc in period_pnls for p in pc.get("monthly_breakdown", [pc])]
 
         # ── Step 3: Excel workbook ─────────────────────────────────────────────
         excel_url = None
