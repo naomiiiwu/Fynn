@@ -197,7 +197,7 @@ What you should send me:
 
 What you can type:
 • *run my report* — build your report
-• Ask a question — e.g. _"What was my profit?"_
+• *Ask a question* — e.g. _"What was my profit?"_
 • *change settings* — update preferences"""
 
 GUIDE_ZH = """Fynn使用指南 📖
@@ -241,7 +241,7 @@ QUICK_START_ZH = """Fynn快速开始 📖
 
 你可以这样输入：
 • *生成报告* — 立即生成报告
-• 直接提问 — 例如 _“我的利润是多少？”_
+• *直接提问* — 例如 _”我的利润是多少？”_
 • *修改设置* — 更新偏好设置"""
 
 CLAUDE_SYSTEM_EN = """You are Fynn, an autonomous AI bookkeeper for cross-border e-commerce sellers.
