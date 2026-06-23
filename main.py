@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
             file_type = row.get("file_type", "transactions")
             raw_bytes = row["csv_data"].encode("utf-8")
             if file_type == "transactions":
+                period = row.get("period", "unknown")
                 txns = parse_csv(raw_bytes, platform)
                 _platform_transactions.setdefault(platform, {})[period] = txns
                 _dirty_periods.add(period)  # recompute after restart until first successful run
@@ -432,10 +433,13 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
     required_files = set(profile.required_cost_files if profile else ["cogs", "ads"])
 
     saved_banner = """
-    <div style="background:#d1fae5;border:1px solid #6ee7b7;color:#065f46;padding:12px 16px;
-                border-radius:8px;margin-bottom:24px;font-weight:600;">
-      Preferences saved! Head back to WhatsApp — Fynn is ready.
+    <div class="banner-success">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="8" fill="#16a34a"/><path d="M4.5 8l2.5 2.5 4.5-4.5" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Preferences saved — head back to WhatsApp, Fynn is ready.
     </div>""" if saved else ""
+
+    def sel(val, match): return "selected" if val == match else ""
+    def chk(val, s): return "checked" if val in s else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -444,104 +448,329 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Fynn — Setup</title>
   <style>
-    *{{box-sizing:border-box;margin:0;padding:0}}
-    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-          background:#f9fafb;color:#111;min-height:100vh;display:flex;
-          align-items:flex-start;justify-content:center;padding:32px 16px}}
-    .card{{background:#fff;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.08);
-           padding:32px;width:100%;max-width:440px}}
-    h1{{font-size:1.5rem;font-weight:700;margin-bottom:4px}}
-    .sub{{color:#6b7280;font-size:.9rem;margin-bottom:28px}}
-    label{{display:block;font-size:.85rem;font-weight:600;color:#374151;margin-bottom:6px}}
-    input[type=text],select{{width:100%;padding:10px 12px;border:1.5px solid #d1d5db;
-      border-radius:8px;font-size:1rem;outline:none;transition:border .2s}}
-    input[type=text]:focus,select:focus{{border-color:#6366f1}}
-    .field{{margin-bottom:20px}}
-    .checks{{display:flex;gap:16px;flex-wrap:wrap}}
-    .checks label{{display:flex;align-items:center;gap:6px;font-weight:400;
-                   font-size:.95rem;cursor:pointer}}
-    .checks input{{width:16px;height:16px;accent-color:#6366f1}}
-    .hours{{display:flex;align-items:center;gap:10px}}
-    .hours input[type=number]{{width:80px}}
-    .hours span{{color:#6b7280;font-size:.9rem}}
-    button{{width:100%;padding:13px;background:#6366f1;color:#fff;border:none;
-            border-radius:8px;font-size:1rem;font-weight:600;cursor:pointer;
-            margin-top:8px;transition:background .2s}}
-    button:hover{{background:#4f46e5}}
-    .logo{{font-size:1.1rem;font-weight:800;color:#6366f1;margin-bottom:24px}}
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #0d1b2a;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px 64px;
+    }}
+
+    /* ── Nav ── */
+    .nav {{
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 36px;
+    }}
+    .logo {{
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: #0d1b2a;
+      letter-spacing: -.5px;
+    }}
+    .logo span {{ color: #2563eb; }}
+    .nav-tag {{
+      font-size: .75rem;
+      font-weight: 600;
+      color: #2563eb;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 99px;
+      padding: 3px 10px;
+    }}
+
+    /* ── Card ── */
+    .card {{
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 24px rgba(0,0,0,.07);
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 480px;
+    }}
+
+    .card-header {{ margin-bottom: 32px; }}
+    .card-header h1 {{
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: #0d1b2a;
+      letter-spacing: -.4px;
+      margin-bottom: 6px;
+    }}
+    .card-header p {{
+      font-size: .9rem;
+      color: #6b7280;
+      line-height: 1.5;
+    }}
+
+    /* ── Section ── */
+    .section {{
+      border-top: 1px solid #f3f4f6;
+      padding-top: 24px;
+      margin-bottom: 24px;
+    }}
+    .section-label {{
+      font-size: .7rem;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #9ca3af;
+      margin-bottom: 16px;
+    }}
+
+    /* ── Fields ── */
+    .field {{ margin-bottom: 18px; }}
+    .field:last-child {{ margin-bottom: 0; }}
+    .field > label {{
+      display: block;
+      font-size: .82rem;
+      font-weight: 600;
+      color: #374151;
+      margin-bottom: 7px;
+    }}
+
+    input[type=text],
+    input[type=number],
+    select {{
+      width: 100%;
+      padding: 10px 13px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
+      font-size: .95rem;
+      color: #0d1b2a;
+      background: #fafafa;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+      appearance: none;
+      -webkit-appearance: none;
+    }}
+    input[type=text]:focus,
+    input[type=number]:focus,
+    select:focus {{
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.1);
+      background: #fff;
+    }}
+
+    /* ── Two-col grid ── */
+    .field-row {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 18px;
+    }}
+    .field-row .field {{ margin-bottom: 0; }}
+
+    /* ── Checkbox pills ── */
+    .pill-group {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .pill-group input[type=checkbox] {{ display: none; }}
+    .pill-group label {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 13px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 99px;
+      font-size: .85rem;
+      font-weight: 500;
+      color: #374151;
+      cursor: pointer;
+      transition: border-color .15s, background .15s, color .15s;
+      user-select: none;
+    }}
+    .pill-group input[type=checkbox]:checked + label {{
+      border-color: #2563eb;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-weight: 600;
+    }}
+    .pill-dot {{
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: .5;
+    }}
+    .pill-group input[type=checkbox]:checked + label .pill-dot {{
+      opacity: 1;
+    }}
+
+    /* ── Time row ── */
+    .time-row {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }}
+    .time-row input[type=number] {{
+      width: 76px;
+    }}
+    .time-row span {{
+      font-size: .88rem;
+      color: #6b7280;
+    }}
+
+    /* ── Banner ── */
+    .banner-success {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #f0fdf4;
+      border: 1px solid #86efac;
+      color: #15803d;
+      padding: 12px 16px;
+      border-radius: 10px;
+      margin-bottom: 28px;
+      font-size: .88rem;
+      font-weight: 600;
+    }}
+
+    /* ── Submit ── */
+    .btn-submit {{
+      display: block;
+      width: 100%;
+      padding: 13px;
+      background: #0d1b2a;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: .95rem;
+      font-weight: 700;
+      cursor: pointer;
+      margin-top: 28px;
+      transition: background .15s, transform .1s;
+      letter-spacing: -.1px;
+    }}
+    .btn-submit:hover {{ background: #1e3a5f; }}
+    .btn-submit:active {{ transform: scale(.99); }}
+
+    .footer-note {{
+      text-align: center;
+      font-size: .78rem;
+      color: #9ca3af;
+      margin-top: 20px;
+    }}
   </style>
 </head>
 <body>
+
+<nav class="nav">
+  <div class="logo">F<span>y</span>nn</div>
+  <div class="nav-tag">AI Bookkeeper</div>
+</nav>
+
 <div class="card">
-  <div class="logo">🤖 Fynn</div>
-  <h1>Set Up Fynn</h1>
-  <p class="sub">Tell Fynn how to prepare your reports.</p>
+  <div class="card-header">
+    <h1>Set up your account</h1>
+    <p>Tell Fynn how to prepare your books. You can change this any time.</p>
+  </div>
+
   {saved_banner}
+
   <form method="POST" action="{app_url}/setup/save">
     <input type="hidden" name="phone" value="{phone}"/>
 
-    <div class="field">
-      <label>What should Fynn call you?</label>
-      <input type="text" name="name" value="{name}" placeholder="e.g. Naomi" required/>
-    </div>
+    <!-- Basics -->
+    <div class="section">
+      <div class="section-label">Basics</div>
 
-    <div class="field">
-      <label>Which currency should reports use?</label>
-      <select name="currency">
-        <option value="SGD" {"selected" if currency=="SGD" else ""}>SGD — Singapore Dollar</option>
-        <option value="MYR" {"selected" if currency=="MYR" else ""}>MYR — Malaysian Ringgit</option>
-        <option value="USD" {"selected" if currency=="USD" else ""}>USD — US Dollar</option>
-      </select>
-    </div>
+      <div class="field">
+        <label>What should Fynn call you?</label>
+        <input type="text" name="name" value="{name}" placeholder="e.g. Sarah" required/>
+      </div>
 
-    <div class="field">
-      <label>Which language do you prefer?</label>
-      <select name="language">
-        <option value="en" {"selected" if lang=="en" else ""}>English</option>
-        <option value="zh" {"selected" if lang=="zh" else ""}>中文 (Mandarin)</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label>Which marketplaces should Fynn reconcile?</label>
-      <div class="checks">
-        <label><input type="checkbox" name="platforms" value="shopee" {"checked" if "shopee" in platforms else ""}/> Shopee</label>
-        <label><input type="checkbox" name="platforms" value="lazada" {"checked" if "lazada" in platforms else ""}/> Lazada</label>
+      <div class="field-row">
+        <div class="field">
+          <label>Report currency</label>
+          <select name="currency">
+            <option value="SGD" {sel(currency,"SGD")}>SGD — Singapore Dollar</option>
+            <option value="MYR" {sel(currency,"MYR")}>MYR — Malaysian Ringgit</option>
+            <option value="USD" {sel(currency,"USD")}>USD — US Dollar</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Language</label>
+          <select name="language">
+            <option value="en" {sel(lang,"en")}>English</option>
+            <option value="zh" {sel(lang,"zh")}>中文</option>
+          </select>
+        </div>
       </div>
     </div>
 
-    <div class="field">
-      <label>Which supporting files should Fynn expect?</label>
-      <div class="checks">
-        <label><input type="checkbox" name="required_cost_files" value="cogs" {"checked" if "cogs" in required_files else ""}/> COGS</label>
-        <label><input type="checkbox" name="required_cost_files" value="ads" {"checked" if "ads" in required_files else ""}/> Ads spend</label>
-        <label><input type="checkbox" name="required_cost_files" value="warehouse" {"checked" if "warehouse" in required_files else ""}/> Warehouse</label>
-        <label><input type="checkbox" name="required_cost_files" value="payroll" {"checked" if "payroll" in required_files else ""}/> Payroll</label>
-        <label><input type="checkbox" name="required_cost_files" value="packaging" {"checked" if "packaging" in required_files else ""}/> Packaging</label>
-        <label><input type="checkbox" name="required_cost_files" value="expense" {"checked" if "expense" in required_files else ""}/> Other expenses</label>
+    <!-- Marketplaces -->
+    <div class="section">
+      <div class="section-label">Marketplaces</div>
+      <div class="field">
+        <label>Which platforms should Fynn reconcile?</label>
+        <div class="pill-group">
+          <input type="checkbox" name="platforms" value="shopee" id="p_shopee" {chk("shopee", platforms)}/>
+          <label for="p_shopee"><span class="pill-dot"></span>Shopee</label>
+          <input type="checkbox" name="platforms" value="lazada" id="p_lazada" {chk("lazada", platforms)}/>
+          <label for="p_lazada"><span class="pill-dot"></span>Lazada</label>
+        </div>
       </div>
     </div>
 
-    <div class="field">
-      <label>What should Fynn send you?</label>
-      <div class="checks">
-        <label><input type="checkbox" name="daily_enabled" value="1" {daily}/> Daily reminder</label>
-        <label><input type="checkbox" name="weekly_enabled" value="1" {weekly}/> Weekly summary</label>
-        <label><input type="checkbox" name="monthly_enabled" value="1" {monthly}/> Monthly P&amp;L</label>
+    <!-- Cost files -->
+    <div class="section">
+      <div class="section-label">Cost Files</div>
+      <div class="field">
+        <label>Which files should Fynn expect each month?</label>
+        <div class="pill-group">
+          <input type="checkbox" name="required_cost_files" value="cogs" id="cf_cogs" {chk("cogs", required_files)}/>
+          <label for="cf_cogs"><span class="pill-dot"></span>COGS</label>
+          <input type="checkbox" name="required_cost_files" value="ads" id="cf_ads" {chk("ads", required_files)}/>
+          <label for="cf_ads"><span class="pill-dot"></span>Ads spend</label>
+          <input type="checkbox" name="required_cost_files" value="warehouse" id="cf_wh" {chk("warehouse", required_files)}/>
+          <label for="cf_wh"><span class="pill-dot"></span>Warehouse</label>
+          <input type="checkbox" name="required_cost_files" value="payroll" id="cf_pay" {chk("payroll", required_files)}/>
+          <label for="cf_pay"><span class="pill-dot"></span>Payroll</label>
+          <input type="checkbox" name="required_cost_files" value="packaging" id="cf_pkg" {chk("packaging", required_files)}/>
+          <label for="cf_pkg"><span class="pill-dot"></span>Packaging</label>
+          <input type="checkbox" name="required_cost_files" value="expense" id="cf_exp" {chk("expense", required_files)}/>
+          <label for="cf_exp"><span class="pill-dot"></span>Other expenses</label>
+        </div>
       </div>
     </div>
 
-    <div class="field">
-      <label>Best time to receive reports</label>
-      <div class="hours">
-        <input type="number" name="report_time_hour" min="0" max="23" value="{hour}"/>
-        <span>:00 daily, 24-hour time</span>
+    <!-- Reports -->
+    <div class="section">
+      <div class="section-label">Reports</div>
+      <div class="field">
+        <label>What should Fynn send you?</label>
+        <div class="pill-group">
+          <input type="checkbox" name="weekly_enabled" value="1" id="r_weekly" {weekly}/>
+          <label for="r_weekly"><span class="pill-dot"></span>Weekly summary</label>
+          <input type="checkbox" name="monthly_enabled" value="1" id="r_monthly" {monthly}/>
+          <label for="r_monthly"><span class="pill-dot"></span>Monthly P&amp;L</label>
+        </div>
+      </div>
+      <div class="field" style="margin-top:16px">
+        <label>Best time to receive reports</label>
+        <div class="time-row">
+          <input type="number" name="report_time_hour" min="0" max="23" value="{hour}"/>
+          <span>:00 — 24-hour time, your local timezone</span>
+        </div>
       </div>
     </div>
 
-    <button type="submit">Save preferences</button>
+    <button type="submit" class="btn-submit">Save preferences →</button>
   </form>
+
+  <p class="footer-note">Changes take effect on your next scheduled report.</p>
 </div>
+
 </body>
 </html>"""
 
@@ -1251,7 +1480,7 @@ def _run_report_background(sender: str, allow_mock: bool = True) -> None:
 
         if result.combined_pnl:
             _last_pnl = result.combined_pnl
-            _last_report_period = period
+            _last_report_period = result.combined_pnl.get("period", "")
             _conversation.store_pnl(sender, result.combined_pnl)
             _log("P&L stored in memory.")
             from services.database import save_pnl

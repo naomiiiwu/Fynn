@@ -118,12 +118,17 @@ async def run_daily_ping() -> None:
         return  # no one to ping at this hour
 
     try:
-        from data.mock_shopee_data import get_mock_transactions
+        import main as _main
         from models.transaction import TransactionType
 
-        txns = get_mock_transactions()
+        all_txns = [
+            t
+            for periods in _main._platform_transactions.values()
+            for txns in periods.values()
+            for t in txns
+        ]
         orders_today = [
-            t for t in txns
+            t for t in all_txns
             if t.type == TransactionType.ORDER
             and t.date.day == datetime.now().day
         ]
@@ -143,7 +148,7 @@ async def run_daily_ping() -> None:
                     f"No new orders yet today. I'll keep watching.\n\n"
                     f"— Fynn"
                 )
-            wa = WhatsAppService()
+            wa = WhatsAppService(to=profile.phone)
             wa.send(message)
             print(f"  [Scheduler] Daily ping sent to {profile.phone}.")
 
@@ -167,27 +172,37 @@ async def run_weekly_summary() -> None:
         )]
 
     try:
-        from data.mock_shopee_data import get_mock_transactions
+        import main as _main
         from models.transaction import TransactionType
         from services.currency import CurrencyConverter
 
-        txns = get_mock_transactions()
-        orders = [t for t in txns if t.type == TransactionType.ORDER]
-        refunds = [t for t in txns if t.type == TransactionType.REFUND]
+        all_txns = [
+            t
+            for periods in _main._platform_transactions.values()
+            for txns in periods.values()
+            for t in txns
+        ]
+        orders = [t for t in all_txns if t.type == TransactionType.ORDER]
+        refunds = [t for t in all_txns if t.type == TransactionType.REFUND]
         gross_myr = sum(t.amount_myr for t in orders)
-        conv = CurrencyConverter()
-        gross_sgd = conv.myr_to_sgd(gross_myr)["converted_amount"]
 
         for profile in profiles:
+            currency = getattr(profile, "currency", "MYR")
+            if currency == "SGD":
+                conv = CurrencyConverter()
+                display_amount = conv.myr_to_sgd(gross_myr)["converted_amount"]
+            else:
+                display_amount = gross_myr
+
             message = (
                 f"Hey {profile.name}! 📊 Your weekly Fynn update:\n\n"
                 f"📦 Orders: {len(orders)}\n"
-                f"💰 Gross Sales: {profile.currency} {gross_sgd:,.2f}\n"
+                f"💰 Gross Sales: {currency} {display_amount:,.2f}\n"
                 f"↩️ Refunds: {len(refunds)}\n\n"
                 f"Full monthly report drops on the 1st.\n"
                 f"— Fynn"
             )
-            wa = WhatsAppService()
+            wa = WhatsAppService(to=profile.phone)
             wa.send(message)
             print(f"  [Scheduler] Weekly summary sent to {profile.phone}.")
 
@@ -219,7 +234,7 @@ async def run_monthly_report() -> None:
             platform_list = list(_main._platform_transactions.keys()) or ["shopee"]
             result = OrchestratorAgent().run_sync(
                 sender=profile.phone,
-                period=period,
+                periods=[period],
                 platform_list=platform_list,
                 profile=profile,
             )
