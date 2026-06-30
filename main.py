@@ -694,6 +694,7 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
           <select name="currency">
             <option value="SGD" {sel(currency,"SGD")}>SGD — Singapore Dollar</option>
             <option value="MYR" {sel(currency,"MYR")}>MYR — Malaysian Ringgit</option>
+            <option value="CNY" {sel(currency,"CNY")}>CNY — Chinese Yuan (RMB)</option>
             <option value="USD" {sel(currency,"USD")}>USD — US Dollar</option>
           </select>
         </div>
