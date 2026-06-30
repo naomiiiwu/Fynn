@@ -1443,7 +1443,7 @@ def _schedule_auto_refresh(sender: str, delay_seconds: float = 8.0) -> None:
     timer.start()
 
 
-def _run_report_background(sender: str, allow_mock: bool = True) -> None:
+def _run_report_background(sender: str, allow_mock: bool = True, force: bool = False) -> None:
     """Run the full multi-agent pipeline and send results via Twilio when done."""
     global _last_pnl, _last_report_period
     from datetime import datetime as _dt
@@ -1455,7 +1455,13 @@ def _run_report_background(sender: str, allow_mock: bool = True) -> None:
         _log("Starting pipeline...")
 
         if not allow_mock and not _has_uploaded_transactions():
-            _log("Skipped auto-refresh: no uploaded transactions available.")
+            _log("Skipped: no uploaded transactions available.")
+            if sender != "system":
+                _twiml_send(
+                    sender,
+                    "I don't have any transaction data yet.\n\n"
+                    "Send me your Shopee, Lazada or TikTok Shop finance export and I'll run the report straight away.",
+                )
             return
 
         profile = _conversation.profiles.get(sender)
@@ -1465,6 +1471,30 @@ def _run_report_background(sender: str, allow_mock: bool = True) -> None:
         _log(f"Profile loaded: {profile.name}")
 
         periods = _detect_periods()
+
+        # Warn if all available data is stale (older than last month) — unless user said "proceed"
+        if not force and not allow_mock and sender != "system" and periods:
+            from datetime import datetime as _dt
+            now = _dt.now()
+            def _parse_period(p: str):
+                try:
+                    return _dt.strptime(p, "%B %Y")
+                except ValueError:
+                    return None
+            latest = max((d for d in (_parse_period(p) for p in periods) if d), default=None)
+            if latest:
+                months_old = (now.year - latest.year) * 12 + (now.month - latest.month)
+                if months_old >= 2:
+                    _twiml_send(
+                        sender,
+                        f"⚠️ The most recent data I have is from *{latest.strftime('%B %Y')}* — "
+                        f"{months_old} months ago.\n\n"
+                        f"Upload your latest finance export to get a current report, or reply *proceed* "
+                        f"to run the {latest.strftime('%B %Y')} report anyway.",
+                    )
+                    _pending_reconciliations[sender] = {"stale_proceed": True, "periods": periods}
+                    return
+
         platform_list = [
             p for p in (profile.platforms or [])
             if p != "unknown" and _platform_transactions.get(p)
@@ -1719,6 +1749,10 @@ async def whatsapp_webhook(
                     "I still need the marketplace finance export before reconciliation can run.\n\n"
                     + _format_missing_files(pending["missing_essential"], pending.get("missing_support", []))
                 )
+            if pending.get("stale_proceed"):
+                _pending_reconciliations.pop(sender, None)
+                background_tasks.add_task(_run_report_background, sender, False, True)
+                return _twiml_response("Okay — running the report on the data I have. I'll send it when it's done. ⏳")
             background_tasks.add_task(_auto_refresh_report, sender, True)
             return _twiml_response("Okay — reconciling with the files available now. I’ll send the refreshed report when it’s done.")
 

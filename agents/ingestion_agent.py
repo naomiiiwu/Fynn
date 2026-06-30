@@ -36,22 +36,11 @@ class IngestionAgent:
     def _load_sync(self, platform: str, period: str) -> IngestionResult:
         import main as _main
 
-        # Try exact (platform, period) match first, then any period for the platform
         platform_periods = _main._platform_transactions.get(platform, {})
         txns = platform_periods.get(period)
-        if txns is None:
-            # Fall back to any period for this platform (e.g. when period label differs slightly)
-            txns = next(iter(platform_periods.values()), None)
-        if txns is None:
-            # Try any other platform as last resort before mock
-            for other_periods in _main._platform_transactions.values():
-                candidate = other_periods.get(period) or next(iter(other_periods.values()), None)
-                if candidate:
-                    txns = candidate
-                    break
 
         if txns:
-            print(f"  [Ingestion:{platform}] Loaded {len(txns)} transactions from upload")
+            print(f"  [Ingestion:{platform}] Loaded {len(txns)} transactions for {period}")
             return IngestionResult(
                 platform=platform,
                 period=period,
@@ -60,14 +49,12 @@ class IngestionAgent:
                 source="uploaded_csv",
             )
 
-        # Fallback to mock data
-        from data.mock_shopee_data import get_mock_transactions
-        txns = get_mock_transactions()
-        print(f"  [Ingestion:{platform}] No CSV found — using mock data ({len(txns)} rows)")
+        print(f"  [Ingestion:{platform}] No data found for {platform}/{period} — skipping.")
         return IngestionResult(
             platform=platform,
             period=period,
-            transactions=txns,
-            row_count=len(txns),
-            source="mock",
+            transactions=[],
+            row_count=0,
+            source="none",
+            error=f"No uploaded data for {platform} / {period}",
         )
