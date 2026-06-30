@@ -54,10 +54,19 @@ class ExcelAgent:
         if url:
             print(f"  [Excel] Uploaded → {url}")
         else:
-            path = os.path.join(tempfile.gettempdir(), filename)
-            with open(path, "wb") as f:
-                f.write(xlsx_bytes)
-            print(f"  [Excel] Supabase unavailable — saved locally: {path}")
+            # Supabase unavailable — store in app memory and serve from /report/download/
+            try:
+                import main as _main
+                _main._excel_cache[filename] = xlsx_bytes
+                app_url = _main._app_url()
+                url = f"{app_url}/report/download/{filename}"
+                print(f"  [Excel] Supabase unavailable — serving from in-memory cache: {url}")
+            except Exception as exc:
+                print(f"  [Excel] In-memory cache fallback failed: {exc}")
+                path = os.path.join(tempfile.gettempdir(), filename)
+                with open(path, "wb") as f:
+                    f.write(xlsx_bytes)
+                print(f"  [Excel] Saved locally as last resort: {path}")
 
         return {"url": url, "filename": filename, "bytes": xlsx_bytes}
 

@@ -109,6 +109,8 @@ _refresh_timers: dict[str, object] = {}
 # Batches per-file confirmation messages into one summary (keyed by sender)
 _pending_confirmations: dict[str, list[str]] = {}
 _confirmation_timers: dict[str, object] = {}
+# In-memory Excel cache — serves reports when Supabase Storage is not configured
+_excel_cache: dict[str, bytes] = {}
 # Tracks when we last sent a "classifying" ack, to suppress duplicates from rapid file sends
 _last_file_ack: dict[str, float] = {}
 _twilio_daily_limit_exhausted: bool = False
@@ -1164,6 +1166,21 @@ async def trigger_job(job_id: str) -> JSONResponse:
     from datetime import datetime as dt
     job.modify(next_run_time=dt.now())
     return JSONResponse(content={"status": "triggered", "job": job_id})
+
+
+# ── Excel report download ──────────────────────────────────────────────────────
+
+@app.get("/report/download/{filename}")
+async def download_report(filename: str) -> Response:
+    """Serve a cached Excel report by filename (fallback when Supabase Storage is unavailable)."""
+    data = _excel_cache.get(filename)
+    if not data:
+        return JSONResponse(content={"error": "Report not found."}, status_code=404)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Monthly report pipeline ────────────────────────────────────────────────────
