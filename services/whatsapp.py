@@ -56,24 +56,36 @@ class WhatsAppService:
 
         try:
             from twilio.rest import Client  # type: ignore
-
-            client = Client(self.account_sid, self.auth_token)
-            kwargs = dict(from_=self.from_number, to=self.to_number, body=message)
-            if media_url:
-                kwargs["media_url"] = [media_url]
-
-            msg = client.messages.create(**kwargs)
-            print(f"  [WhatsApp] Message sent successfully. SID: {msg.sid}")
-            return True
         except ImportError:
             print("  [WhatsApp] twilio package not available — printing to console.\n")
             print("=" * 60)
             print(message)
+            if media_url:
+                print(f"[Attachment] {media_url}")
             print("=" * 60)
             return True
-        except Exception as exc:
-            print(f"  [WhatsApp] Send failed: {exc} — printing to console instead.\n")
-            print("=" * 60)
-            print(message)
-            print("=" * 60)
-            return False
+
+        client = Client(self.account_sid, self.auth_token)
+
+        # Try with attachment first; fall back to text-only with URL in body
+        for attempt, kwargs in enumerate([
+            dict(from_=self.from_number, to=self.to_number, body=message,
+                 **{"media_url": [media_url]} if media_url else {}),
+            dict(from_=self.from_number, to=self.to_number,
+                 body=message + (f"\n\n📎 Download report: {media_url}" if media_url else "")),
+        ]):
+            try:
+                msg = client.messages.create(**kwargs)
+                if attempt == 0:
+                    print(f"  [WhatsApp] Sent with attachment. SID: {msg.sid}")
+                else:
+                    print(f"  [WhatsApp] Sent without attachment (fallback). SID: {msg.sid}")
+                return True
+            except Exception as exc:
+                print(f"  [WhatsApp] Attempt {attempt + 1} failed: {exc}")
+                if attempt == 1:
+                    print("  [WhatsApp] Both attempts failed — printing to console.")
+                    print("=" * 60)
+                    print(message)
+                    print("=" * 60)
+                    return False
