@@ -255,18 +255,6 @@ def create_scheduler() -> AsyncIOScheduler:
     tz = _seller_tz()
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Weekly summary
-    weekly_day  = _env_str("SCHEDULE_WEEKLY_DAY", "mon")
-    weekly_hour = _env_int("SCHEDULE_WEEKLY_HOUR", 8)
-    scheduler.add_job(
-        run_weekly_summary,
-        trigger=CronTrigger(day_of_week=weekly_day, hour=weekly_hour, minute=0, timezone=tz),
-        id="weekly_summary",
-        name="Weekly P&L summary",
-        replace_existing=True,
-    )
-    print(f"  [Scheduler] Weekly summary: {weekly_hour:02d}:00 {tz} every {weekly_day.capitalize()}.")
-
     # Monthly full report
     monthly_day  = _env_int("SCHEDULE_MONTHLY_DAY", 1)
     monthly_hour = _env_int("SCHEDULE_MONTHLY_HOUR", 8)
