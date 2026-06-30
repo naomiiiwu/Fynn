@@ -72,7 +72,8 @@ class OrchestratorAgent:
         # ── Steps 1+2: Per-period — cache check then pipeline if needed ────────
         # Each period is processed independently so clean periods can be served
         # from the Supabase cache without re-running any agents.
-        period_pnls: list[dict] = []  # one combined P&L per period
+        period_pnls: list[dict] = []   # one combined P&L per period
+        all_platform_pnls: list[dict] = []  # full P&L dicts for Excel detail sheets
 
         for period in periods:
             is_dirty = period in dirty_periods
@@ -125,6 +126,7 @@ class OrchestratorAgent:
                         currency=currency, cost_totals_myr=cost_totals_myr,
                     )
                     platform_pnls.append(pnl)
+                    all_platform_pnls.append(pnl)
                     status[f"pnl_{key}"] = "ok"
                 except Exception as exc:
                     print(f"    P&L failed for {key}: {exc}")
@@ -147,8 +149,8 @@ class OrchestratorAgent:
 
         # ── Build final combined P&L across all periods ───────────────────────
         combined = _build_combined_pnl(period_pnls, period_label=period_label, currency=currency)
-        # pnl_reports carries the flat per-platform list for Excel detail sheets
-        pnl_reports = [p for pc in period_pnls for p in pc.get("monthly_breakdown", [pc])]
+        # all_platform_pnls are the full P&L dicts (with revenue/costs/profit) for Excel detail sheets
+        pnl_reports = all_platform_pnls
 
         # ── Step 3: Excel workbook ─────────────────────────────────────────────
         excel_url = None
