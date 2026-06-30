@@ -55,7 +55,7 @@ def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
         elif txn.type == TransactionType.VOUCHER:
             total_vouchers += abs(txn.amount_myr)
         elif txn.type == TransactionType.SETTLEMENT:
-            actual_payout = txn.amount_myr
+            actual_payout += txn.amount_myr
 
     expected_payout = gross_sales - total_refunds - total_platform_fees - total_shipping - total_vouchers
     discrepancy = actual_payout - expected_payout
