@@ -255,16 +255,6 @@ def create_scheduler() -> AsyncIOScheduler:
     tz = _seller_tz()
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Daily ping — runs every hour; the job itself filters by each user's report_time_hour
-    scheduler.add_job(
-        run_daily_ping,
-        trigger=CronTrigger(minute=0, timezone=tz),
-        id="daily_ping",
-        name="Daily order ping",
-        replace_existing=True,
-    )
-    print(f"  [Scheduler] Daily ping: checks every hour ({tz}) and sends at each user's configured time.")
-
     # Weekly summary
     weekly_day  = _env_str("SCHEDULE_WEEKLY_DAY", "mon")
     weekly_hour = _env_int("SCHEDULE_WEEKLY_HOUR", 8)

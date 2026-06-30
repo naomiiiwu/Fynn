@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
             raw_bytes = row["csv_data"].encode("utf-8")
             if file_type == "transactions":
                 period = row.get("period", "unknown")
-                txns = parse_csv(raw_bytes, platform)
+                txns = parse_csv(raw_bytes, platform, filename=row.get("id", ""))
                 _platform_transactions.setdefault(platform, {})[period] = txns
                 _dirty_periods.add(period)  # recompute after restart until first successful run
                 print(f"  [Fynn] Restored {platform} transactions ({period}, {len(txns)} rows)")
@@ -275,7 +275,7 @@ def _inspect_upload(filename: str, content: bytes, classified) -> dict:
 
     try:
         if file_type == "transactions":
-            txns = parse_csv(content, platform)
+            txns = parse_csv(content, platform, filename=filename)
             transaction_count = len(txns)
             period = _period_from_transactions(txns) if txns else "unknown"
         elif file_type in _COST_FILE_TYPES:
@@ -754,13 +754,6 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
           <label for="r_weekly"><span class="pill-dot"></span>Weekly summary</label>
           <input type="checkbox" name="monthly_enabled" value="1" id="r_monthly" {monthly}/>
           <label for="r_monthly"><span class="pill-dot"></span>Monthly P&amp;L</label>
-        </div>
-      </div>
-      <div class="field" style="margin-top:16px">
-        <label>Best time to receive reports</label>
-        <div class="time-row">
-          <input type="number" name="report_time_hour" min="0" max="23" value="{hour}"/>
-          <span>:00 — 24-hour time, your local timezone</span>
         </div>
       </div>
     </div>

@@ -474,28 +474,133 @@ PLATFORM_CURRENCIES: dict[str, str] = {
     "tiktok":  "USD",
 }
 
+# Currency codes we can recognise in CSV content
+_KNOWN_CURRENCIES = {"MYR", "SGD", "USD", "THB", "CNY", "IDR", "PHP", "VND"}
 
-def parse_csv(content: bytes | str, platform: str, currency: str | None = None) -> List[Transaction]:
+# Currency symbols → ISO code
+_CURRENCY_SYMBOLS = {
+    "rm": "MYR",
+    "s$": "SGD",
+    "s\$": "SGD",
+    "rp": "IDR",
+    "฿": "THB",
+    "¥": "CNY",
+    "$": "USD",
+}
+
+
+_AMOUNT_HEADER_KEYWORDS = {"amount", "credit", "debit", "total", "price", "payout", "settlement"}
+
+
+def _detect_currency_from_csv(content: bytes | str, filename: str = "") -> str | None:
+    """
+    Detect source currency from CSV content and filename.
+
+    Checks (in priority order):
+      1. Amount-related column headers containing a currency code e.g. "Amount (SGD)", "Credit (MYR)"
+      2. Values in amount-related columns only (first 20 rows) — avoids false positives from
+         description or order ID fields containing currency-like strings
+      3. Filename containing a country/currency hint (MY, SG, ID, TH, PH)
+
+    Returns:
+        ISO 4217 currency code or None if detection fails.
+    """
+    if isinstance(content, bytes):
+        try:
+            text = content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = content
+
+    reader = csv.DictReader(io.StringIO(text))
+    headers = list(reader.fieldnames or [])
+
+    # 1. Check amount-related column headers for embedded currency codes
+    # e.g. "Credit (MYR)", "Amount (SGD)", "Debit (MYR)"
+    amount_cols = [
+        h for h in headers
+        if any(kw in h.strip().lower() for kw in _AMOUNT_HEADER_KEYWORDS)
+    ]
+    for h in amount_cols:
+        for code in _KNOWN_CURRENCIES:
+            if code in h.upper():
+                return code
+
+    # 2. Scan values in amount-related columns only (first 20 rows)
+    rows = []
+    try:
+        for i, row in enumerate(reader):
+            if i >= 20:
+                break
+            rows.append(row)
+    except Exception:
+        pass
+
+    for row in rows:
+        for col in amount_cols:
+            val = (row.get(col) or "").strip()
+            if not val:
+                continue
+            upper = val.upper()
+            for code in _KNOWN_CURRENCIES:
+                if code in upper:
+                    return code
+            lower = val.lower()
+            for symbol, code in _CURRENCY_SYMBOLS.items():
+                if lower.startswith(symbol):
+                    return code
+
+    # 3. Filename hints — e.g. "shopee_SG_march.csv", "lazada_MY_finance.csv"
+    fname = filename.upper()
+    hint_map = {
+        "_SG_": "SGD", "-SG-": "SGD", "_SGD_": "SGD", "SGD": "SGD",
+        "_MY_": "MYR", "-MY-": "MYR", "_MYR_": "MYR", "MYR": "MYR",
+        "_ID_": "IDR", "-ID-": "IDR",
+        "_TH_": "THB", "-TH-": "THB",
+        "_PH_": "PHP", "-PH-": "PHP",
+    }
+    for hint, code in hint_map.items():
+        if hint in fname:
+            return code
+
+    return None
+
+
+def parse_csv(content: bytes | str, platform: str, currency: str | None = None, filename: str = "") -> List[Transaction]:
     """
     Route to the correct platform parser and stamp each transaction with the source currency.
+
+    Currency resolution order:
+      1. Explicit `currency` argument (highest priority)
+      2. Auto-detected from CSV content / filename
+      3. Platform default from PLATFORM_CURRENCIES
+      4. "MYR" fallback
 
     Args:
         content:  Raw CSV bytes or string.
         platform: One of "shopee", "lazada", etc.
-        currency: Override source currency (e.g. "SGD" for Shopee SG). Defaults to
-                  PLATFORM_CURRENCIES[platform] or "MYR" if unknown.
+        currency: Override source currency. If None, auto-detection runs first.
+        filename: Original filename — used as a hint for currency detection.
 
     Returns:
         List of Transaction objects with currency set.
     """
-    src_currency = currency or PLATFORM_CURRENCIES.get(platform.lower(), "MYR")
+    if currency:
+        src_currency = currency
+    else:
+        detected = _detect_currency_from_csv(content, filename)
+        src_currency = detected or PLATFORM_CURRENCIES.get(platform.lower(), "MYR")
+        if detected:
+            print(f"  [CSV] Auto-detected currency: {src_currency}")
+        else:
+            print(f"  [CSV] Currency not detected — using platform default: {src_currency}")
 
     if platform.lower() == "lazada":
         txns = parse_lazada_csv(content)
     else:
         txns = parse_shopee_csv(content)
 
-    # Stamp each transaction with the resolved source currency
     for t in txns:
         t.currency = src_currency
 
