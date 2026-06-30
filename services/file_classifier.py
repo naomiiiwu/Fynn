@@ -31,7 +31,26 @@ class ClassifiedFile:
 
 
 def _read_sample(content: bytes, max_rows: int = 5) -> tuple[list[str], list[dict]]:
-    """Return headers and first N data rows from CSV bytes."""
+    """Return headers and first N data rows from CSV or Excel bytes."""
+    # Excel workbook: ZIP magic bytes PK\x03\x04
+    if content[:4] == b"PK\x03\x04":
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            ws = wb.active
+            rows_raw = list(ws.iter_rows(values_only=True))
+            wb.close()
+            if not rows_raw:
+                return [], []
+            headers = [str(c).strip() if c is not None else "" for c in rows_raw[0]]
+            rows = []
+            for row in rows_raw[1: max_rows + 1]:
+                if any(c is not None for c in row):
+                    rows.append({headers[j]: row[j] for j in range(min(len(headers), len(row)))})
+            return headers, rows
+        except Exception:
+            return [], []
+
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -120,7 +139,7 @@ def _infer_from_signals(filename: str, headers: list[str], rows: list[dict]) -> 
         file_type = "warehouse"
     elif any(token in combined for token in ["poly mailer", "bubble wrap", "desiccant", "packing material", "poly bag", "thank you card"]):
         file_type = "packaging"
-    elif any(token in combined for token in ["buyer payment", "order income", "shopee commission", "lazada commission", "payout", "settlement", "withdrawal", "bank transfer"]):
+    elif any(token in combined for token in ["buyer payment", "order income", "shopee commission", "lazada commission", "referral fee", "gross sales", "net income", "payout", "settlement", "withdrawal", "bank transfer"]):
         file_type = "transactions"
     elif any(token in combined for token in ["transaction", "refund", "commission"]) and platform != "unknown":
         file_type = "transactions"

@@ -192,7 +192,7 @@ What I do:
 • Generate your P&L summary
 
 What you should send me:
-• Shopee or Lazada finance CSV exports
+• Shopee, Lazada or TikTok Shop finance CSV exports
 • COGS, ads, warehouse, payroll, packaging, or other expense files
 
 What you can type:
@@ -208,6 +208,7 @@ GUIDE_ZH = """Fynn使用指南 📖
 支持的文件：
 • 🛒 Shopee财务导出 _(财务 → 我的收入 → 导出)_
 • 🛒 Lazada财务报告 _(财务 → 交易 → 导出)_
+• 🛒 TikTok Shop财务报告 _(财务 → 账单 → 导出)_
 • 📦 供应商/货品成本表
 • 📣 广告费用导出
 • 🏭 仓储/履行费用
@@ -236,7 +237,7 @@ QUICK_START_ZH = """Fynn快速开始 📖
 • 生成盈亏报告
 
 你应该发送给我：
-• Shopee 或 Lazada 财务CSV导出
+• Shopee、Lazada 或 TikTok Shop 财务CSV导出
 • 货品成本、广告、仓储、工资、包装或其他费用文件
 
 你可以这样输入：

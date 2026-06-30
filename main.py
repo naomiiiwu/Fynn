@@ -116,11 +116,12 @@ _conversation = ConversationManager()
 
 STRICT_CONFIDENCE_THRESHOLD = 0.90
 _COST_FILE_TYPES = {"cogs", "ads", "warehouse", "payroll", "packaging", "expense"}
-_SUPPORTED_TRANSACTION_PLATFORMS = {"shopee", "lazada"}
-_SUPPORTED_PLATFORMS = ["shopee", "lazada"]
+_SUPPORTED_TRANSACTION_PLATFORMS = {"shopee", "lazada", "tiktok"}
+_SUPPORTED_PLATFORMS = ["shopee", "lazada", "tiktok"]
 _FILE_LABELS = {
     "shopee": "Shopee finance export",
     "lazada": "Lazada finance export",
+    "tiktok": "TikTok Shop finance export",
     "cogs": "COGS / supplier costs",
     "ads": "Ads spend",
     "warehouse": "Warehouse / 3PL costs",
@@ -369,11 +370,12 @@ def _is_supported_upload_media(content_type: str, media_url: str) -> bool:
         "text/plain",
         "text/comma-separated-values",
         "application/vnd.ms-excel",
+        "application/vnd.openxmlformats",
         "application/octet-stream",
     )
     if any(token in ct for token in accepted_tokens):
         return True
-    return url.endswith(".csv")
+    return url.endswith(".csv") or url.endswith(".xlsx")
 
 
 def _onboarding_file_checklist(profile) -> str:
@@ -718,6 +720,8 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
           <label for="p_shopee"><span class="pill-dot"></span>Shopee</label>
           <input type="checkbox" name="platforms" value="lazada" id="p_lazada" {chk("lazada", platforms)}/>
           <label for="p_lazada"><span class="pill-dot"></span>Lazada</label>
+          <input type="checkbox" name="platforms" value="tiktok" id="p_tiktok" {chk("tiktok", platforms)}/>
+          <label for="p_tiktok"><span class="pill-dot"></span>TikTok Shop</label>
         </div>
       </div>
     </div>
