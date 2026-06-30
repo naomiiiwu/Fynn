@@ -427,9 +427,6 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
     name     = profile.name if profile and profile.name != "Seller" else ""
     currency = profile.currency if profile else "SGD"
     lang     = profile.language if profile else "en"
-    hour     = profile.report_time_hour if profile else 8
-    daily    = "checked" if profile and profile.daily_enabled else ""
-    weekly   = "checked" if profile and profile.weekly_enabled else ""
     monthly  = "checked" if profile and profile.monthly_enabled else "checked"
     platforms = set(profile.platforms if profile else ["shopee"])
     required_files = set(profile.required_cost_files if profile else ["cogs", "ads"])
@@ -754,8 +751,6 @@ def _settings_html(phone: str, profile=None, saved: bool = False) -> str:
       <div class="field">
         <label>What should Fynn send you?</label>
         <div class="pill-group">
-          <input type="checkbox" name="weekly_enabled" value="1" id="r_weekly" {weekly}/>
-          <label for="r_weekly"><span class="pill-dot"></span>Weekly summary</label>
           <input type="checkbox" name="monthly_enabled" value="1" id="r_monthly" {monthly}/>
           <label for="r_monthly"><span class="pill-dot"></span>Monthly P&amp;L</label>
         </div>
@@ -793,9 +788,6 @@ async def settings_save(
     name:              str = Form(...),
     currency:          str = Form("SGD"),
     language:          str = Form("en"),
-    report_time_hour:  str = Form("8"),
-    daily_enabled:     str = Form(None),
-    weekly_enabled:    str = Form(None),
     monthly_enabled:   str = Form(None),
     platforms:          list[str] = Form(["shopee"]),
     required_cost_files: list[str] = Form([]),
@@ -807,9 +799,6 @@ async def settings_save(
     profile.name              = name.strip().title()
     profile.currency          = currency
     profile.language          = language
-    profile.report_time_hour  = max(0, min(23, int(report_time_hour or 8)))
-    profile.daily_enabled     = daily_enabled == "1"
-    profile.weekly_enabled    = weekly_enabled == "1"
     profile.monthly_enabled   = monthly_enabled == "1"
     profile.platforms         = [p for p in platforms if p in _SUPPORTED_PLATFORMS] or ["shopee"]
     profile.required_cost_files = [f for f in required_cost_files if f in _COST_FILE_TYPES]
@@ -841,9 +830,6 @@ async def legacy_settings_save(
     name:              str = Form(...),
     currency:          str = Form("SGD"),
     language:          str = Form("en"),
-    report_time_hour:  str = Form("8"),
-    daily_enabled:     str = Form(None),
-    weekly_enabled:    str = Form(None),
     monthly_enabled:   str = Form(None),
     platforms:          list[str] = Form(["shopee"]),
     required_cost_files: list[str] = Form([]),
@@ -855,9 +841,6 @@ async def legacy_settings_save(
         name=name,
         currency=currency,
         language=language,
-        report_time_hour=report_time_hour,
-        daily_enabled=daily_enabled,
-        weekly_enabled=weekly_enabled,
         monthly_enabled=monthly_enabled,
         platforms=platforms,
         required_cost_files=required_cost_files,
