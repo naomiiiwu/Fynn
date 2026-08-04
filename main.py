@@ -809,8 +809,8 @@ async def settings_save(
 
     _conversation.profiles.save(profile)
 
-    # Send WhatsApp confirmation + guide
-    from services.conversation import EN, ZH, GUIDE_EN, GUIDE_ZH
+    # Send WhatsApp confirmation
+    from services.conversation import EN, ZH
     S = ZH if language == "zh" else EN
     msg = (
         S["complete"].format(name=profile.name, summary=profile.to_summary())
@@ -818,8 +818,6 @@ async def settings_save(
         + _onboarding_file_checklist(profile)
     )
     _twiml_send(phone, msg)
-    guide = GUIDE_ZH if language == "zh" else GUIDE_EN
-    _twiml_send(phone, guide)
     if _has_uploaded_transactions():
         background_tasks.add_task(_schedule_auto_refresh, phone)
 
@@ -1731,12 +1729,6 @@ async def whatsapp_webhook(
             f"Need to update your preferences?\nSetup link: {link}"
         )
         return _twiml_response(reply)
-
-    # Send guide message after settings saved (first time onboarding complete)
-    guide = _conversation.pop_pending_guide(sender)
-    if guide:
-        background_tasks.add_task(_twiml_send, sender, guide)
-        return _twiml_response("You're all set! Sending you a quick guide now... 📖")
 
     # Pending reconciliation confirmation — user can proceed despite missing support files
     if sender in _pending_reconciliations:
