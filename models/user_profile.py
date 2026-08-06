@@ -25,9 +25,11 @@ class UserProfile:
     report_time_hour: int = 8          # Hour to send scheduled messages (0-23)
 
     # Which report cadences are enabled
+    # Weekly/monthly default off — without a live Shopee/Lazada API connection,
+    # scheduled reports would just re-run the pipeline against stale manual uploads.
     daily_enabled: bool = False
-    weekly_enabled: bool = True
-    monthly_enabled: bool = True
+    weekly_enabled: bool = False
+    monthly_enabled: bool = False
 
     # Weekly day: mon, tue, wed, thu, fri, sat, sun
     weekly_day: str = "mon"
@@ -120,8 +122,8 @@ class ProfileStore:
             currency=data.get("currency", "SGD"),
             report_time_hour=data.get("report_time_hour", 8),
             daily_enabled=data.get("daily_enabled", False),
-            weekly_enabled=data.get("weekly_enabled", True),
-            monthly_enabled=data.get("monthly_enabled", True),
+            weekly_enabled=data.get("weekly_enabled", False),
+            monthly_enabled=data.get("monthly_enabled", False),
             weekly_day=data.get("weekly_day", "mon"),
             monthly_day=data.get("monthly_day", 1),
             anomaly_sensitivity=data.get("anomaly_sensitivity", "normal"),

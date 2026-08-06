@@ -1,14 +1,20 @@
 """
 Fynn scheduled job service.
 
-Runs the bookkeeping pipeline automatically on three cadences:
+Defines three cadences for the bookkeeping pipeline:
   - Daily   : quick WhatsApp ping with today's order count (if any)
   - Weekly  : sends a 7-day rolling summary via WhatsApp
   - Monthly : full P&L report — reconcile, Excel export, WhatsApp summary
 
+None are auto-registered on the scheduler yet — without a live Shopee/Lazada
+API connection, a cron-triggered run would just replay whatever manual CSVs
+are cached rather than fresh data. Trigger them manually via /run-monthly-report
+or /schedule/trigger/{job_id} until real-time ingestion lands.
+
 All times are in the seller's timezone (default: Asia/Kuala_Lumpur).
-The daily job runs every hour and filters users whose report_time_hour
-matches the current local hour — so per-user time settings are respected.
+The daily job, if registered, is meant to run every hour and filter users
+whose report_time_hour matches the current local hour — so per-user time
+settings are respected.
 
 Schedule env vars:
   SELLER_TIMEZONE          default: Asia/Kuala_Lumpur
@@ -23,7 +29,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from agents.orchestrator import OrchestratorAgent
 from models.user_profile import ProfileStore, UserProfile
@@ -251,20 +256,14 @@ def create_scheduler() -> AsyncIOScheduler:
     """
     Create and configure the APScheduler instance.
     All times are in SELLER_TIMEZONE (default: Asia/Kuala_Lumpur).
+
+    No jobs are auto-registered yet: without a live Shopee/Lazada API
+    connection, a cron-triggered monthly/weekly report would just re-run
+    the pipeline against whatever manual CSVs happen to be cached, not
+    fresh data. run_monthly_report/run_weekly_summary/run_daily_ping stay
+    available for manual triggering (see /run-monthly-report and
+    /schedule/trigger/{job_id}) until real-time ingestion is wired up.
     """
     tz = _seller_tz()
     scheduler = AsyncIOScheduler(timezone=tz)
-
-    # Monthly full report
-    monthly_day  = _env_int("SCHEDULE_MONTHLY_DAY", 1)
-    monthly_hour = _env_int("SCHEDULE_MONTHLY_HOUR", 8)
-    scheduler.add_job(
-        run_monthly_report,
-        trigger=CronTrigger(day=monthly_day, hour=monthly_hour, minute=0, timezone=tz),
-        id="monthly_report",
-        name="Full monthly P&L report",
-        replace_existing=True,
-    )
-    print(f"  [Scheduler] Monthly report: {monthly_hour:02d}:00 {tz} on day {monthly_day} of each month.")
-
     return scheduler

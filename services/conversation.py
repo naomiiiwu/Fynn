@@ -26,12 +26,10 @@ EN = {
     ),
     "ask_frequency": (
         "Nice to meet you, {name}! 🎉\n\n"
-        "How often do you want reports?\n"
-        "Reply with any combination:\n\n"
-        "1️⃣ Daily order ping\n"
-        "2️⃣ Weekly summary\n"
-        "3️⃣ Monthly full P&L\n\n"
-        "_(e.g. reply *2 3* for weekly + monthly)_"
+        "Want a daily order ping each morning?\n\n"
+        "1️⃣ Yes\n"
+        "2️⃣ No\n\n"
+        "_(You can always say *run my report* anytime for a full P&L.)_"
     ),
     "ask_time": (
         "Got it! ✅\n\n"
@@ -66,7 +64,7 @@ EN = {
         "{summary}\n\n"
         "— Fynn 🤖"
     ),
-    "invalid_frequency": "Please reply with numbers like *1*, *2*, *3*, or a combo like *1 2*.",
+    "invalid_frequency": "Please reply *1* for yes or *2* for no.",
     "invalid_time": "Please reply with just a number between 0 and 23, e.g. *9* for 9AM.",
     "invalid_currency": "Please reply with *1*, *2*, or *3*.",
     "invalid_language": "Please reply with *1* for English or *2* for 中文.",
@@ -80,12 +78,10 @@ ZH = {
     ),
     "ask_frequency": (
         "很高兴认识你，{name}！🎉\n\n"
-        "你希望多久收到报告？\n"
-        "请回复任意组合：\n\n"
-        "1️⃣ 每日订单提醒\n"
-        "2️⃣ 每周汇总\n"
-        "3️⃣ 每月完整盈亏报告\n\n"
-        "_(例如回复 *2 3* 表示每周+每月)_"
+        "需要每天早上收到订单提醒吗？\n\n"
+        "1️⃣ 需要\n"
+        "2️⃣ 不需要\n\n"
+        "_(你随时可以说 *生成报告* 获取完整盈亏报告)_"
     ),
     "ask_time": "好的！✅\n\n几点发送报告给你？\n_(回复数字，例如 *9* 表示早上9点)_",
     "ask_currency": "完美。报告使用哪种货币？\n\n1️⃣ SGD — 新加坡元\n2️⃣ MYR — 马来西亚令吉\n3️⃣ USD — 美元",
@@ -103,7 +99,7 @@ ZH = {
         "— Fynn 🤖"
     ),
     "settings_updated": "设置已更新！✅\n\n{summary}\n\n— Fynn 🤖",
-    "invalid_frequency": "请回复数字，如 *1*、*2*、*3* 或组合 *1 2*。",
+    "invalid_frequency": "请回复 *1* 表示需要，*2* 表示不需要。",
     "invalid_time": "请回复0到23之间的数字，例如 *9* 表示早上9点。",
     "invalid_currency": "请回复 *1*、*2* 或 *3*。",
     "invalid_language": "请回复 *1* 表示English，*2* 表示中文。",
@@ -181,7 +177,7 @@ I'll reconcile your payouts, detect anomalies, and send your full P&L here + sav
 • *change settings* — update name, currency, language
 • *reset* — restart setup
 
-Monthly reports run automatically on your chosen schedule.
+Just say *run my report* whenever you want a fresh P&L.
 I've got it from here 🤖 — Fynn"""
 
 QUICK_START_EN = """Quick start with Fynn 📖
@@ -227,7 +223,7 @@ GUIDE_ZH = """Fynn使用指南 📖
 • *修改设置* — 更新姓名、货币、语言
 • *reset* — 重新开始设置
 
-报告会按你设定的时间自动发送，剩下的交给我 🤖 — Fynn"""
+随时说 *生成报告* 即可获取最新盈亏报告，剩下的交给我 🤖 — Fynn"""
 
 QUICK_START_ZH = """Fynn快速开始 📖
 
@@ -380,19 +376,20 @@ class ConversationManager:
             self.profiles.save(profile)
             return strings["ask_frequency"].format(name=profile.name)
 
-        # ── Step: report frequency ──
+        # ── Step: daily order ping ──
         elif step == "ask_frequency":
-            digits = set(msg.replace(",", " ").split())
-            valid = digits & {"1", "2", "3"}
-            if not valid:
+            choice = msg.strip()
+            if choice not in {"1", "2"}:
                 return strings["invalid_frequency"]
 
-            profile.daily_enabled = "1" in valid
-            profile.weekly_enabled = "2" in valid
-            profile.monthly_enabled = "3" in valid
-            profile.onboarding_step = "ask_time"
+            profile.daily_enabled = choice == "1"
+            if profile.daily_enabled:
+                profile.onboarding_step = "ask_time"
+                self.profiles.save(profile)
+                return strings["ask_time"]
+            profile.onboarding_step = "ask_currency"
             self.profiles.save(profile)
-            return strings["ask_time"]
+            return strings["ask_currency"]
 
         # ── Step: report time ──
         elif step == "ask_time":
