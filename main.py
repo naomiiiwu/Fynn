@@ -1217,6 +1217,7 @@ async def run_monthly_report() -> JSONResponse:
         "status": "success",
         "pipeline_status": result.pipeline_status,
         "pnl": result.combined_pnl,
+        "journal_entries": [entry.model_dump() for entry in result.journal_entries],
     })
 
 

@@ -6,7 +6,7 @@ Replaces the monolithic BookkeeperAgent.
 
 Pipeline:
   1. Parallel ingestion (one IngestionAgent per platform)
-  2. Per-platform: Reconciliation → Anomaly → P&L
+  2. Per-platform: Reconciliation → Anomaly → P&L → Ledger (journal entries)
   3. ExcelAgent — generate .xlsx, upload to Supabase Storage
   4. WhatsAppAgent — send summary + Excel attachment
 """
@@ -14,11 +14,13 @@ Pipeline:
 import asyncio
 from dataclasses import dataclass, field
 
+from models.ledger import JournalEntry
 from models.user_profile import UserProfile
 
 from .anomaly_agent import AnomalyAgent
 from .excel_agent import ExcelAgent
 from .ingestion_agent import IngestionAgent, IngestionResult
+from .ledger_agent import LedgerAgent
 from .pnl_agent import PnLAgent
 from .reconciliation_agent import ReconciliationAgent
 from .whatsapp_agent import WhatsAppAgent
@@ -26,9 +28,10 @@ from .whatsapp_agent import WhatsAppAgent
 
 @dataclass
 class OrchestratorResult:
-    pnl_reports:     list[dict]       = field(default_factory=list)
-    pipeline_status: dict[str, str]   = field(default_factory=dict)
-    combined_pnl:    dict             = field(default_factory=dict)
+    pnl_reports:     list[dict]           = field(default_factory=list)
+    pipeline_status: dict[str, str]       = field(default_factory=dict)
+    combined_pnl:    dict                 = field(default_factory=dict)
+    journal_entries: list[JournalEntry]   = field(default_factory=list)
 
 
 class OrchestratorAgent:
@@ -74,6 +77,7 @@ class OrchestratorAgent:
         # from the Supabase cache without re-running any agents.
         period_pnls: list[dict] = []   # one combined P&L per period
         all_platform_pnls: list[dict] = []  # full P&L dicts for Excel detail sheets
+        all_journal_entries: list[JournalEntry] = []  # ledger entries across all periods/platforms
 
         for period in periods:
             is_dirty = period in dirty_periods
@@ -131,6 +135,18 @@ class OrchestratorAgent:
                 except Exception as exc:
                     print(f"    P&L failed for {key}: {exc}")
                     status[f"pnl_{key}"] = f"error: {exc}"
+                    continue
+
+                try:
+                    entries = LedgerAgent().run(
+                        reconciliation=recon, cost_totals_myr=cost_totals_myr,
+                        platform=platform, period=period,
+                    )
+                    all_journal_entries.extend(entries)
+                    status[f"ledger_{key}"] = f"ok ({len(entries)} entries)"
+                except Exception as exc:
+                    print(f"    Ledger failed for {key}: {exc}")
+                    status[f"ledger_{key}"] = f"error: {exc}"
 
             if not platform_pnls:
                 print(f"  [Orchestrator] No P&L generated for {period} — skipping.")
@@ -151,6 +167,10 @@ class OrchestratorAgent:
         combined = _build_combined_pnl(period_pnls, period_label=period_label, currency=currency)
         # all_platform_pnls are the full P&L dicts (with revenue/costs/profit) for Excel detail sheets
         pnl_reports = all_platform_pnls
+
+        if all_journal_entries:
+            from services.database import save_journal_entries
+            save_journal_entries(sender, all_journal_entries)
 
         # ── Step 3: Excel workbook ─────────────────────────────────────────────
         excel_url = None
@@ -178,6 +198,7 @@ class OrchestratorAgent:
             pnl_reports=pnl_reports,
             pipeline_status=status,
             combined_pnl=combined,
+            journal_entries=all_journal_entries,
         )
 
 

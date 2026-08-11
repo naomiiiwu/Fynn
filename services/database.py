@@ -329,3 +329,72 @@ def load_latest_pnl_any() -> Optional[dict]:
     except Exception as exc:
         print(f"  [DB] Failed to load latest P&L: {exc}")
         return None
+
+
+# ── Ledger (journal entries) ─────────────────────────────────────────────────
+
+def save_journal_entries(phone: str, entries: list) -> bool:
+    """
+    Insert journal entries (with their lines) for a seller.
+
+    Args:
+        phone:   WhatsApp number string.
+        entries: List of JournalEntry objects (models.ledger.JournalEntry).
+
+    Returns:
+        True if saved, False if Supabase unavailable.
+    """
+    client = _get_client()
+    if not client:
+        return False
+
+    try:
+        rows = [
+            {
+                "entry_id":     entry.entry_id,
+                "phone":        phone,
+                "platform":     entry.platform,
+                "period":       entry.period,
+                "currency":     entry.currency,
+                "description":  entry.description,
+                "lines":        json.dumps([line.model_dump() for line in entry.lines]),
+                "generated_at": entry.generated_at,
+            }
+            for entry in entries
+        ]
+        if rows:
+            client.table("journal_entries").insert(rows).execute()
+        print(f"  [DB] Saved {len(rows)} journal entries for {phone}")
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to save journal entries: {exc}")
+        return False
+
+
+def load_journal_entries(phone: str, period: Optional[str] = None) -> list[dict]:
+    """
+    Load journal entries for a seller, optionally filtered by period.
+
+    Args:
+        phone:  WhatsApp number string.
+        period: Optional period label to filter by.
+
+    Returns:
+        List of journal entry dicts (lines parsed back into a list), empty on failure.
+    """
+    client = _get_client()
+    if not client:
+        return []
+
+    try:
+        query = client.table("journal_entries").select("*").eq("phone", phone)
+        if period:
+            query = query.eq("period", period)
+        result = query.order("generated_at", desc=True).execute()
+        rows = result.data or []
+        for row in rows:
+            row["lines"] = json.loads(row["lines"]) if isinstance(row["lines"], str) else row["lines"]
+        return rows
+    except Exception as exc:
+        print(f"  [DB] Failed to load journal entries: {exc}")
+        return []
