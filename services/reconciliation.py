@@ -1,91 +1,183 @@
+"""Settlement reconciliation.
+
+Scope boundary, deliberately: Fynn checks its classified total against the
+payout the platform itself reported in the settlement file. It does not touch
+bank data. Matching the actual deposit is done by Xero/QuickBooks' own bank
+feed once the entry is posted — the same division A2X uses.
 """
-Reconciliation service for Shopee payout verification.
+from __future__ import annotations
 
-Computes expected payout from transaction components and compares
-it to the actual settlement amount, flagging discrepancies > 2%.
-"""
+from collections import defaultdict
+from typing import Optional
 
-from typing import List
+from models.transaction import (
+    CycleResult,
+    Evidence,
+    Platform,
+    ReconException,
+    SettlementLine,
+    Side,
+)
+from services.classification import RuleStore, classify
 
-from models.transaction import ReconciliationResult, Transaction, TransactionType
-
-DISCREPANCY_THRESHOLD_PCT = 2.0  # flag if discrepancy exceeds this %
-
-
-def _detect_source_currency(transactions: List[Transaction]) -> str:
-    """Return the most common currency across the transaction list."""
-    from collections import Counter
-    counts = Counter(t.currency for t in transactions if t.currency)
-    return counts.most_common(1)[0][0] if counts else "MYR"
+WITHHELD_LABELS = {"withheld balance", "held balance", "on hold", "seller balance"}
 
 
-def reconcile(transactions: List[Transaction]) -> ReconciliationResult:
+def _orphan_refund_evidence(
+    line: SettlementLine, prior_cycles: list[SettlementLine]
+) -> Optional[Evidence]:
+    """Look for the originating order in earlier cycles.
+
+    This is one of the five exception strategies. Each kind needs its own
+    investigation logic — a generic 'something is wrong' flag is not useful to
+    an accountant who has to explain the difference.
     """
-    Reconcile a list of Shopee transactions and verify the settlement payout.
-
-    Logic:
-        expected_payout = gross_sales - refunds - platform_fees - shipping - vouchers
-
-    Args:
-        transactions: All transactions for the period, including the settlement entry.
-
-    Returns:
-        ReconciliationResult with computed totals and discrepancy flags.
-    """
-    src = _detect_source_currency(transactions)
-    print(f"\n[Reconciliation] Starting payout reconciliation (source currency: {src})...")
-
-    gross_sales: float = 0.0
-    total_refunds: float = 0.0
-    total_platform_fees: float = 0.0
-    total_shipping: float = 0.0
-    total_vouchers: float = 0.0
-    actual_payout: float = 0.0
-
-    for txn in transactions:
-        if txn.type == TransactionType.ORDER:
-            gross_sales += txn.amount_myr
-        elif txn.type == TransactionType.REFUND:
-            total_refunds += abs(txn.amount_myr)
-        elif txn.type == TransactionType.PLATFORM_FEE:
-            total_platform_fees += abs(txn.amount_myr)
-        elif txn.type == TransactionType.SHIPPING:
-            # Use signed amount: fees are negative (cost), rebates/vouchers are positive (credit)
-            total_shipping -= txn.amount_myr
-        elif txn.type == TransactionType.VOUCHER:
-            total_vouchers += abs(txn.amount_myr)
-        elif txn.type == TransactionType.SETTLEMENT:
-            actual_payout += txn.amount_myr
-
-    expected_payout = gross_sales - total_refunds - total_platform_fees - total_shipping - total_vouchers
-    discrepancy = actual_payout - expected_payout
-    discrepancy_pct = (abs(discrepancy) / expected_payout * 100) if expected_payout != 0 else 0.0
-    is_flagged = discrepancy_pct > DISCREPANCY_THRESHOLD_PCT
-
-    print(f"  Gross Sales:       {src} {gross_sales:>10,.2f}")
-    print(f"  Refunds:         - {src} {total_refunds:>10,.2f}")
-    print(f"  Platform Fees:   - {src} {total_platform_fees:>10,.2f}")
-    print(f"  Shipping:        - {src} {total_shipping:>10,.2f}")
-    print(f"  Vouchers:        - {src} {total_vouchers:>10,.2f}")
-    print(f"  Expected Payout:   {src} {expected_payout:>10,.2f}")
-    print(f"  Actual Payout:     {src} {actual_payout:>10,.2f}")
-    print(f"  Discrepancy:       {src} {discrepancy:>10,.2f} ({discrepancy_pct:.2f}%)")
-
-    if is_flagged:
-        print(f"  ⚠️  DISCREPANCY FLAGGED — {discrepancy_pct:.2f}% exceeds {DISCREPANCY_THRESHOLD_PCT}% threshold!")
-    else:
-        print(f"  ✅ Payout reconciled within acceptable range ({discrepancy_pct:.2f}% discrepancy).")
-
-    return ReconciliationResult(
-        source_currency=src,
-        gross_sales_myr=round(gross_sales, 2),
-        total_refunds_myr=round(total_refunds, 2),
-        total_platform_fees_myr=round(total_platform_fees, 2),
-        total_shipping_myr=round(total_shipping, 2),
-        total_vouchers_myr=round(total_vouchers, 2),
-        expected_payout_myr=round(expected_payout, 2),
-        actual_payout_myr=round(actual_payout, 2),
-        discrepancy_myr=round(discrepancy, 2),
-        discrepancy_pct=round(discrepancy_pct, 4),
-        is_discrepancy_flagged=is_flagged,
+    if not line.order_id:
+        return None
+    candidates = [
+        p for p in prior_cycles
+        if p.platform == line.platform and p.order_id == line.order_id
+    ]
+    if not candidates:
+        return None
+    origin = candidates[0]
+    exact = any(abs(abs(p.amount) - abs(line.amount)) < 0.005 for p in candidates)
+    confidence = 92 if exact and len(candidates) == 1 else 70
+    return Evidence(
+        summary=(
+            f"Order {line.order_id} settled in cycle {origin.cycle}. "
+            f"{'Exact amount, no other candidate in the window.' if exact else 'Amount differs — likely a partial refund.'}"
+        ),
+        confidence=confidence,
+        suggested_account="Sales Returns & Allowances",
+        suggested_side=Side.DEBIT,
+        source="prior_cycle",
     )
+
+
+def detect_exceptions(
+    platform: Platform,
+    cycle: str,
+    lines: list[SettlementLine],
+    unclassified: list[SettlementLine],
+    prior_cycles: list[SettlementLine],
+) -> list[ReconException]:
+    exceptions: list[ReconException] = []
+    sales_orders = {l.order_id for l in lines if l.label.lower() == "sale" and l.order_id}
+
+    for line in unclassified:
+        kind = "withheld_balance" if line.label.lower() in WITHHELD_LABELS else "unknown_label"
+        if kind == "withheld_balance":
+            why = (
+                f"{abs(line.amount):.2f} is settled but not released — the platform is "
+                "holding it in the seller balance rather than paying it out."
+            )
+            evidence = Evidence(
+                summary=(
+                    "Funds appear in the platform's withdrawal record as held, not as a "
+                    "shortfall. Holding this in the clearing account keeps the cycle tied out "
+                    "until the balance is released."
+                ),
+                confidence=88,
+                suggested_account=f"{platform.value} Clearing Account",
+                suggested_side=Side.DEBIT,
+                source="rules",
+            )
+        else:
+            why = (
+                f'Fee label "{line.label}" has no rule for this firm. It affects the payout '
+                "but cannot be posted to an account without a decision."
+            )
+            evidence = None
+        exceptions.append(
+            ReconException(
+                key=line.key, platform=platform, kind=kind, line=line,
+                amount=line.amount, why=why, evidence=evidence,
+            )
+        )
+
+    # Refunds pointing at orders that are not in this cycle.
+    for line in lines:
+        if line.label.lower() != "refund" or not line.order_id:
+            continue
+        if line.order_id in sales_orders:
+            continue
+        ev = _orphan_refund_evidence(line, prior_cycles)
+        kind = "partial_refund" if ev and ev.confidence < 90 else "orphan_refund"
+        exceptions.append(
+            ReconException(
+                key=line.key, platform=platform, kind=kind, line=line, amount=line.amount,
+                why=(
+                    f"Refund references {line.order_id}, which has no matching sale in "
+                    f"cycle {cycle}."
+                ),
+                evidence=ev,
+            )
+        )
+    return exceptions
+
+
+def reconcile(
+    platform: Platform,
+    cycle: str,
+    lines: list[SettlementLine],
+    reported_payout: float,
+    store: RuleStore,
+    prior_cycles: Optional[list[SettlementLine]] = None,
+    resolutions: Optional[dict[str, tuple[str, Side]]] = None,
+) -> CycleResult:
+    """Reconcile one platform-cycle.
+
+    resolutions maps an exception key to the (account, side) an accountant
+    approved. Nothing is posted for an unresolved exception.
+    """
+    prior_cycles = prior_cycles or []
+    resolutions = resolutions or {}
+
+    classified, unclassified = classify(lines, store)
+    exceptions = detect_exceptions(platform, cycle, lines, unclassified, prior_cycles)
+
+    resolved_keys = set(resolutions)
+    for exc in exceptions:
+        if exc.key in resolved_keys:
+            exc.resolved = True
+            exc.resolved_account = resolutions[exc.key][0]
+
+    # A line counts toward the classified total if it has a rule and is not the
+    # subject of an unresolved exception.
+    blocked = {e.key for e in exceptions if not e.resolved}
+    total = 0.0
+    for line, _rule in classified:
+        if line.key in blocked:
+            continue
+        total += line.amount
+    for line in unclassified:
+        if line.key in resolutions:
+            total += line.amount
+
+    total = round(total, 2)
+    residual = round(total - reported_payout, 2)
+
+    if abs(residual) >= 0.005 and not any(not e.resolved for e in exceptions):
+        exceptions.append(
+            ReconException(
+                key=f"{platform.value}|{cycle}|residual",
+                platform=platform, kind="residual", amount=residual,
+                why=(
+                    f"Classified total {total:.2f} does not match the reported payout "
+                    f"{reported_payout:.2f}. Difference of {residual:.2f} is unexplained."
+                ),
+            )
+        )
+
+    return CycleResult(
+        platform=platform, cycle=cycle, classified_total=total,
+        reported_payout=reported_payout, residual=residual, exceptions=exceptions,
+    )
+
+
+def group_by_platform(lines: list[SettlementLine]) -> dict[Platform, list[SettlementLine]]:
+    grouped: dict[Platform, list[SettlementLine]] = defaultdict(list)
+    for line in lines:
+        grouped[line.platform].append(line)
+    return dict(grouped)

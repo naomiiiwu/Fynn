@@ -1,124 +1,94 @@
+"""Ledger adapters.
+
+The core engine is decoupled from the destination ledger. Adding QuickBooks,
+Kingdee or SQL Account means writing an adapter, not touching reconciliation
+logic.
+
+Note on scope: Fynn posts the entry. It does not match against the bank. Once
+the entry is in Xero, Xero's own bank feed auto-matches it to the real deposit.
+Building bank access here would duplicate infrastructure the ledger already has.
 """
-Ledger service — turns a reconciled platform period + cost totals into
-balanced double-entry journal entries.
+from __future__ import annotations
 
-Two entries per (platform, period):
-  1. Marketplace settlement — revenue, refunds, platform-side costs, and
-     the actual settlement, with any reconciliation discrepancy absorbed
-     by the Reconciliation Variance account so the entry always balances.
-  2. Business expenses — COGS/ads/warehouse/payroll/packaging/other,
-     funded from the unreconciled cash account (no bank feed yet).
+import os
+from abc import ABC, abstractmethod
 
-Pure math — no Claude call, mirrors services/reconciliation.py.
-"""
-
-import uuid
-
-from models.ledger import CHART_OF_ACCOUNTS, JournalEntry, JournalLine
-from models.transaction import ReconciliationResult
-
-_A = {code: acc.name for code, acc in CHART_OF_ACCOUNTS.items()}
+from models.transaction import JournalEntry
 
 
-def _line(code: str, debit: float = 0.0, credit: float = 0.0) -> JournalLine:
-    return JournalLine(account_code=code, account_name=_A[code], debit=round(debit, 2), credit=round(credit, 2))
+class LedgerAdapter(ABC):
+    name: str
+
+    @abstractmethod
+    def post(self, entry: JournalEntry) -> dict:
+        ...
 
 
-def build_settlement_entry(
-    reconciliation: ReconciliationResult,
-    platform: str,
-    period: str,
-) -> JournalEntry:
-    """Build the marketplace settlement journal entry for one platform/period."""
-    lines: list[JournalLine] = [
-        _line("1100", debit=reconciliation.actual_payout_myr),
-        _line("4100", debit=reconciliation.total_refunds_myr),
-        _line("6100", debit=reconciliation.total_platform_fees_myr),
-        _line("4200", debit=reconciliation.total_vouchers_myr),
-        _line("4000", credit=reconciliation.gross_sales_myr),
-    ]
+class DryRunAdapter(LedgerAdapter):
+    """Default. Returns the payload that would be sent, posts nothing."""
 
-    # Net shipping can be a cost (debit) or a net rebate (credit) depending on sign.
-    shipping = reconciliation.total_shipping_myr
-    if shipping >= 0:
-        lines.append(_line("6110", debit=shipping))
-    else:
-        lines.append(_line("6110", credit=-shipping))
+    name = "dry-run"
 
-    # Plug the platform's own discrepancy (actual vs. expected payout) so the
-    # entry balances without hiding the mismatch — it lands in a variance
-    # account instead of silently distorting revenue or costs.
-    total_debit = round(sum(l.debit for l in lines), 2)
-    total_credit = round(sum(l.credit for l in lines), 2)
-    diff = round(total_credit - total_debit, 2)
-    if diff > 0:
-        lines.append(_line("9000", debit=diff))
-    elif diff < 0:
-        lines.append(_line("9000", credit=-diff))
-
-    entry = JournalEntry(
-        entry_id=str(uuid.uuid4()),
-        platform=platform,
-        period=period,
-        currency=reconciliation.source_currency,
-        description=f"Marketplace settlement — {platform} {period}",
-        lines=lines,
-    )
-    assert entry.is_balanced(), f"Settlement entry for {platform}/{period} does not balance: {lines}"
-    return entry
+    def post(self, entry: JournalEntry) -> dict:
+        if not entry.balanced:
+            raise ValueError(
+                f"Refusing to post an unbalanced entry: "
+                f"debits {entry.total_debit} vs credits {entry.total_credit}"
+            )
+        return {
+            "status": "not_posted",
+            "adapter": self.name,
+            "reference": entry.reference,
+            "payload": entry.model_dump(mode="json"),
+        }
 
 
-_COST_ACCOUNT_CODES = {
-    "cogs": "5000",
-    "ads": "6200",
-    "warehouse": "6300",
-    "payroll": "6400",
-    "packaging": "6500",
-    "expense": "6900",
-}
+class XeroAdapter(LedgerAdapter):
+    """Xero manual journal posting.
+
+    Requires OAuth 2.0 with the accounting.transactions scope, a tenant id, and
+    a refresh-token flow (access tokens expire after 30 minutes). Not wired up:
+    the credentials and consent flow have to exist first.
+    """
+
+    name = "xero"
+    ENDPOINT = "https://api.xero.com/api.xro/2.0/ManualJournals"
+
+    def __init__(self, access_token: str | None = None, tenant_id: str | None = None):
+        self.access_token = access_token or os.getenv("XERO_ACCESS_TOKEN")
+        self.tenant_id = tenant_id or os.getenv("XERO_TENANT_ID")
+
+    def post(self, entry: JournalEntry) -> dict:
+        if not entry.balanced:
+            raise ValueError("Refusing to post an unbalanced entry")
+        if not self.access_token or not self.tenant_id:
+            raise RuntimeError(
+                "XERO_ACCESS_TOKEN and XERO_TENANT_ID are required. "
+                "Complete the OAuth flow first."
+            )
+        # Entries are posted as DRAFT. An accountant approves in Xero before the
+        # entry is final — no automated output becomes accounting truth unreviewed.
+        payload = {
+            "ManualJournals": [{
+                "Narration": f"Fynn — {entry.platform.value} {entry.cycle}",
+                "Status": "DRAFT",
+                "JournalLines": [
+                    {
+                        "AccountCode": l.account,
+                        "LineAmount": l.amount if l.side.value == "debit" else -l.amount,
+                        "Description": f"{entry.reference} · {l.account}",
+                    }
+                    for l in entry.lines
+                ],
+            }]
+        }
+        raise NotImplementedError(
+            "Xero HTTP call not implemented. Payload prepared: " + str(payload)
+        )
 
 
-def build_expense_entry(
-    cost_totals: dict[str, float],
-    platform: str,
-    period: str,
-    currency: str,
-) -> JournalEntry | None:
-    """Build the business-expense journal entry, funded from unreconciled cash."""
-    lines: list[JournalLine] = []
-    total = 0.0
-    for key, code in _COST_ACCOUNT_CODES.items():
-        amount = cost_totals.get(key, 0.0)
-        if amount:
-            lines.append(_line(code, debit=amount))
-            total += amount
-
-    if not lines:
-        return None
-
-    lines.append(_line("1000", credit=total))
-
-    entry = JournalEntry(
-        entry_id=str(uuid.uuid4()),
-        platform=platform,
-        period=period,
-        currency=currency,
-        description=f"Business expenses — {platform} {period}",
-        lines=lines,
-    )
-    assert entry.is_balanced(), f"Expense entry for {platform}/{period} does not balance: {lines}"
-    return entry
-
-
-def build_journal_entries(
-    reconciliation: ReconciliationResult,
-    cost_totals: dict[str, float],
-    platform: str,
-    period: str,
-) -> list[JournalEntry]:
-    """Build all journal entries for one platform/period. Always balanced."""
-    entries = [build_settlement_entry(reconciliation, platform, period)]
-    expense_entry = build_expense_entry(cost_totals, platform, period, reconciliation.source_currency)
-    if expense_entry:
-        entries.append(expense_entry)
-    return entries
+def get_adapter(name: str | None = None) -> LedgerAdapter:
+    name = (name or os.getenv("LEDGER_ADAPTER", "dry-run")).lower()
+    if name == "xero":
+        return XeroAdapter()
+    return DryRunAdapter()

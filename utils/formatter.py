@@ -1,284 +1,270 @@
+"""Cycle orchestration and digest construction.
+
+The digest is the primary surface: accountants who reviewed both a structured
+report and a chat interface preferred the report for reviewing and verifying
+entries, with conversation reserved for explaining individual exceptions.
+
+The WhatsApp renderings below are deliberately thin views over the same digest.
+Nothing is computed twice — the message an accountant reads on their phone is
+built from the payload the API returns.
 """
-Report formatting helpers for Fynn P&L generation.
+from __future__ import annotations
 
-Produces the canonical P&L dict structure consumed by
-Google Sheets output and WhatsApp delivery.
-"""
+from typing import Optional
 
-from datetime import datetime
-from typing import List
-
-from models.transaction import Anomaly, ReconciliationResult, Transaction, TransactionType
-
-
-def _model_to_dict(value) -> dict:
-    """Serialize Pydantic models and already-plain dicts consistently."""
-    if isinstance(value, dict):
-        return value
-    if hasattr(value, "model_dump"):
-        return value.model_dump()
-    if hasattr(value, "dict"):
-        return value.dict()
-    return dict(value)
+from models.transaction import CycleResult, Platform, ReconException, SettlementLine, Side
+from services.audit import AuditTrail
+from services.classification import RuleStore
+from services.journal import build_journal
+from services.reconciliation import group_by_platform, reconcile
 
 
-def generate_pnl(
-    transactions: List[Transaction],
-    reconciliation: ReconciliationResult,
-    anomalies: List[Anomaly],
-    sgd_conversion: dict,
-    period: str = "March 2026",
-    platform: str = "Shopee MY",
-    additional_costs_myr: dict = None,
-    source_currency: str | None = None,
-) -> dict:
-    """
-    Build the canonical P&L report dictionary in SGD.
+class Cycle:
+    """One month-end close across every connected platform."""
 
-    Args:
-        transactions:    All categorized transactions for the period.
-        reconciliation:  Pre-computed reconciliation result (in MYR).
-        anomalies:       List of detected anomalies.
-        sgd_conversion:  Output of CurrencyConverter.myr_to_sgd() for net profit.
-        period:          Human-readable period label (e.g. "March 2026").
-        platform:        Platform label (e.g. "Shopee MY").
+    def __init__(
+        self,
+        lines: list[SettlementLine],
+        reported_payouts: dict[Platform, float],
+        store: RuleStore,
+        prior_cycles: Optional[list[SettlementLine]] = None,
+        cycle: str = "2026-01",
+        firm: str = "Your firm",
+        firm_id: Optional[str] = None,
+    ) -> None:
+        self.lines = lines
+        self.reported = reported_payouts
+        self.store = store
+        self.prior = prior_cycles or []
+        self.cycle = cycle
+        self.firm = firm
+        self.firm_id = firm_id
+        self.trail = AuditTrail()
+        self.resolutions: dict[str, tuple[str, Side]] = {}
+        self._results: dict[Platform, CycleResult] = {}
+        # Exception key → the number the accountant sees. Assigned once and
+        # never reused: see _assign_numbers.
+        self._numbers: dict[str, int] = {}
 
-    Returns:
-        P&L dict with all amounts in SGD.
-    """
-    print("\n[Formatter] Generating P&L report...")
+        sources = {l.source_ref for l in lines if l.source_ref}
+        for src in sorted(sources):
+            self.trail.add("source", f"Settlement file {src} ingested")
+        self.trail.add("source", f"{len(lines)} lines parsed across {len(set(l.platform for l in lines))} platforms")
 
-    src = source_currency or getattr(reconciliation, "source_currency", "MYR")
-    rate = sgd_conversion["exchange_rate"]
+    def run(self) -> dict[Platform, CycleResult]:
+        self._results = {}
+        grouped = group_by_platform(self.lines)
+        for platform, plines in grouped.items():
+            result = reconcile(
+                platform=platform, cycle=self.cycle, lines=plines,
+                reported_payout=self.reported.get(platform, 0.0),
+                store=self.store, prior_cycles=self.prior,
+                resolutions=self.resolutions,
+            )
+            result.journal = build_journal(
+                platform, self.cycle, plines, self.store, result, self.resolutions
+            )
+            self._results[platform] = result
+        return self._results
 
-    def to_sgd(myr_amount: float) -> float:
-        """Convert a MYR amount to SGD using the cached exchange rate."""
-        return round(myr_amount * rate, 2)
+    def add_lines(
+        self,
+        lines: list[SettlementLine],
+        reported_payouts: Optional[dict[Platform, float]] = None,
+    ) -> dict[Platform, CycleResult]:
+        """Fold another settlement file into the open cycle.
 
-    # Revenue
-    gross_sales_sgd = to_sgd(reconciliation.gross_sales_myr)
-    refunds_sgd = to_sgd(reconciliation.total_refunds_myr)
-    net_revenue_sgd = round(gross_sales_sgd - refunds_sgd, 2)
+        A firm rarely sends all three platforms at once — files arrive one at a
+        time over WhatsApp, and each one has to join the cycle already in
+        progress without discarding decisions already made.
+        """
+        existing = {l.key for l in self.lines}
+        added = [l for l in lines if l.key not in existing]
+        self.lines.extend(added)
+        if reported_payouts:
+            self.reported.update(reported_payouts)
 
-    # Platform-side costs (from transaction data)
-    platform_fees_sgd = to_sgd(reconciliation.total_platform_fees_myr)
-    shipping_sgd      = to_sgd(reconciliation.total_shipping_myr)
-    vouchers_sgd      = to_sgd(reconciliation.total_vouchers_myr)
+        for src in sorted({l.source_ref for l in added if l.source_ref}):
+            self.trail.add("source", f"Settlement file {src} ingested")
+        if added:
+            self.trail.add("source", f"{len(added)} further lines parsed")
+        return self.run()
 
-    # Business costs (from uploaded cost CSVs)
-    extra = additional_costs_myr or {}
-    cogs_sgd      = to_sgd(extra.get("cogs", 0.0))
-    ads_sgd       = to_sgd(extra.get("ads", 0.0))
-    warehouse_sgd = to_sgd(extra.get("warehouse", 0.0))
-    payroll_sgd   = to_sgd(extra.get("payroll", 0.0))
-    packaging_sgd = to_sgd(extra.get("packaging", 0.0))
-    expense_sgd   = to_sgd(extra.get("expense", 0.0))
+    def open_exceptions(self) -> list[ReconException]:
+        """Every unresolved exception, in a stable order across re-runs.
 
-    total_platform_costs_sgd = round(platform_fees_sgd + shipping_sgd + vouchers_sgd, 2)
-    total_business_costs_sgd = round(cogs_sgd + ads_sgd + warehouse_sgd + payroll_sgd + packaging_sgd + expense_sgd, 2)
-    total_costs_sgd          = round(total_platform_costs_sgd + total_business_costs_sgd, 2)
+        Sorted by key rather than by whatever order the platforms happened to be
+        grouped in, so the list an accountant reads twice reads the same twice.
+        """
+        if not self._results:
+            self.run()
+        openings = sorted(
+            (e for r in self._results.values() for e in r.exceptions if not e.resolved),
+            key=lambda e: e.key,
+        )
+        self._assign_numbers(openings)
+        return openings
 
-    # Profit
-    net_profit_sgd     = round(net_revenue_sgd - total_costs_sgd, 2)
-    profit_margin_pct  = round(net_profit_sgd / net_revenue_sgd * 100, 2) if net_revenue_sgd != 0 else 0.0
+    def _assign_numbers(self, openings: list[ReconException]) -> None:
+        """Give each exception a number that is never reassigned.
 
-    # Count orders and refunds
-    order_count  = sum(1 for t in transactions if t.type == TransactionType.ORDER)
-    refund_count = sum(1 for t in transactions if t.type == TransactionType.REFUND)
+        Numbering the open list positionally would renumber it every time an
+        exception is resolved — so an accountant who reads the digest and then
+        sends two approvals would have the second one land on a different line
+        than the one they read. Numbers are handed out once, on first sight, and
+        the resolved ones simply stop appearing.
+        """
+        for exc in openings:
+            if exc.key not in self._numbers:
+                self._numbers[exc.key] = len(self._numbers) + 1
 
-    pnl = {
-        "period":   period,
-        "platform": platform,
-        "currency": "SGD",
-        "exchange_rate_used": {"from": src, "to": sgd_conversion.get("to_currency", "SGD"), "rate": rate, "source": sgd_conversion["source"]},
-        "revenue": {
-            "gross_sales": gross_sales_sgd,
-            "refunds":     refunds_sgd,
-            "net_revenue": net_revenue_sgd,
-        },
-        "costs": {
-            # Platform-side (from Shopee/Lazada CSV)
-            "platform_fees": platform_fees_sgd,
-            "shipping":      shipping_sgd,
-            "vouchers":      vouchers_sgd,
-            # Business costs (from uploaded cost CSVs)
-            "cogs":          cogs_sgd,
-            "ads":           ads_sgd,
-            "warehouse":     warehouse_sgd,
-            "payroll":       payroll_sgd,
-            "packaging":     packaging_sgd,
-            "other_expense": expense_sgd,
-            # Totals
-            "total_platform_costs": total_platform_costs_sgd,
-            "total_business_costs": total_business_costs_sgd,
-            "total_costs":          total_costs_sgd,
-        },
-        "profit": {
-            "net_profit":        net_profit_sgd,
-            "profit_margin_pct": profit_margin_pct,
-        },
-        "anomalies":    [_model_to_dict(a) for a in anomalies],
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-        "order_count":  order_count,
-        "refund_count": refund_count,
-        "local_reference": {
-            "currency":         src,
-            "gross_sales":      reconciliation.gross_sales_myr,
-            "net_revenue":      round(reconciliation.gross_sales_myr - reconciliation.total_refunds_myr, 2),
-            "expected_payout":  reconciliation.expected_payout_myr,
-            "actual_payout":    reconciliation.actual_payout_myr,
-            "discrepancy":      reconciliation.discrepancy_myr,
-        },
-    }
+    def number_of(self, exc: ReconException) -> int:
+        if exc.key not in self._numbers:
+            self._assign_numbers([exc])
+        return self._numbers[exc.key]
 
-    print(f"  Period:              {pnl['period']}")
-    print(f"  Net Revenue:    SGD {net_revenue_sgd:>10,.2f}")
-    print(f"  Platform Costs: SGD {total_platform_costs_sgd:>10,.2f}")
-    print(f"  Business Costs: SGD {total_business_costs_sgd:>10,.2f}")
-    print(f"  Total Costs:    SGD {total_costs_sgd:>10,.2f}")
-    print(f"  Net Profit:     SGD {net_profit_sgd:>10,.2f}")
-    print(f"  Profit Margin:  {profit_margin_pct:.2f}%")
-    print(f"  Anomalies:      {len(anomalies)}")
+    def exception_at(self, index: int) -> Optional[ReconException]:
+        """Look one up by the number shown in the digest."""
+        for exc in self.open_exceptions():
+            if self._numbers.get(exc.key) == index:
+                return exc
+        return None
 
-    return pnl
+    def approve(
+        self, key: str, account: str, side: Side, actor: str, save_rule: bool = True
+    ) -> dict[Platform, CycleResult]:
+        """Record an accountant's decision, then re-reconcile.
 
+        Saving the rule is what makes the next cycle cheaper: the same label
+        will not be raised again for this firm.
+        """
+        self.resolutions[key] = (account, side)
+        line = next((l for l in self.lines if l.key == key), None)
+        self.trail.add("decision", f"Approved — {key} posts to {account}", actor=actor)
+        if save_rule and line is not None and self.store.find(line) is None:
+            self.store.add(line, account, side, decided_by=actor)
+            self.trail.add(
+                "rule",
+                f'Rule saved — {line.platform.value} "{line.label}" posts to {account}',
+                actor=actor,
+            )
+        return self.run()
 
-def format_whatsapp_message(pnl: dict, seller_name: str = "Seller", pnl_reports: list = None) -> str:
-    """
-    Format the P&L data into a WhatsApp-ready summary message.
+    def digest(self) -> dict:
+        """The payload behind the month-end review link."""
+        if not self._results:
+            self.run()
+        total_lines = len(self.lines)
+        open_exceptions = self.open_exceptions()
+        return {
+            "cycle": self.cycle,
+            "firm": self.firm,
+            "lines_total": total_lines,
+            "lines_classified": total_lines - len(open_exceptions),
+            "open_exceptions": len(open_exceptions),
+            "platforms": [
+                {
+                    "platform": p.value,
+                    "classified_total": r.classified_total,
+                    "reported_payout": r.reported_payout,
+                    "residual": r.residual,
+                    "ties_out": r.ties_out,
+                    "journal_balanced": r.journal.balanced if r.journal else None,
+                    "journal_reference": r.journal.reference if r.journal else None,
+                }
+                for p, r in self._results.items()
+            ],
+            "exceptions": [
+                {
+                    "index": self._numbers[e.key],
+                    "key": e.key,
+                    "platform": e.platform.value,
+                    "kind": e.kind,
+                    "amount": e.amount,
+                    "why": e.why,
+                    "evidence": e.evidence.model_dump(mode="json") if e.evidence else None,
+                }
+                for e in open_exceptions
+            ],
+            "retention": self.trail.retention_note(),
+        }
 
-    Args:
-        pnl:         The P&L dict produced by generate_pnl().
-        seller_name: The seller's name for personalisation.
+    # ── WhatsApp renderings ───────────────────────────────────────────────────
 
-    Returns:
-        Formatted multi-line string ready to send via Twilio.
-    """
-    period = pnl["period"]
-    net_revenue = pnl["revenue"]["net_revenue"]
-    order_count = pnl["order_count"]
-    refund_count = pnl["refund_count"]
-    profit_margin = pnl["profit"]["profit_margin_pct"]
-    anomalies = pnl.get("anomalies", [])
+    def whatsapp_summary(self) -> str:
+        d = self.digest()
+        n = d["open_exceptions"]
+        if n == 0:
+            return (
+                f"Cycle {d['cycle']} is ready. All {d['lines_total']} transactions "
+                f"classified and every platform ties out. Nothing needs your input."
+            )
+        return (
+            f"Cycle {d['cycle']} is ready. {d['lines_classified']} of {d['lines_total']} "
+            f"transactions are classified. {n} need your call."
+        )
 
-    net_profit  = pnl["profit"]["net_profit"]
-    gross_sales = pnl["revenue"]["gross_sales"]
-    costs       = pnl.get("costs", {})
-    currency    = pnl.get("currency", "SGD")
+    def whatsapp_digest(self) -> str:
+        """The full month-end review message: totals, then what needs a decision."""
+        d = self.digest()
+        parts = [f"*Cycle {d['cycle']}* — {d['firm']}", ""]
 
-    # Anomalies — cap at 2 to stay under 1600 chars; full list is in Sheets
-    all_anomalies = anomalies
-    if pnl_reports:
-        all_anomalies = [a for p in pnl_reports for a in p.get("anomalies", [])]
-    if all_anomalies:
-        shown = all_anomalies[:2]
-        extra = len(all_anomalies) - len(shown)
-        anomaly_lines = "\n".join(f"⚠️ {a['description'][:80]}" for a in shown)
-        anomaly_block = f"*Heads up:*\n{anomaly_lines}"
-        if extra:
-            anomaly_block += f"\n_...and {extra} more — see full report in Sheets_"
-    else:
-        anomaly_block = "✅ All clear — no anomalies detected."
+        for p in d["platforms"]:
+            tick = "✅" if p["ties_out"] else "⚠️"
+            parts.append(
+                f"{tick} *{p['platform']}* — classified {p['classified_total']:,.2f} "
+                f"vs reported {p['reported_payout']:,.2f}"
+            )
+            if abs(p["residual"]) >= 0.005:
+                parts.append(f"    residual {p['residual']:,.2f}")
 
-    platform_label = pnl.get("platform", "Platform")
+        if not d["exceptions"]:
+            parts += ["", "Every platform ties out. Reply *post* to send the journals."]
+            return "\n".join(parts)
 
-    # Per-month breakdown — shown when the combined report spans multiple periods
-    monthly_breakdown = pnl.get("monthly_breakdown", [])
-    unique_periods = list(dict.fromkeys(r["period"] for r in monthly_breakdown))
-    is_multi_period = len(unique_periods) > 1
+        parts += ["", f"*{d['open_exceptions']} need your call:*"]
+        for e in d["exceptions"]:
+            parts.append(f"{e['index']}. {e['platform']} · {e['amount']:,.2f} — {e['why']}")
+            ev = e["evidence"]
+            if ev:
+                suggestion = ev.get("suggested_account")
+                if suggestion:
+                    parts.append(
+                        f"    Suggested: {suggestion} ({ev['confidence']}% confidence)"
+                    )
 
-    platform_lines = ""
-    if is_multi_period:
-        # Group by period so each period shows as one block
-        from collections import defaultdict
-        by_period: dict[str, list[dict]] = defaultdict(list)
-        for r in monthly_breakdown:
-            by_period[r["period"]].append(r)
+        parts += [
+            "",
+            "Reply *approve 1* to accept a suggestion, "
+            "*approve 1 Marketing Expense* to choose the account, "
+            "or *why 1* for the reasoning.",
+        ]
+        return "\n".join(parts)
 
-        lines = []
-        for p in unique_periods:
-            rows = by_period[p]
-            rev = sum(r["net_revenue"] for r in rows)
-            profit = sum(r["net_profit"] for r in rows)
-            lines.append(f"   {p[:3]}:  {currency} {rev:>10,.2f} rev | {currency} {profit:>8,.2f} profit")
-        platform_lines = "\n".join(lines) + "\n"
-    elif pnl_reports and len(pnl_reports) > 1:
-        # Multi-platform, single period — show per-platform revenue line
-        lines = []
-        for p in pnl_reports:
-            label = p.get("platform", "?")
-            rev   = p["revenue"]["net_revenue"]
-            lines.append(f"   {label}: {currency} {rev:,.2f}")
-        platform_lines = "\n".join(lines) + "\n"
+    def whatsapp_exception(self, index: int) -> str:
+        """One exception in full, with whatever evidence exists for it."""
+        exc = self.exception_at(index)
+        if exc is None:
+            return f"There's no open exception {index}. Reply *digest* for the current list."
 
-    # Build cost breakdown — only show lines that have a non-zero value
-    def cost_line(label: str, key: str) -> str:
-        val = costs.get(key, 0.0)
-        return f"   {label}  -{currency} {val:>8,.2f}\n" if val else ""
+        parts = [
+            f"*Exception {index}* — {exc.platform.value}",
+            f"Amount: {exc.amount:,.2f}",
+            f"Kind: {exc.kind.replace('_', ' ')}",
+            "",
+            exc.why,
+        ]
+        if exc.evidence:
+            parts += ["", f"_{exc.evidence.summary}_"]
+            if exc.evidence.suggested_account:
+                side = exc.evidence.suggested_side.value if exc.evidence.suggested_side else "debit"
+                parts.append(
+                    f"Suggested: {exc.evidence.suggested_account} ({side}) "
+                    f"— {exc.evidence.confidence}% confidence"
+                )
+            parts.append(f"Source: {exc.evidence.source.replace('_', ' ')}")
+        else:
+            parts += ["", "No suggestion available — this one needs your judgement."]
 
-    cost_block = (
-        f"*Platform costs:*\n"
-        f"{cost_line('Commission & fees', 'platform_fees')}"
-        f"{cost_line('Shipping', 'shipping')}"
-        f"{cost_line('Vouchers', 'vouchers')}"
-    )
-    business_costs = "".join(filter(None, [
-        cost_line("COGS (supplier)", "cogs"),
-        cost_line("Ads spend", "ads"),
-        cost_line("Warehouse / 3PL", "warehouse"),
-        cost_line("Payroll", "payroll"),
-        cost_line("Packaging", "packaging"),
-        cost_line("Other expenses", "other_expense"),
-    ]))
-    if business_costs:
-        cost_block += f"*Business costs:*\n{business_costs}"
-
-    header_intro = (
-        f"Hey {seller_name}! 👋 Your *{period}* consolidated report is ready.\n"
-        if is_multi_period else
-        f"Hey {seller_name}! 👋 Your *{period}* books are done.\n"
-    )
-    breakdown_divider = (
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 *Monthly breakdown:*\n"
-        f"{platform_lines}"
-        if is_multi_period and platform_lines else
-        f"{platform_lines}"
-    )
-
-    message = (
-        f"{header_intro}"
-        f"\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *{platform_label} — {period}*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Gross Sales:   {currency} {gross_sales:,.2f}\n"
-        f"↩️  Refunds:       {refund_count} order{'s' if refund_count != 1 else ''}\n"
-        f"💵 Net Revenue:   {currency} {net_revenue:,.2f}\n"
-        f"{breakdown_divider}"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{cost_block}"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📈 Net Profit:    {currency} {net_profit:,.2f}\n"
-        f"📉 Margin:        {profit_margin}%\n"
-        f"📦 Orders:        {order_count}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"\n{anomaly_block}\n"
-        f"— Fynn 🤖"
-    )
-    return message
-
-
-def save_pnl_json(pnl: dict, filepath: str = "pnl_report.json") -> None:
-    """
-    Save the P&L dict to a local JSON file (fallback when Sheets is unavailable).
-
-    Args:
-        pnl:      The P&L dict to save.
-        filepath: Output file path.
-    """
-    import json
-
-    with open(filepath, "w") as f:
-        json.dump(pnl, f, indent=2)
-    print(f"  [Formatter] P&L saved to {filepath}")
+        parts += ["", f"Reply *approve {index} <account>* to decide."]
+        return "\n".join(parts)

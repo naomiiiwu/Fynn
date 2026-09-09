@@ -1,0 +1,13 @@
+-- Fynn — Migration 006: drop the seller-facing P&L schema.
+--
+-- Deliberately not executable as-is. Fynn pivoted from a seller-facing P&L
+-- assistant to firm-facing settlement reconciliation, and no code reads these
+-- tables any more — but a deployed database may still hold the only copy of a
+-- client's uploaded files. Export anything you need, then uncomment and run.
+--
+-- Nothing in the application depends on this migration having been run.
+
+-- drop table if exists journal_entries;   -- superseded by posted_entries
+-- drop table if exists pnl_reports;       -- the P&L product is gone
+-- drop table if exists csv_uploads;       -- superseded by settlement_files
+-- drop table if exists seller_profiles;   -- superseded by firm_profiles

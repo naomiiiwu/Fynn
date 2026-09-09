@@ -1,0 +1,6 @@
+Transaction Date,Order SN,Transaction Type,Amount (MYR)
+2026-01-05,#S220,Sale,500.00
+2026-01-05,#S221,Sale,350.00
+2026-01-31,,Commission,-85.00
+2026-01-19,#S220,Refund,-31.60
+2026-01-22,,Creator commission,-8.40

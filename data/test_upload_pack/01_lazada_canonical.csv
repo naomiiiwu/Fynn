@@ -1,0 +1,7 @@
+platform,cycle,order,label,amount,date
+Lazada,2026-01,#L901,Sale,420.00,2026-01-08
+Lazada,2026-01,#L902,Sale,380.00,2026-01-08
+Lazada,2026-01,#L903,Sale,400.00,2026-01-08
+Lazada,2026-01,,Commission,-120.00,2026-01-31
+Lazada,2026-01,,Voucher subsidy,-30.00,2026-01-31
+Lazada,2026-01,#4521,Refund,-12.00,2026-01-14

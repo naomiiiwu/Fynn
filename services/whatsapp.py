@@ -1,7 +1,8 @@
 """
 WhatsApp delivery service via Twilio.
 
-Sends the formatted P&L summary to the seller's WhatsApp number.
+Sends a rendered message — a cycle digest, an exception, a posting
+confirmation — to the accountant's WhatsApp number.
 Falls back to console print if credentials are missing.
 """
 
@@ -10,7 +11,7 @@ from typing import Optional
 
 
 class WhatsAppService:
-    """Sends P&L summary messages via Twilio WhatsApp API."""
+    """Sends messages via the Twilio WhatsApp API."""
 
     def __init__(self, to: Optional[str] = None) -> None:
         """Initialise Twilio credentials from environment variables."""

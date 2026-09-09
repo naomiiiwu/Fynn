@@ -1,13 +1,15 @@
-"""
-Supabase database service for Fynn.
+"""Supabase persistence for Fynn.
 
-Handles all persistence:
-  - seller_profiles  : onboarding settings per WhatsApp number
-  - pnl_reports      : generated P&L reports per seller
+Tables (migrations/005_reconciliation.sql):
+  firm_profiles      — one row per accounting firm, keyed by WhatsApp number
+  firm_rules         — the accumulating asset: every decision a firm has made
+  settlement_files   — source files, retained for the statutory period
+  posted_entries     — journals sent to a ledger, with their audit trail
 
-Designed with a graceful fallback — if Supabase is not configured,
-all operations silently no-op and the app continues with in-memory state.
-This means local dev works with zero Supabase setup.
+Designed with a graceful fallback — if Supabase is not configured every
+operation silently no-ops and the app runs on in-process state. Local dev needs
+zero Supabase setup, and a storage outage degrades Fynn to a single-cycle tool
+rather than taking it down.
 """
 
 import json
@@ -18,19 +20,13 @@ _client = None
 
 
 def _get_client():
-    """
-    Lazily initialise the Supabase client.
-
-    Returns:
-        Supabase client or None if credentials are missing.
-    """
+    """Lazily initialise the Supabase client. None when not configured."""
     global _client
     if _client is not None:
         return _client
 
     url = os.getenv("SUPABASE_URL", "").strip()
     key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
-
     if not url or not key:
         return None
 
@@ -44,357 +40,195 @@ def _get_client():
         return None
 
 
-# ── Seller profiles ────────────────────────────────────────────────────────────
+# ── Firm profiles ─────────────────────────────────────────────────────────────
 
-def save_profile(profile) -> bool:
-    """
-    Upsert a seller profile to Supabase.
-
-    Args:
-        profile: UserProfile dataclass instance.
-
-    Returns:
-        True if saved, False if Supabase unavailable.
-    """
+def save_firm(profile) -> bool:
+    """Upsert one firm profile."""
     client = _get_client()
     if not client:
         return False
-
     try:
-        data = {
-            "phone":               profile.phone,
-            "name":                profile.name,
-            "language":            profile.language,
-            "currency":            profile.currency,
-            "report_time_hour":    profile.report_time_hour,
-            "daily_enabled":       profile.daily_enabled,
-            "weekly_enabled":      profile.weekly_enabled,
-            "monthly_enabled":     profile.monthly_enabled,
-            "weekly_day":          profile.weekly_day,
-            "monthly_day":         profile.monthly_day,
-            "anomaly_sensitivity": profile.anomaly_sensitivity,
-            "platforms":           profile.platforms,
-            "required_cost_files":  profile.required_cost_files,
-            "onboarding_step":     profile.onboarding_step,
-        }
-        try:
-            client.table("seller_profiles").upsert(data).execute()
-        except Exception as exc:
-            # Older deployments may not have the onboarding-plan columns yet.
-            # Retry the legacy shape so core profile saves still work.
-            if "platforms" not in str(exc) and "required_cost_files" not in str(exc):
-                raise
-            data.pop("platforms", None)
-            data.pop("required_cost_files", None)
-            client.table("seller_profiles").upsert(data).execute()
-        print(f"  [DB] Profile saved for {profile.phone}")
-        return True
-    except Exception as exc:
-        print(f"  [DB] Failed to save profile: {exc}")
-        return False
-
-
-def load_profile(phone: str) -> Optional[dict]:
-    """
-    Load a seller profile from Supabase by phone number.
-
-    Args:
-        phone: WhatsApp number string.
-
-    Returns:
-        Profile dict or None if not found.
-    """
-    client = _get_client()
-    if not client:
-        return None
-
-    try:
-        result = client.table("seller_profiles").select("*").eq("phone", phone).execute()
-        if result.data:
-            return result.data[0]
-        return None
-    except Exception as exc:
-        print(f"  [DB] Failed to load profile: {exc}")
-        return None
-
-
-def load_all_profiles() -> list[dict]:
-    """
-    Load all seller profiles from Supabase.
-
-    Returns:
-        List of profile dicts, empty list on failure.
-    """
-    client = _get_client()
-    if not client:
-        return []
-
-    try:
-        result = client.table("seller_profiles").select("*").execute()
-        return result.data or []
-    except Exception as exc:
-        print(f"  [DB] Failed to load profiles: {exc}")
-        return []
-
-
-# ── P&L reports ────────────────────────────────────────────────────────────────
-
-def save_pnl(phone: str, pnl: dict) -> bool:
-    """
-    Insert a P&L report for a seller.
-
-    Args:
-        phone: WhatsApp number string.
-        pnl:   Full P&L dict from formatter.generate_pnl().
-
-    Returns:
-        True if saved, False if Supabase unavailable.
-    """
-    client = _get_client()
-    if not client:
-        return False
-
-    try:
-        client.table("pnl_reports").insert({
-            "phone":       phone,
-            "period":      pnl.get("period", ""),
-            "platform":    pnl.get("platform", "Shopee MY"),
-            "report_data": json.dumps(pnl),
+        client.table("firm_profiles").upsert({
+            "phone":           profile.phone,
+            "firm":            profile.firm,
+            "actor":           profile.actor,
+            "language":        profile.language,
+            "platforms":       profile.platforms,
+            "ledger":          profile.ledger,
+            "onboarding_step": profile.onboarding_step,
         }).execute()
-        print(f"  [DB] P&L saved for {phone} — {pnl.get('period')}")
+        print(f"  [DB] Firm profile saved for {profile.phone}")
         return True
     except Exception as exc:
-        print(f"  [DB] Failed to save P&L: {exc}")
+        print(f"  [DB] Failed to save firm profile: {exc}")
         return False
 
 
-def load_latest_pnl(phone: str) -> Optional[dict]:
-    """
-    Load the most recent P&L report for a seller.
-
-    Args:
-        phone: WhatsApp number string.
-
-    Returns:
-        P&L dict or None if not found.
-    """
+def load_firm(phone: str) -> Optional[dict]:
     client = _get_client()
     if not client:
         return None
-
     try:
-        result = (
-            client.table("pnl_reports")
-            .select("report_data")
-            .eq("phone", phone)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return json.loads(result.data[0]["report_data"])
-        return None
+        result = client.table("firm_profiles").select("*").eq("phone", phone).execute()
+        return result.data[0] if result.data else None
     except Exception as exc:
-        print(f"  [DB] Failed to load P&L: {exc}")
+        print(f"  [DB] Failed to load firm profile: {exc}")
         return None
 
 
-# ── CSV uploads ────────────────────────────────────────────────────────────────
-
-def _period_to_month_key(period: str, platform: str, file_type: str) -> str:
-    """
-    Convert 'March 2026' + 'shopee' + 'transactions' → 'shopee_transactions_2026_03'.
-    Falls back to 'shopee_transactions_unknown' if period can't be parsed.
-    """
-    import calendar
-    month_names = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
-    parts = period.strip().split()
-    if len(parts) == 2:
-        month_str, year_str = parts
-        month_num = month_names.get(month_str.lower(), 0)
-        if month_num and year_str.isdigit():
-            return f"{platform}_{file_type}_{year_str}_{month_num:02d}"
-    return f"{platform}_{file_type}_unknown"
-
-
-def save_csv(csv_bytes: bytes, period: str, platform: str = "shopee", file_type: str = "transactions") -> bool:
-    """
-    Persist an uploaded CSV to Supabase keyed by platform + file_type.
-
-    Args:
-        csv_bytes:  Raw CSV file content.
-        period:     Period label e.g. "March 2026".
-        platform:   e.g. "shopee", "lazada", "generic"
-        file_type:  e.g. "transactions", "cogs", "ads", "warehouse"
-
-    Returns:
-        True if saved, False if unavailable.
-    """
-    client = _get_client()
-    if not client:
-        return False
-    try:
-        row_id = _period_to_month_key(period, platform, file_type)
-        client.table("csv_uploads").upsert({
-            "id": row_id,
-            "period": period,
-            "platform": platform,
-            "file_type": file_type,
-            "csv_data": csv_bytes.decode("utf-8-sig", errors="replace"),
-        }).execute()
-        print(f"  [DB] CSV saved: {platform}/{file_type} for {period}")
-        return True
-    except Exception as exc:
-        print(f"  [DB] Failed to save CSV: {exc}")
-        return False
-
-
-def load_all_csvs() -> list[dict]:
-    """
-    Load all uploaded CSVs from Supabase.
-
-    Returns:
-        List of dicts with keys: id, platform, file_type, period, csv_data
-    """
+def load_all_firms() -> list[dict]:
     client = _get_client()
     if not client:
         return []
     try:
-        result = client.table("csv_uploads").select("*").execute()
-        return result.data or []
+        return client.table("firm_profiles").select("*").execute().data or []
     except Exception as exc:
-        print(f"  [DB] Failed to load CSVs: {exc}")
+        print(f"  [DB] Failed to load firm profiles: {exc}")
         return []
 
 
-def load_pnl_by_period(phone: str, period: str) -> Optional[dict]:
-    """
-    Load the most recent cached P&L for a specific sender + period.
+# ── Firm rules ────────────────────────────────────────────────────────────────
 
-    Used by the orchestrator to skip reprocessing clean (non-dirty) periods.
+def save_rule(firm_id: str, rule) -> bool:
+    """Persist one learned rule.
 
-    Args:
-        phone:  Sender's WhatsApp number.
-        period: Period label e.g. "March 2026".
-
-    Returns:
-        P&L dict or None if no cached report exists for this period.
-    """
-    client = _get_client()
-    if not client:
-        return None
-
-    try:
-        result = (
-            client.table("pnl_reports")
-            .select("report_data")
-            .eq("phone", phone)
-            .eq("period", period)
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return json.loads(result.data[0]["report_data"])
-        return None
-    except Exception as exc:
-        print(f"  [DB] Failed to load cached P&L for {period}: {exc}")
-        return None
-
-
-def load_latest_pnl_any() -> Optional[dict]:
-    """
-    Load the most recent P&L report across all sellers.
-
-    Used to restore _last_pnl on server restart.
-
-    Returns:
-        P&L dict or None if no reports exist.
-    """
-    client = _get_client()
-    if not client:
-        return None
-
-    try:
-        result = (
-            client.table("pnl_reports")
-            .select("report_data")
-            .order("created_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return json.loads(result.data[0]["report_data"])
-        return None
-    except Exception as exc:
-        print(f"  [DB] Failed to load latest P&L: {exc}")
-        return None
-
-
-# ── Ledger (journal entries) ─────────────────────────────────────────────────
-
-def save_journal_entries(phone: str, entries: list) -> bool:
-    """
-    Insert journal entries (with their lines) for a seller.
-
-    Args:
-        phone:   WhatsApp number string.
-        entries: List of JournalEntry objects (models.ledger.JournalEntry).
-
-    Returns:
-        True if saved, False if Supabase unavailable.
+    Upserted on (firm, platform, label) so re-deciding a label overwrites the
+    firm's earlier treatment rather than leaving two rules that disagree. A
+    firm-wide rule is stored with platform '*' — a null there would be distinct
+    from every other null and let duplicates accumulate.
     """
     client = _get_client()
     if not client:
         return False
-
     try:
-        rows = [
+        client.table("firm_rules").upsert(
             {
-                "entry_id":     entry.entry_id,
-                "phone":        phone,
-                "platform":     entry.platform,
-                "period":       entry.period,
-                "currency":     entry.currency,
-                "description":  entry.description,
-                "lines":        json.dumps([line.model_dump() for line in entry.lines]),
-                "generated_at": entry.generated_at,
-            }
-            for entry in entries
-        ]
-        if rows:
-            client.table("journal_entries").insert(rows).execute()
-        print(f"  [DB] Saved {len(rows)} journal entries for {phone}")
+                "firm_id":    firm_id,
+                "platform":   rule.platform.value if rule.platform else "*",
+                "label":      rule.label,
+                "account":    rule.account,
+                "side":       rule.side.value,
+                "decided_by": rule.decided_by,
+                "decided_at": rule.decided_at.isoformat() if rule.decided_at else None,
+            },
+            on_conflict="firm_id,platform,label",
+        ).execute()
+        print(f'  [DB] Rule saved for {firm_id}: "{rule.label}" → {rule.account}')
         return True
     except Exception as exc:
-        print(f"  [DB] Failed to save journal entries: {exc}")
+        print(f"  [DB] Failed to save rule: {exc}")
         return False
 
 
-def load_journal_entries(phone: str, period: Optional[str] = None) -> list[dict]:
-    """
-    Load journal entries for a seller, optionally filtered by period.
-
-    Args:
-        phone:  WhatsApp number string.
-        period: Optional period label to filter by.
-
-    Returns:
-        List of journal entry dicts (lines parsed back into a list), empty on failure.
-    """
+def load_rules(firm_id: str) -> list[dict]:
+    """Return a firm's learned rules, shaped for models.transaction.Rule."""
     client = _get_client()
     if not client:
         return []
-
     try:
-        query = client.table("journal_entries").select("*").eq("phone", phone)
-        if period:
-            query = query.eq("period", period)
-        result = query.order("generated_at", desc=True).execute()
-        rows = result.data or []
+        rows = client.table("firm_rules").select("*").eq("firm_id", firm_id).execute().data or []
+    except Exception as exc:
+        print(f"  [DB] Failed to load rules: {exc}")
+        return []
+
+    rules = []
+    for row in rows:
+        platform = row.get("platform")
+        rules.append({
+            # '*' is how a firm-wide rule is stored; Rule expects None for it.
+            "platform":   None if platform in (None, "*") else platform,
+            "label":      row.get("label"),
+            "account":    row.get("account"),
+            "side":       row.get("side"),
+            "decided_by": row.get("decided_by"),
+            "decided_at": row.get("decided_at"),
+        })
+    return rules
+
+
+# ── Settlement files ──────────────────────────────────────────────────────────
+
+def save_settlement_file(
+    firm_id: str, filename: str, cycle: str, raw: bytes, line_count: int
+) -> bool:
+    """Retain a source settlement file.
+
+    Traceability was the requirement every accountant raised independently: a
+    posted figure has to be walkable back to the file it came from.
+    """
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("settlement_files").upsert({
+            "id":         f"{firm_id}|{cycle}|{filename}",
+            "firm_id":    firm_id,
+            "cycle":      cycle,
+            "filename":   filename,
+            "line_count": line_count,
+            "csv_data":   raw.decode("utf-8-sig", errors="replace"),
+        }).execute()
+        print(f"  [DB] Settlement file retained: {filename} ({cycle})")
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to retain settlement file: {exc}")
+        return False
+
+
+def load_settlement_files(firm_id: str, cycle: Optional[str] = None) -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        query = client.table("settlement_files").select("*").eq("firm_id", firm_id)
+        if cycle:
+            query = query.eq("cycle", cycle)
+        return query.execute().data or []
+    except Exception as exc:
+        print(f"  [DB] Failed to load settlement files: {exc}")
+        return []
+
+
+# ── Posted entries ────────────────────────────────────────────────────────────
+
+def save_posted_entry(
+    firm_id: str, cycle: str, entry, adapter: str, actor: str, audit_csv: str
+) -> bool:
+    """Record a journal that was sent to a ledger, with the working paper."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("posted_entries").insert({
+            "firm_id":   firm_id,
+            "cycle":     cycle,
+            "platform":  entry.platform.value,
+            "reference": entry.reference,
+            "adapter":   adapter,
+            "actor":     actor,
+            "lines":     json.dumps([l.model_dump(mode="json") for l in entry.lines]),
+            "audit_csv": audit_csv,
+        }).execute()
+        print(f"  [DB] Posted entry recorded: {entry.reference}")
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to record posted entry: {exc}")
+        return False
+
+
+def load_posted_entries(firm_id: str, cycle: Optional[str] = None) -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        query = client.table("posted_entries").select("*").eq("firm_id", firm_id)
+        if cycle:
+            query = query.eq("cycle", cycle)
+        rows = query.order("posted_at", desc=True).execute().data or []
         for row in rows:
-            row["lines"] = json.loads(row["lines"]) if isinstance(row["lines"], str) else row["lines"]
+            if isinstance(row.get("lines"), str):
+                row["lines"] = json.loads(row["lines"])
         return rows
     except Exception as exc:
-        print(f"  [DB] Failed to load journal entries: {exc}")
+        print(f"  [DB] Failed to load posted entries: {exc}")
         return []

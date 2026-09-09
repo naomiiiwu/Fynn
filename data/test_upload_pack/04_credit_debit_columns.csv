@@ -1,0 +1,5 @@
+Marketplace,Date,Order No.,Type,Credit,Debit
+Lazada,2026-01-06,#L910,Sale,500.00,
+Lazada,2026-01-06,#L911,Sale,400.00,
+Lazada,2026-01-31,,Commission,,90.00
+Lazada,2026-01-31,,Shipping fee,,50.00
