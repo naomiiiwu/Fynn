@@ -1,5 +1,0 @@
-Invoice Date,Supplier Name,Invoice No.,Product Name,SKU,Quantity,Unit Cost (MYR),Total Cost (MYR),Payment Status
-2026-03-01,Guangzhou Textile Co.,COGS-0301,Crop Top White,SKU-TOP-W,40,12.00,480.00,Paid
-2026-03-01,Guangzhou Textile Co.,COGS-0301,Crop Top Black,SKU-TOP-B,35,12.00,420.00,Paid
-2026-03-08,Shenzhen Accessories Ltd.,COGS-0302,USB Cable 1m,SKU-CABLE-1M,60,5.50,330.00,Paid
-2026-03-15,Shenzhen Accessories Ltd.,COGS-0303,Phone Stand,SKU-STAND,25,8.20,205.00,Paid
