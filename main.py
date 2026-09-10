@@ -1,13 +1,18 @@
 """Fynn — settlement reconciliation for Southeast Asian marketplaces.
 
-FastAPI entry point. Two surfaces over one engine:
+FastAPI entry point. Three surfaces over one engine:
 
-  HTTP      /cycle/sample, /cycle/upload, /digest, /approve, /post, /audit
-  WhatsApp  /webhook/whatsapp — Twilio posts here; the accountant sends a
-            settlement CSV, reads the digest, and approves by reply.
+  Digest page  /c/{token} — the review surface. Tokenised, no login. Exceptions
+               open a drawer where the accountant can question one item and
+               approve it; journals and the audit trail are on the same page.
+  WhatsApp     /webhook/whatsapp — Twilio posts here. Settlement files come in,
+               the digest link goes out. Reviewing happens on the page.
+  HTTP         /cycle/*, /approve, /post, /audit — the same operations for
+               scripts and for anything the page does not cover yet.
 
-Both go through utils.formatter.Cycle, so the message on the phone and the JSON
-from the API are the same reconciliation — never two code paths that can drift.
+All three go through utils.formatter.Cycle, so the figure on the page, the
+figure in the message and the figure in the JSON are one reconciliation — never
+three code paths that can drift.
 """
 
 import os
@@ -21,9 +26,16 @@ load_dotenv()
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+)
 from pydantic import BaseModel
 
+from agents.explainer import opening_message, reply
 from agents.investigator import investigate
 from agents.notifier import Notifier
 from data.sample_settlements import REPORTED_PAYOUTS, prior_cycle_lines, sample_lines
@@ -34,6 +46,7 @@ from services.conversation import COMMANDS_HELP, QUICK_START_EN, QUICK_START_ZH,
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
 from services.database import save_posted_entry, save_settlement_file
 from services.ledger import get_adapter
+from services.whatsapp import issue_link, resolve
 from utils.formatter import Cycle
 
 app = FastAPI(
@@ -56,6 +69,8 @@ _notifier = Notifier()
 # curl against a local server behaves like a single firm.
 API_FIRM = "api"
 
+STATIC = os.path.join(os.path.dirname(__file__), "static")
+
 _twilio_daily_limit_exhausted: bool = False
 
 
@@ -75,6 +90,25 @@ def _require_cycle(firm_id: str) -> Cycle:
     if cycle is None:
         raise HTTPException(404, "No cycle loaded. POST /cycle/sample first.")
     return cycle
+
+
+def _firm_from_token(token: str) -> str:
+    """Resolve a digest link back to the firm it was issued for.
+
+    The token is the only credential the page has, so an expired or unknown one
+    is a hard 410 — never a silent fall-through to somebody else's cycle.
+    """
+    entry = resolve(token)
+    if entry is None:
+        raise HTTPException(410, "This link has expired. Ask Fynn for a fresh one.")
+    return entry.get("firm_id") or API_FIRM
+
+
+def _firm_from_request(token: str = "", firm: str = API_FIRM) -> str:
+    """Firm for an API call: the token when the page sent one, else the query."""
+    if token:
+        return _firm_from_token(token)
+    return _canonical_whatsapp_phone(firm) if firm != API_FIRM else API_FIRM
 
 
 # ── Phone / link helpers ──────────────────────────────────────────────────────
@@ -268,27 +302,7 @@ def approve(req: ApproveRequest):
 @app.post("/post")
 def post_entries(firm: str = Query(API_FIRM)):
     """Send balanced journal entries to the configured ledger adapter."""
-    firm_id = _canonical_whatsapp_phone(firm) if firm != API_FIRM else API_FIRM
-    cycle = _require_cycle(firm_id)
-    profile = _profiles.get(firm_id)
-
-    results = cycle.run()
-    blocked = [p.value for p, r in results.items() if not r.ties_out]
-    if blocked:
-        raise HTTPException(
-            409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
-        )
-
-    adapter = get_adapter(profile.ledger if profile else None)
-    actor = profile.approver() if profile else "API caller"
-    out = []
-    for _platform, result in results.items():
-        out.append(adapter.post(result.journal))
-        cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
-        save_posted_entry(
-            firm_id, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
-        )
-    return {"adapter": adapter.name, "entries": out}
+    return _post_cycle(_canonical_whatsapp_phone(firm) if firm != API_FIRM else API_FIRM)
 
 
 @app.get("/rules")
@@ -953,97 +967,16 @@ def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
         _twiml_send(sender, f"❌ Something went wrong reconciling that file: {exc}")
         return
 
-    _notifier.send(sender, cycle.whatsapp_digest())
+    _notifier.digest(sender, cycle, base_url=_app_url())
 
 
-def _handle_approve(sender: str, cycle: Cycle, command) -> str:
-    """Apply an *approve N [account] [side]* instruction."""
-    exc = cycle.exception_at(command.index)
-    if exc is None:
-        return (
-            f"There's no open exception {command.index}. "
-            "Reply *digest* for the current list."
-        )
-
-    account = command.account
-    side = command.side
-
-    if not account:
-        # No account named — fall back to whatever evidence proposed. If there
-        # is none, ask rather than invent an account.
-        if exc.evidence and exc.evidence.suggested_account:
-            account = exc.evidence.suggested_account
-            side = side or exc.evidence.suggested_side
-        else:
-            return (
-                f"There's no suggested account for exception {command.index}, "
-                f"so I need you to name one.\n\n"
-                f"Reply *approve {command.index} Commission Expense* "
-                f"(add *credit* at the end if it should be a credit)."
-            )
-
-    if side is None:
-        # Deductions are debits and receipts are credits often enough to be a
-        # sane default, but the accountant can always override it explicitly.
-        side = Side.CREDIT if exc.amount > 0 else Side.DEBIT
-
-    profile = _profiles.get(sender)
-    actor = profile.approver() if profile else "Unnamed approver"
-    cycle.approve(exc.key, account, side, actor)
-
-    remaining = len(cycle.open_exceptions())
-    head = (
-        f"✅ Recorded — {exc.platform.value} {exc.amount:,.2f} posts to "
-        f"*{account}* ({side.value}), approved by {actor}.\n"
-        f"Saved as a rule for your firm."
-    )
-    if remaining:
-        return f"{head}\n\n{remaining} exception(s) left.\n\n{cycle.whatsapp_digest()}"
-    return f"{head}\n\nEvery platform ties out now. Reply *post* to send the journals."
-
-
-def _handle_post(sender: str, cycle: Cycle) -> str:
-    """Apply a *post* instruction."""
-    results = cycle.run()
-    blocked = [p.value for p, r in results.items() if not r.ties_out]
-    if blocked:
-        return (
-            f"I can't post yet — {', '.join(blocked)} still has unresolved exceptions.\n\n"
-            f"{cycle.whatsapp_digest()}"
-        )
-
-    profile = _profiles.get(sender)
-    adapter = get_adapter(profile.ledger if profile else None)
-    actor = profile.approver() if profile else "Unnamed approver"
-
-    posted = []
-    for _platform, result in results.items():
-        try:
-            adapter.post(result.journal)
-        except NotImplementedError:
-            return (
-                f"The {adapter.name} adapter has the journal ready but the connection "
-                "isn't wired up yet — no OAuth credentials. Switch the ledger to "
-                f"*Dry run* in setup to see the payload: {_setup_link_for_sender(sender)}"
-            )
-        except Exception as exc:
-            return f"❌ {result.journal.reference} was refused by {adapter.name}: {exc}"
-
-        cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
-        save_posted_entry(
-            sender, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
-        )
-        posted.append(
-            f"• {result.journal.reference} — {result.journal.platform.value}, "
-            f"{result.journal.total_debit:,.2f} balanced"
-        )
-
-    verb = "prepared" if adapter.name == "dry-run" else "sent"
+def _digest_link_reply(sender: str, cycle: Cycle, lead: str) -> str:
+    """A one-line summary plus a fresh link to the digest page."""
+    link = issue_link(cycle.cycle, firm_id=sender, base_url=_app_url())
+    cycle.trail.add("source", f"Digest link sent to {sender}")
     return (
-        f"*Cycle {cycle.cycle} {verb}* via {adapter.name}:\n"
-        + "\n".join(posted)
-        + f"\n\nApproved by {actor}. Working paper: {_app_url()}/audit"
-        + f"?firm={_public_phone_param(sender)}"
+        f"{lead}\n\n{cycle.whatsapp_summary()}\n\n"
+        f"Open digest: {link['url']}\n\nNo login needed."
     )
 
 
@@ -1058,11 +991,14 @@ async def whatsapp_webhook(
     This endpoint must be publicly accessible (use ngrok for local dev).
 
     Routing:
-      - an attached CSV → reconciled in the background, digest sent when done
-      - "digest" → the current cycle and its open exceptions
-      - "why N" / "approve N ..." → investigate or decide one exception
-      - "post" → send the journals to the configured ledger
-      - anything unrecognised → the command list
+      - an attached CSV → reconciled in the background, link sent when done
+      - "digest" → a fresh link to the current cycle
+      - "setup" → the firm settings link
+      - anything else → the link, which is nearly always what was wanted
+
+    Reviewing and approving happen on the page, not in the thread. An approval
+    is recorded against a named person, and it should be made with the evidence,
+    the amounts and the resulting journal all visible at once.
     """
     form = await request.form()
     From = str(form.get("From", "")).strip()
@@ -1127,22 +1063,14 @@ async def whatsapp_webhook(
             f"{quick_start}"
         )
 
+    cycle = _cycle_for(sender)
+
     if command.kind == "greeting":
         quick_start = QUICK_START_ZH if profile.language == "zh" else QUICK_START_EN
         return _twiml_response(
             f"Hey {profile.approver()} 👋\n\n{quick_start}\n\n{COMMANDS_HELP}"
         )
 
-    if command.kind == "rules":
-        store = _store_for(sender)
-        learned = [r for r in store.rules if r.decided_by]
-        lines = [f"*{len(store.rules)} rules* — {len(learned)} decided by your firm."]
-        for rule in store.rules[-12:]:
-            scope = rule.platform.value if rule.platform else "All platforms"
-            lines.append(f'• {scope} · "{rule.label}" → {rule.account} ({rule.side.value})')
-        return _twiml_response("\n".join(lines))
-
-    cycle = _cycle_for(sender)
     if cycle is None:
         return _twiml_response(
             "No cycle open yet. Send me a settlement CSV and I'll reconcile it.\n\n"
@@ -1150,28 +1078,18 @@ async def whatsapp_webhook(
         )
 
     if command.kind == "digest":
-        return _twiml_response(cycle.whatsapp_digest())
+        return _twiml_response(_digest_link_reply(sender, cycle, "Here's your cycle."))
 
-    if command.kind == "why":
-        exc = cycle.exception_at(command.index)
-        if exc is None:
-            return _twiml_response(
-                f"There's no open exception {command.index}. Reply *digest* for the list."
-            )
-        # Ask the investigator only when the deterministic layer found nothing —
-        # it is a suggestion either way, never a decision.
-        if exc.evidence is None:
-            exc.evidence = investigate(exc)
-        return _twiml_response(cycle.whatsapp_exception(command.index))
-
-    if command.kind == "approve":
-        return _twiml_response(_handle_approve(sender, cycle, command))
-
-    if command.kind == "post":
-        return _twiml_response(_handle_post(sender, cycle))
-
+    # Everything else: the sender almost certainly wants the digest. Say what
+    # else is available rather than refusing to answer.
     return _twiml_response(
-        f"I didn't catch that.\n\n{COMMANDS_HELP}"
+        _digest_link_reply(
+            sender,
+            cycle,
+            "Reviewing and approving happen on the digest page — it has the "
+            "evidence and the journals next to each figure.",
+        )
+        + f"\n\n{COMMANDS_HELP}"
     )
 
 
@@ -1212,3 +1130,154 @@ def _twiml_send(to: str, message: str) -> None:
         if "exceeded the 50 daily messages limit" in str(exc) or "HTTP 429" in str(exc):
             _twilio_daily_limit_exhausted = True
         print(f"  [Webhook] Out-of-band send failed: {exc}")
+
+
+# ── Digest page + its API ─────────────────────────────────────────────────────
+# The page is the review surface. It is reached by a tokenised link with no
+# login, so every endpoint below resolves the firm from that token — see
+# _firm_from_token. The page never names a firm itself.
+
+
+class ChatRequest(BaseModel):
+    key: str
+    history: list[dict]
+
+
+class PageApproveRequest(BaseModel):
+    key: str
+    account: str
+    side: Side = Side.DEBIT
+    save_rule: bool = True
+
+
+class NotifyRequest(BaseModel):
+    to: str
+    base_url: Optional[str] = None
+
+
+def _find_exception(cycle: Cycle, key: str):
+    for result in cycle.run().values():
+        for exc in result.exceptions:
+            if exc.key == key:
+                return exc
+    raise HTTPException(404, f"No open exception with key {key}")
+
+
+def _post_cycle(firm_id: str) -> dict:
+    """Post every platform's journal for one firm. Refuses while anything is open."""
+    cycle = _require_cycle(firm_id)
+    profile = _profiles.get(firm_id)
+
+    results = cycle.run()
+    blocked = [p.value for p, r in results.items() if not r.ties_out]
+    if blocked:
+        raise HTTPException(
+            409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
+        )
+
+    adapter = get_adapter(profile.ledger if profile else None)
+    actor = profile.approver() if profile else "API caller"
+    out = []
+    for _platform, result in results.items():
+        try:
+            out.append(adapter.post(result.journal))
+        except NotImplementedError as exc:
+            # The Xero adapter prepares the payload but cannot send it yet. That
+            # is a configuration state, not a server fault.
+            raise HTTPException(501, str(exc).split(". Payload prepared")[0])
+        cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
+        save_posted_entry(
+            firm_id, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
+        )
+    return {"adapter": adapter.name, "entries": out}
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/c/{token}", include_in_schema=False)
+def digest_page(token: str = ""):
+    """The month-end digest. Tokenised, no login."""
+    if token:
+        _firm_from_token(token)  # 410s on an expired or unknown link
+    return FileResponse(os.path.join(STATIC, "digest.html"))
+
+
+@app.get("/api/digest")
+def api_digest(token: str = Query(""), firm: str = Query(API_FIRM)):
+    return _require_cycle(_firm_from_request(token, firm)).digest()
+
+
+@app.get("/api/exception/opening")
+def api_opening(key: str, token: str = Query(""), firm: str = Query(API_FIRM)):
+    """First message in the drawer. Deterministic — no model call."""
+    cycle = _require_cycle(_firm_from_request(token, firm))
+    exc = _find_exception(cycle, key)
+    # Ask the investigator only where the deterministic layer found nothing. It
+    # is a suggestion either way, never a decision.
+    if exc.evidence is None:
+        exc.evidence = investigate(exc)
+    return {"key": key, "message": opening_message(exc)}
+
+
+@app.post("/api/exception/chat")
+def api_chat(req: ChatRequest, token: str = Query(""), firm: str = Query(API_FIRM)):
+    """Follow-up questions about one exception. This is the only LLM surface
+    the accountant talks to, and it cannot approve anything."""
+    cycle = _require_cycle(_firm_from_request(token, firm))
+    exc = _find_exception(cycle, req.key)
+    return {"message": reply(exc, req.history, cycle.lines, cycle.prior)}
+
+
+@app.post("/api/approve")
+def api_approve(req: PageApproveRequest, token: str = Query(""), firm: str = Query(API_FIRM)):
+    """Approve from the page.
+
+    The actor is taken from the firm's settings, not from the request body — the
+    audit trail should name whoever the firm said signs off, and a page with no
+    login cannot be trusted to say who is holding the phone.
+    """
+    firm_id = _firm_from_request(token, firm)
+    cycle = _require_cycle(firm_id)
+    profile = _profiles.get(firm_id)
+    actor = profile.approver() if profile else "Unnamed approver"
+    cycle.approve(req.key, req.account, req.side, actor, req.save_rule)
+    return cycle.digest()
+
+
+@app.post("/api/post")
+def api_post(token: str = Query(""), firm: str = Query(API_FIRM)):
+    return _post_cycle(_firm_from_request(token, firm))
+
+
+@app.get("/api/journal/{platform}")
+def api_journal(platform: str, token: str = Query(""), firm: str = Query(API_FIRM)):
+    cycle = _require_cycle(_firm_from_request(token, firm))
+    for p, result in cycle.run().items():
+        if p.value == platform and result.journal:
+            j = result.journal
+            return {
+                "reference": j.reference,
+                "lines": [l.model_dump(mode="json") for l in j.lines],
+                "total_debit": j.total_debit,
+                "total_credit": j.total_credit,
+                "balanced": j.balanced,
+            }
+    raise HTTPException(404, f"No journal for {platform}")
+
+
+@app.get("/api/audit.json")
+def api_audit_json(token: str = Query(""), firm: str = Query(API_FIRM)):
+    return {"records": _require_cycle(_firm_from_request(token, firm)).trail.to_dicts()}
+
+
+@app.get("/api/audit", response_class=PlainTextResponse)
+def api_audit_csv(token: str = Query(""), firm: str = Query(API_FIRM)):
+    return _require_cycle(_firm_from_request(token, firm)).trail.to_csv()
+
+
+@app.post("/notify")
+def notify(req: NotifyRequest):
+    """Issue a digest link and send it over WhatsApp."""
+    to = _canonical_whatsapp_phone(req.to)
+    cycle = _require_cycle(to)
+    result = _notifier.digest(to, cycle, base_url=req.base_url or _app_url())
+    return {"delivery": result}

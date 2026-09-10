@@ -53,11 +53,19 @@ own reconciliation can match the deposit when it arrives.
 firm, applied across all their clients. After a year, a firm's rule set encodes
 its own accounting policy — which is why switching costs something.
 
-**WhatsApp is a surface, not a second product.** The digest an accountant reads
-on their phone and the JSON the API returns are the same `Cycle` object rendered
-two ways. Approvals arrive as commands, not free text — an approval carries a
-named actor and a timestamp into the audit trail, so it has to mean exactly what
-it says.
+**The digest page is the review surface; WhatsApp is the doorbell.** Accountants
+who compared a structured report with a chat interface preferred the report for
+reviewing and verifying entries, and wanted conversation reserved for the items
+that actually need explaining. So the link arrives over WhatsApp, and the review
+happens on a page where the evidence, the amounts and the resulting journal are
+visible at once. Approving is not a WhatsApp command — an approval is recorded
+against a named person and should not be a two-word reply.
+
+**The link is the credential.** A digest link is tokenised, scoped to one firm,
+and expires in 14 days. No login, because accountants already receive everything
+else from their clients this way and a password would just be one more thing to
+lose. A token that has expired or was never issued is a hard 410 — it never
+falls through to somebody else's cycle.
 
 ---
 
@@ -66,6 +74,7 @@ it says.
 ```
 fynn/
 ├── main.py                       FastAPI endpoints + Twilio WhatsApp webhook
+├── static/digest.html            The month-end digest page + exception drawer
 ├── models/
 │   ├── transaction.py            Settlement lines, rules, exceptions, journals
 │   └── firm_profile.py           Per-firm settings + profile store
@@ -81,6 +90,7 @@ fynn/
 │   └── database.py               Supabase persistence (no-ops when unset)
 ├── agents/
 │   ├── investigator.py           LLM exception investigation (suggestions only)
+│   ├── explainer.py              Conversational drawer — explains, never decides
 │   └── notifier.py               Outbound WhatsApp sends
 ├── utils/formatter.py            Cycle orchestration + digest payload
 ├── data/sample_settlements.py    Sample cycle with the three known edge cases
@@ -143,30 +153,40 @@ column names, a payout that does not tie. Each break is a finding.
 
 ---
 
+## The digest page
+
+The review surface. Reached by a tokenised link at `/c/{token}` — no login, 14
+day expiry, scoped to one firm.
+
+- Payouts per platform across the top, then anything that needs a decision.
+- Clicking an exception opens a drawer. The first message is deterministic; the
+  follow-up questions go to `agents/explainer.py`, which is given that one
+  exception and its cycle and told, in the system prompt, that it explains and
+  proposes but never decides. Approving is a separate, explicit action.
+- Approving records the account against the name in firm settings — the request
+  body cannot name the actor, because a page with no login cannot be trusted to
+  say who is holding the phone.
+- Journal entries expand to their lines, so any figure can be traced back.
+- Once nothing is open, **Post entries** sends them to the configured adapter.
+- The audit trail is on the same page, with the working paper one click away.
+
 ## WhatsApp
 
-Twilio posts to `POST /webhook/whatsapp`. The accountant sends a settlement CSV
-as an attachment; Fynn reconciles in the background and sends the digest back.
-From there everything is a reply:
+Twilio posts to `POST /webhook/whatsapp`. It carries files in and links out:
 
-| Reply | What it does |
+| Send | What happens |
 |---|---|
-| `digest` | The current cycle: totals per platform, then numbered exceptions |
-| `why 1` | The evidence behind exception 1, with a confidence score |
-| `approve 1` | Accept the suggested treatment |
-| `approve 1 Marketing Expense` | Approve, naming the account |
-| `approve 1 Other Income credit` | Approve, naming account and side |
-| `post` | Send the journals — refuses while any exception is open |
-| `rules` | The rules the firm has accumulated |
+| a settlement CSV | Reconciled in the background; the digest link comes back |
+| `digest` | A fresh link to the current cycle |
 | `setup` | Link to the firm settings page |
+| anything else | The digest link, which is nearly always what was wanted |
 
-Exception numbers come from the digest and are stable across re-reconciles.
-Every approval is recorded against the name in firm settings, which is why setup
-asks who signs off before anything else.
+`POST /notify` issues a link and sends it out of band, for when a cycle is
+prepared some other way.
 
-Firms who prefer a browser get the same two pages: `/setup?phone=…` for settings
-and `/upload?phone=…` for drag-and-drop ingest. An upload through the web page
-still sends the digest to WhatsApp, so the two surfaces cannot drift apart.
+Firms who prefer a browser get two more pages: `/setup?phone=…` for settings and
+`/upload?phone=…` for drag-and-drop ingest. An upload through the web page still
+sends the digest link to WhatsApp, so the surfaces cannot drift apart.
 
 ---
 
@@ -213,8 +233,10 @@ earlier seller-facing P&L product and is commented out on purpose.
   refresh-token flow are needed first. Access tokens expire after 30 minutes.
 - Cycle persistence. Firm rules, source files and posted entries are in
   Supabase; the *open* cycle is in-process, so a restart mid-review loses the
-  approvals not yet posted. Source settlement files must be retained for the
-  statutory period (5 years — verify for your jurisdiction).
+  approvals not yet posted. Digest tokens live in the same process, so a restart
+  also invalidates every link already sent — both want the same fix. Source
+  settlement files must be retained for the statutory period (5 years — verify
+  for your jurisdiction).
 - Multi-currency. Lazada alone spans six countries.
 - Multi-client. A firm is one WhatsApp number and one open cycle; separating
   clients within a firm is the next structural change, not a field.
