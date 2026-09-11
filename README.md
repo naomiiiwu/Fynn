@@ -53,6 +53,17 @@ own reconciliation can match the deposit when it arrives.
 firm, applied across all their clients. After a year, a firm's rule set encodes
 its own accounting policy — which is why switching costs something.
 
+On the real January files this is the whole argument in one number: 1,580
+settlement lines raise **46** exceptions the first month and **3** the second.
+The three that remain are orphaned refunds, which are per-order judgements and
+should never become rules.
+
+**An exception is per label, not per line.** Shopee's January statement carries
+114 separate "Transaction Fee" lines. Raising each one would bury the accountant
+in identical decisions, so unrecognised labels are grouped: one label, one
+decision, one rule covering every line under it. Orphaned refunds stay per-line,
+because the question there is about a specific order.
+
 **The digest page is the review surface; WhatsApp is the doorbell.** Accountants
 who compared a structured report with a chat interface preferred the report for
 reviewing and verifying entries, and wanted conversation reserved for the items
@@ -137,19 +148,36 @@ curl -X POST localhost:8000/cycle/upload \
   -F "reported=Lazada=1038.00"
 ```
 
-Canonical columns: `platform,cycle,order,label,amount,date`. The parser also
-accepts a marketplace's own header names (`Transaction Date`, `Order SN`,
-`Transaction Type`, `Amount (MYR)`, separate `Credit`/`Debit` columns), infers
-the platform from the filename when there is no platform column, and reads the
-payout from a `Total payout` / `Settlement` / `Withdrawal` row when the file
-states one — in which case `reported` can be omitted.
+Canonical columns are `platform,cycle,order,label,amount,date`, but nothing
+exports that. Two real structures are handled:
+
+- **long** — one row per fee line, carrying its own name and amount. Lazada's
+  account statement; Shopee's order adjustments.
+- **wide** — one row per order, fees as columns, with a stated total. Shopee's
+  income statement. Each row is melted into one line per non-zero fee column.
+
+The layout is detected, not assumed. So are the things that vary and that nobody
+has verified against a live export: columns are found by name rather than
+position, matching ignores case, `.xlsx` parses as well as `.csv`, adjustments
+work as their own file *or* as a second block of rows under their own header,
+and in a wide file any column that is not recognised meta is treated as a fee —
+so an extra tax column in another market becomes a line instead of vanishing.
+
+A settlement file *is* a period, so the cycle comes from an explicit statement
+column first, then the filename, and only then a row's own date. Rows dated into
+the next month are normal in a statement and must not split the close in two.
+
+The one thing a wide file is checked against is its own arithmetic: every row's
+components must sum to its stated total. A file that fails that is rejected
+rather than reconciled, because a mis-read column resurfaces later as a residual
+nobody can explain. That check has already caught two parser bugs.
 
 A file it cannot read is rejected outright. Half-loading a settlement file would
 produce a cycle that is short by an unknown amount, which is worse than an error.
 
-Expect this to break on the first real file — unfamiliar labels, different
-column names, a payout that does not tie. Each break is a finding.
-`data/test_upload_pack/` has six files, two of which are supposed to fail.
+`data/real_samples/` holds real-shaped Shopee and Lazada exports with their
+provenance and known totals; `data/test_upload_pack/` holds small canonical and
+deliberately-broken files, two of which are supposed to fail.
 
 ---
 

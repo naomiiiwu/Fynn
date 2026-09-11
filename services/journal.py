@@ -18,6 +18,7 @@ from models.transaction import (
     Side,
 )
 from services.classification import RuleStore
+from services.reconciliation import is_blocked, resolution_for
 
 
 def build_journal(
@@ -36,10 +37,11 @@ def build_journal(
     net = 0.0
 
     for line in lines:
-        if line.key in blocked:
+        if is_blocked(line, blocked):
             continue
-        if line.key in resolutions:
-            account, side = resolutions[line.key]
+        decided = resolution_for(line, resolutions)
+        if decided is not None:
+            account, side = decided
         else:
             rule = store.find(line)
             if rule is None:

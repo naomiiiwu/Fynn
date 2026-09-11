@@ -1,15 +1,35 @@
-"""Settlement CSV parsing.
+"""Settlement file parsing.
 
 Fynn's canonical shape is `platform,cycle,order,label,amount,date`, but no
-marketplace exports that. Real files arrive with the platform's own column
-names, the platform implied only by the filename, and the payout stated on a
-row inside the file rather than passed in separately. This module maps what
-actually arrives onto SettlementLine, and says clearly what it could not map —
-an unreadable file has to fail loudly, never quietly produce a short cycle.
+marketplace exports that. Two structures arrive in practice:
 
-The label itself is passed through untouched. Deciding what a label *means* is
-the rules engine's job (services/classification.py), and inventing a mapping
-here would put an ungoverned second classifier in the pipeline.
+  long   one row per fee line, carrying its own name and amount.
+         Lazada's account statement, and Shopee's order adjustments.
+  wide   one row per order, fees as columns, with a total column that the
+         components sum to. Shopee's income statement.
+
+Both are melted into SettlementLine. The label is passed through untouched —
+deciding what a label *means* is the rules engine's job
+(services/classification.py), and inventing a mapping here would put an
+ungoverned second classifier in the pipeline.
+
+What this module deliberately does not assume, because none of it is verified
+against a real export:
+
+  column order      every column is found by name, never by position
+  header casing     matching is case- and whitespace-insensitive
+  file format       .csv and .xlsx both parse
+  file layout       adjustments may be their own file or a second block of
+                    rows inside one, under their own header
+  per-country cols  in a wide file, any column that is not recognised meta is
+                    treated as a fee, so an extra tax or levy column in another
+                    market becomes a line rather than being silently dropped
+
+The one thing a wide file *is* checked against is its own arithmetic: the
+components of every row must sum to its stated total. That identity is the
+only part of the layout worth trusting, so a file that fails it is reported
+rather than reconciled — a mis-read column would otherwise surface later as an
+unexplained residual.
 """
 from __future__ import annotations
 
@@ -29,18 +49,37 @@ class SettlementParseError(ValueError):
 # Column aliases, lowercased. Matched exact-first, then as a substring, so
 # "Amount (MYR)" resolves through the bare "amount" entry.
 _COLUMNS: dict[str, list[str]] = {
-    "platform": ["platform", "marketplace", "channel", "shop"],
-    "cycle":    ["cycle", "period", "settlement period", "statement period", "payout period"],
-    "label":    ["label", "type", "transaction type", "fee type", "description", "remarks",
-                 "item", "particulars"],
-    "amount":   ["amount", "net amount", "total amount", "value", "settlement amount"],
+    # No bare "shop": it matches Shopee's own fee columns ("Shopee Discount")
+    # and would read a money column as a platform name.
+    "platform": ["platform", "marketplace", "channel", "shop name", "store"],
+    "cycle":    ["statement", "statement period", "cycle", "period", "payout period"],
+    "label":    ["label", "fee name", "adjustment reason", "type", "transaction type",
+                 "fee type", "description", "remarks", "reason", "item", "particulars"],
+    "amount":   ["amount", "released amount", "amount released", "net amount",
+                 "total amount", "value", "settlement amount"],
     "order":    ["order", "order id", "order no.", "order no", "order sn", "order number",
                  "reference", "ref no."],
-    "date":     ["date", "transaction date", "created at", "created time", "settlement date",
-                 "payout date"],
+    "date":     ["date", "transaction date", "adjustment date", "created at", "created time",
+                 "release time", "settlement date", "payout date"],
     "credit":   ["credit"],
     "debit":    ["debit"],
 }
+
+# In a wide file these identify the row rather than a fee it carries. Kept
+# deliberately narrow: anything not matched here becomes a fee line, so an
+# over-broad needle silently deletes money. "buyer" was one — it swallowed
+# Shopee's "Shipping Fee Paid by Buyer", and only the row identity caught it.
+_WIDE_META = [
+    "order id", "order no", "order sn", "order number", "order item no",
+    "date", "time", "status", "statement", "payment ref", "ref id", "currency",
+    "buyer name", "buyer username", "seller sku", "product name", "tracking",
+]
+
+# The stated total a wide row's components must sum to.
+_WIDE_TOTAL = [
+    "final amount", "grand total", "total released", "net payout", "payout amount",
+    "total amount", "settlement amount",
+]
 
 # Rows that state what the platform paid out. These are not settlement lines —
 # they are the figure Fynn reconciles the settlement lines against, so folding
@@ -48,6 +87,14 @@ _COLUMNS: dict[str, list[str]] = {
 PAYOUT_LABELS = {
     "payout", "total payout", "settlement", "total settlement amount", "withdrawal",
     "released amount", "amount released", "bank transfer", "net payout", "paid out",
+    "grand total",
+}
+
+# Trailing parentheticals that name a currency or a country's tax, stripped so
+# one rule covers "Product Service Tax (GST)" in Malaysia and the same column
+# labelled (VAT) or (SST) elsewhere.
+_SUFFIX_CODES = {
+    "gst", "vat", "sst", "wht", "myr", "sgd", "idr", "php", "thb", "vnd", "usd", "rm", "s$",
 }
 
 _PLATFORM_HINTS: list[tuple[str, Platform]] = [
@@ -60,7 +107,7 @@ _PLATFORM_HINTS: list[tuple[str, Platform]] = [
 _DATE_FORMATS = (
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d",
     "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
-    "%d-%m-%Y", "%d %b %Y", "%d %B %Y",
+    "%d-%m-%Y", "%d %b %Y", "%d %B %Y", "%b %Y", "%B %Y",
 )
 
 
@@ -72,6 +119,8 @@ class ParsedSettlement:
     reported_payouts: dict[Platform, float] = field(default_factory=dict)
     cycles: set[str] = field(default_factory=set)
     skipped: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    layout: str = "long"
 
     @property
     def cycle(self) -> str:
@@ -85,6 +134,8 @@ class ParsedSettlement:
         return {l.platform for l in self.lines}
 
 
+# ── Reading ───────────────────────────────────────────────────────────────────
+
 def _decode(raw: bytes) -> str:
     try:
         return raw.decode("utf-8-sig")
@@ -92,24 +143,92 @@ def _decode(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
-def _resolve_columns(fieldnames: list[str]) -> dict[str, str]:
-    """Map our field names onto the file's actual headers."""
-    headers = {(h or "").strip().lower(): h for h in fieldnames}
-    resolved: dict[str, str] = {}
-    for field_name, aliases in _COLUMNS.items():
-        for alias in aliases:
-            if alias in headers:
-                resolved[field_name] = headers[alias]
-                break
-        else:
-            # Fall back to a substring match: "amount (myr)" contains "amount".
-            for alias in aliases:
-                match = next((h for h in headers if alias in h), None)
-                if match:
-                    resolved[field_name] = headers[match]
-                    break
-    return resolved
+def _is_xlsx(raw: bytes, filename: str) -> bool:
+    # xlsx is a zip; the magic bytes are a cheaper and more reliable signal than
+    # the extension, which a WhatsApp attachment often loses.
+    return raw[:2] == b"PK" or filename.lower().endswith((".xlsx", ".xlsm"))
 
+
+def _rows_from_xlsx(raw: bytes) -> list[list[str]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise SettlementParseError(
+            "That looks like an Excel file, but openpyxl is not installed. "
+            "Export it as CSV instead."
+        )
+    try:
+        wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    except Exception as exc:
+        raise SettlementParseError(f"Could not open that Excel file: {exc}")
+
+    rows: list[list[str]] = []
+    for row in wb[wb.sheetnames[0]].iter_rows(values_only=True):
+        rows.append(["" if c is None else str(c).strip() for c in row])
+    wb.close()
+    return rows
+
+
+def _rows_from_csv(raw: bytes) -> list[list[str]]:
+    text = _decode(raw)
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel  # a single-column file, or one Sniffer cannot read
+    return [[(c or "").strip() for c in row] for row in csv.reader(io.StringIO(text), dialect)]
+
+
+def _blocks(rows: list[list[str]]) -> list[list[dict]]:
+    """Split a sheet into blocks, each with its own header row.
+
+    Whether a platform ships adjustments as a separate file or as a second
+    section of the same one is not verified, so both are handled: a blank line
+    followed by a row that looks like a new header starts a new block.
+    """
+    blocks: list[list[dict]] = []
+    header: Optional[list[str]] = None
+    current: list[dict] = []
+
+    def flush():
+        if header and current:
+            blocks.append(current.copy())
+        current.clear()
+
+    for row in rows:
+        if not any(cell for cell in row):          # blank separator line
+            flush()
+            header = None
+            continue
+        if header is None:
+            header = [c for c in row]
+            continue
+        # A row whose cells are all non-numeric where the header expects numbers
+        # is a new header, not data — the usual shape of an appended section.
+        if _looks_like_header(header, row):
+            flush()
+            header = [c for c in row]
+            continue
+        current.append({header[i] if i < len(header) else f"col{i}": v
+                        for i, v in enumerate(row)})
+    flush()
+    return blocks
+
+
+def _looks_like_header(header: list[str], row: list[str]) -> bool:
+    """True when `row` reads as a fresh header rather than data under `header`."""
+    if len(row) < 2:
+        return False
+    cells = [c for c in row if c]
+    if not cells:
+        return False
+    if any(_parse_amount(c) is not None for c in cells):
+        return False  # contains a number: it is data
+    # Every cell is text. Treat as a header only if it differs from the current
+    # one — a text-only data row (all zeros stripped, say) should not split.
+    return [c.strip().lower() for c in row] != [c.strip().lower() for c in header]
+
+
+# ── Value helpers ─────────────────────────────────────────────────────────────
 
 def _parse_amount(raw: str) -> Optional[float]:
     """Strip currency symbols, thousands separators and bracketed negatives."""
@@ -118,7 +237,7 @@ def _parse_amount(raw: str) -> Optional[float]:
         return None
     negative = text.startswith("(") and text.endswith(")")
     cleaned = re.sub(r"[^\d.\-]", "", text.replace(",", ""))
-    if cleaned in ("", "-", ".", "-."):
+    if cleaned in ("", "-", ".", "-.") or cleaned.count(".") > 1:
         return None
     try:
         value = float(cleaned)
@@ -127,22 +246,54 @@ def _parse_amount(raw: str) -> Optional[float]:
     return -value if negative else value
 
 
-def _cycle_from_date(raw: str) -> Optional[str]:
-    """Derive a YYYY-MM cycle from a date cell, for files with no period column."""
+def _clean_label(header: str) -> str:
+    """A fee column's header, minus any currency or tax-code suffix."""
+    label = (header or "").strip()
+    match = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", label)
+    if match and match.group(2).strip().lower() in _SUFFIX_CODES:
+        return match.group(1).strip()
+    return label
+
+
+def _normalise_cycle(value: str) -> Optional[str]:
+    """Reduce a period or date cell to YYYY-MM."""
     from datetime import datetime
 
-    text = (raw or "").strip()
+    text = (value or "").strip()
     if not text:
         return None
+    if re.fullmatch(r"\d{4}-\d{2}", text):
+        return text
+    match = re.match(r"(\d{4})[-/](\d{1,2})", text)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
     for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(text, fmt).strftime("%Y-%m")
         except ValueError:
             continue
-    # Last resort: a leading YYYY-MM is unambiguous even in an unknown format.
-    match = re.match(r"(\d{4})[-/](\d{1,2})", text)
+    return None
+
+
+def cycle_from_filename(filename: str) -> Optional[str]:
+    """Pull the period out of a filename like shopee-income-statement-2026-01.csv.
+
+    A settlement file *is* a period. Rows inside it routinely carry dates from
+    the next month — an order released on 2026-02-01 still belongs to the
+    January statement it was paid in — so the filename outranks the row date,
+    and only an explicit statement column outranks the filename.
+    """
+    name = (filename or "").lower()
+    match = re.search(r"(20\d{2})[-_/ ]?(0[1-9]|1[0-2])(?!\d)", name)
     if match:
-        return f"{match.group(1)}-{int(match.group(2)):02d}"
+        return f"{match.group(1)}-{match.group(2)}"
+    months = ("january", "february", "march", "april", "may", "june", "july",
+              "august", "september", "october", "november", "december")
+    for index, month in enumerate(months, start=1):
+        for form in (month, month[:3]):
+            hit = re.search(rf"{form}[-_ ]?(20\d{{2}})", name)
+            if hit:
+                return f"{hit.group(1)}-{index:02d}"
     return None
 
 
@@ -177,37 +328,143 @@ def parse_reported(reported: str) -> dict[Platform, float]:
     return payouts
 
 
-def parse_settlement_csv(
-    raw: bytes,
-    filename: str = "upload.csv",
-    default_platform: Optional[Platform] = None,
-    default_cycle: Optional[str] = None,
-) -> ParsedSettlement:
-    """Read one settlement export into SettlementLines.
+# ── Column resolution ─────────────────────────────────────────────────────────
 
-    The platform is taken from a column when the file has one, otherwise from
-    the filename, otherwise from `default_platform`. A file that resolves to no
-    platform at all is rejected rather than guessed at.
-    """
-    text = _decode(raw)
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise SettlementParseError("That file has no header row.")
+def _resolve_columns(fieldnames: list[str]) -> dict[str, str]:
+    """Map our field names onto the file's actual headers."""
+    headers = {(h or "").strip().lower(): h for h in fieldnames if h}
+    resolved: dict[str, str] = {}
+    taken: set[str] = set()
+    for field_name, aliases in _COLUMNS.items():
+        for alias in aliases:
+            if alias in headers and headers[alias] not in taken:
+                resolved[field_name] = headers[alias]
+                taken.add(headers[alias])
+                break
+        else:
+            for alias in aliases:
+                match = next(
+                    (h for h in headers if alias in h and headers[h] not in taken), None
+                )
+                if match:
+                    resolved[field_name] = headers[match]
+                    taken.add(headers[match])
+                    break
+    return resolved
 
-    cols = _resolve_columns(list(reader.fieldnames))
+
+def _matches_any(header: str, needles: list[str]) -> bool:
+    lowered = (header or "").strip().lower()
+    return any(n in lowered for n in needles)
+
+
+def _is_wide(fieldnames: list[str], cols: dict[str, str]) -> bool:
+    """A wide file has a total column and several unnamed fee columns."""
+    if "label" in cols:
+        return False
+    total = [h for h in fieldnames if _matches_any(h, _WIDE_TOTAL)]
+    if not total:
+        return False
+    fees = [
+        h for h in fieldnames
+        if h and h not in total and not _matches_any(h, _WIDE_META)
+    ]
+    return len(fees) >= 3
+
+
+# ── Melting ───────────────────────────────────────────────────────────────────
+
+def _melt_wide(
+    rows: list[dict],
+    fieldnames: list[str],
+    filename: str,
+    file_platform: Optional[Platform],
+    file_cycle: Optional[str],
+    default_cycle: Optional[str],
+    parsed: ParsedSettlement,
+) -> None:
+    """One row per order, fees as columns → one SettlementLine per fee."""
+    total_col = next(h for h in fieldnames if _matches_any(h, _WIDE_TOTAL))
+    cols = _resolve_columns(fieldnames)
+    fee_cols = [
+        h for h in fieldnames
+        if h and h != total_col and not _matches_any(h, _WIDE_META)
+    ]
+
+    mismatches: list[str] = []
+    for row_number, row in enumerate(rows, start=2):
+        platform = (
+            platform_from_text(row.get(cols["platform"], "")) if "platform" in cols else None
+        ) or file_platform
+        if platform is None:
+            parsed.skipped.append(
+                f"row {row_number}: no platform column, and the filename does not name one"
+            )
+            continue
+
+        order_id = (row.get(cols["order"], "") or "").strip() if "order" in cols else ""
+        date = (row.get(cols["date"], "") or "").strip() if "date" in cols else ""
+        cycle = (row.get(cols["cycle"], "") or "").strip() if "cycle" in cols else ""
+        cycle = (
+            _normalise_cycle(cycle) or file_cycle
+            or _normalise_cycle(date) or default_cycle or "unknown"
+        )
+
+        components = 0.0
+        for header in fee_cols:
+            amount = _parse_amount(row.get(header, ""))
+            if amount is None:
+                continue
+            components += amount
+            if abs(amount) < 0.005:
+                continue  # a zero fee is not a line worth posting
+            parsed.lines.append(
+                SettlementLine(
+                    platform=platform, cycle=cycle, label=_clean_label(header),
+                    amount=amount, order_id=order_id or None, date=date or None,
+                    source_ref=filename,
+                )
+            )
+        parsed.cycles.add(cycle)
+
+        stated = _parse_amount(row.get(total_col, ""))
+        if stated is not None and abs(round(components - stated, 2)) >= 0.005:
+            mismatches.append(
+                f"{order_id or f'row {row_number}'}: components {components:.2f} "
+                f"vs stated {stated:.2f}"
+            )
+
+    if mismatches:
+        # Do not reconcile a file whose own arithmetic does not hold. It means a
+        # column was read as meta when it carries value, and the difference
+        # would resurface later as a residual nobody can explain.
+        raise SettlementParseError(
+            f"{len(mismatches)} row(s) do not sum to their stated {total_col}. "
+            f"First: {mismatches[0]}. The column layout is probably not what Fynn expects."
+        )
+
+
+def _melt_long(
+    rows: list[dict],
+    fieldnames: list[str],
+    filename: str,
+    file_platform: Optional[Platform],
+    file_cycle: Optional[str],
+    default_cycle: Optional[str],
+    parsed: ParsedSettlement,
+) -> None:
+    """One row per fee line → one SettlementLine each."""
+    cols = _resolve_columns(fieldnames)
     missing = [f for f in ("label",) if f not in cols]
     if "amount" not in cols and not ("credit" in cols or "debit" in cols):
         missing.append("amount")
     if missing:
         raise SettlementParseError(
             "Missing required column(s): " + ", ".join(missing)
-            + ". Detected headers: " + ", ".join(reader.fieldnames[:12])
+            + ". Detected headers: " + ", ".join(h for h in fieldnames[:12] if h)
         )
 
-    file_platform = platform_from_text(filename) or default_platform
-    parsed = ParsedSettlement()
-
-    for row_number, row in enumerate(reader, start=2):
+    for row_number, row in enumerate(rows, start=2):
         label = (row.get(cols["label"]) or "").strip()
         if not label:
             parsed.skipped.append(f"row {row_number}: no label")
@@ -233,12 +490,18 @@ def parse_settlement_csv(
             continue
 
         date = (row.get(cols["date"], "") or "").strip() if "date" in cols else ""
-        cycle = (row.get(cols["cycle"], "") or "").strip() if "cycle" in cols else ""
-        cycle = cycle or _cycle_from_date(date) or default_cycle or "unknown"
+        cycle_cell = (row.get(cols["cycle"], "") or "").strip() if "cycle" in cols else ""
+        # The statement period wins over the transaction date: a statement often
+        # carries a few lines dated into the next month, and letting those name
+        # their own cycle would split one close in two.
+        cycle = (
+            _normalise_cycle(cycle_cell) or file_cycle
+            or _normalise_cycle(date) or default_cycle or "unknown"
+        )
 
         if label.strip().lower() in PAYOUT_LABELS:
-            # Reported payouts are stated positive; a withdrawal row is often
-            # negative because it leaves the platform balance.
+            # Stated positive; a withdrawal row is often negative because it
+            # leaves the platform balance.
             parsed.reported_payouts[platform] = abs(amount)
             parsed.cycles.add(cycle)
             continue
@@ -246,19 +509,53 @@ def parse_settlement_csv(
         order_id = (row.get(cols["order"], "") or "").strip() if "order" in cols else ""
         parsed.lines.append(
             SettlementLine(
-                platform=platform,
-                cycle=cycle,
-                label=label,
-                amount=amount,
-                order_id=order_id or None,
-                date=date or None,
-                source_ref=filename,
+                platform=platform, cycle=cycle, label=label, amount=amount,
+                order_id=order_id or None, date=date or None, source_ref=filename,
             )
         )
         parsed.cycles.add(cycle)
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def parse_settlement_csv(
+    raw: bytes,
+    filename: str = "upload.csv",
+    default_platform: Optional[Platform] = None,
+    default_cycle: Optional[str] = None,
+) -> ParsedSettlement:
+    """Read one settlement export into SettlementLines.
+
+    The platform is taken from a column when the file has one, otherwise from
+    the filename, otherwise from `default_platform`. A file that resolves to no
+    platform at all is rejected rather than guessed at.
+    """
+    # Blank rows are kept: they are how a second section announces itself.
+    rows = _rows_from_xlsx(raw) if _is_xlsx(raw, filename) else _rows_from_csv(raw)
+    if not any(any(c for c in row) for row in rows):
+        raise SettlementParseError("That file is empty.")
+
+    blocks = _blocks(rows)
+    if not blocks:
+        raise SettlementParseError("That file has a header but no rows.")
+
+    file_platform = platform_from_text(filename) or default_platform
+    file_cycle = cycle_from_filename(filename)
+    parsed = ParsedSettlement()
+
+    for block in blocks:
+        fieldnames = list(block[0].keys())
+        cols = _resolve_columns(fieldnames)
+        if _is_wide(fieldnames, cols):
+            parsed.layout = "wide"
+            _melt_wide(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed)
+        else:
+            _melt_long(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed)
 
     if not parsed.lines:
         detail = f" ({parsed.skipped[0]})" if parsed.skipped else ""
         raise SettlementParseError(f"No settlement lines could be read from that file{detail}.")
 
+    if parsed.skipped:
+        parsed.warnings.append(f"{len(parsed.skipped)} row(s) skipped")
     return parsed

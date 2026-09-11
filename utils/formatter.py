@@ -16,7 +16,7 @@ from models.transaction import CycleResult, Platform, ReconException, Settlement
 from services.audit import AuditTrail
 from services.classification import RuleStore
 from services.journal import build_journal
-from services.reconciliation import group_by_platform, reconcile
+from services.reconciliation import group_by_platform, group_key, reconcile
 
 
 class Cycle:
@@ -139,8 +139,13 @@ class Cycle:
         will not be raised again for this firm.
         """
         self.resolutions[key] = (account, side)
-        line = next((l for l in self.lines if l.key == key), None)
-        self.trail.add("decision", f"Approved — {key} posts to {account}", actor=actor)
+        # The key may address a single line or every line carrying one label,
+        # so match on both — the rule is written from whichever line it finds.
+        covered = [l for l in self.lines if key in (l.key, group_key(l))]
+        line = covered[0] if covered else None
+
+        scope = f" ({len(covered)} lines)" if len(covered) > 1 else ""
+        self.trail.add("decision", f"Approved — {key} posts to {account}{scope}", actor=actor)
         if save_rule and line is not None and self.store.find(line) is None:
             self.store.add(line, account, side, decided_by=actor)
             self.trail.add(
