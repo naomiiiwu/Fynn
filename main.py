@@ -189,12 +189,26 @@ def _ingest(
     Raises SettlementParseError, which callers turn into a 400 or a WhatsApp
     reply. A file that cannot be read must not half-load.
     """
-    parsed = parse_settlement_csv(raw, filename=filename, default_platform=default_platform)
-    payouts = dict(parsed.reported_payouts)
-    payouts.update(parse_reported(reported))
-
     profile = _profiles.get(firm_id)
     existing = _cycles.get(firm_id)
+
+    # An adjustments file names no marketplace anywhere, but the orders it
+    # refers to are already in the open cycle. Offering those lets it be
+    # attributed instead of rejected.
+    known_orders = {
+        l.order_id: l.platform for l in existing.lines if l.order_id
+    } if existing is not None else {}
+
+    # A firm that settles on exactly one platform has already told us which.
+    if default_platform is None and profile is not None and len(profile.platforms) == 1:
+        default_platform = Platform(profile.platforms[0])
+
+    parsed = parse_settlement_csv(
+        raw, filename=filename, default_platform=default_platform,
+        known_orders=known_orders,
+    )
+    payouts = dict(parsed.reported_payouts)
+    payouts.update(parse_reported(reported))
 
     if existing is None or existing.cycle != parsed.cycle:
         cycle = Cycle(
@@ -936,6 +950,25 @@ def _is_supported_upload_media(content_type: str, media_url: str) -> bool:
     return url.endswith(".csv") or url.endswith(".xlsx")
 
 
+def _media_filename(body: str, media_url: str, content_type: str, index: int) -> str:
+    """Work out what the attachment was actually called.
+
+    Twilio's media URL ends in an opaque SID — ME524fbc08… — which names no
+    platform and no period, so deriving the filename from it throws away the
+    two things the parser most wants. WhatsApp sends a document's real filename
+    as the message body, so that is used when it looks like one; only the first
+    attachment can claim it.
+    """
+    candidate = (body or "").strip()
+    if index == 0 and candidate and "\n" not in candidate:
+        if candidate.lower().endswith((".csv", ".xlsx", ".xls", ".xlsm")):
+            # Strip any path the sender's client prepended.
+            return os.path.basename(candidate)
+
+    suffix = ".xlsx" if "spreadsheet" in (content_type or "").lower() else ".csv"
+    return media_url.rstrip("/").split("/")[-1] + suffix
+
+
 def _handle_file_background(sender: str, media_url: str, filename: str) -> None:
     """Download a settlement file from Twilio, reconcile it, send the digest."""
     try:
@@ -1025,7 +1058,7 @@ async def whatsapp_webhook(
                 continue
             print(f"  [Webhook] Media {idx}: content_type={content_type or 'unknown'} url={media_url}")
             if _is_supported_upload_media(content_type, media_url):
-                filename = media_url.split("/")[-1] + ".csv"
+                filename = _media_filename(message, media_url, content_type, idx)
                 background_tasks.add_task(_handle_file_background, sender, media_url, filename)
                 queued += 1
             else:

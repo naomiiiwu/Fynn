@@ -308,6 +308,76 @@ def platform_from_text(text: str) -> Optional[Platform]:
     return None
 
 
+def platform_from_content(rows: list[list[str]], sample: int = 60) -> Optional[Platform]:
+    """Identify the platform from what the file says about itself.
+
+    A file arriving over WhatsApp is named by Twilio's media SID, so the
+    filename names nothing. The contents still do: Shopee's statement has
+    "Shopee Discount" and "Shopee Coins Redeemed" as column headers, and
+    Lazada's classifies every line under "Orders-Lazada Fees".
+
+    Requires a clear winner — a file that mentions two marketplaces is
+    ambiguous, and guessing which one owns the money is not this module's call.
+    """
+    counts: dict[Platform, int] = {}
+    for row in rows[:sample]:
+        for cell in row:
+            hit = platform_from_text(cell)
+            if hit is not None:
+                counts[hit] = counts.get(hit, 0) + 1
+    if not counts:
+        return None
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def platform_from_known_orders(
+    rows: list[list[str]], known_orders: dict[str, Platform], sample: int = 400
+) -> Optional[Platform]:
+    """Identify the platform by the orders the file refers to.
+
+    An adjustments file names no marketplace anywhere — not in its filename, its
+    columns or its contents — but its order numbers are the ones already sitting
+    in the open cycle. Matching against those attributes the file without
+    guessing. Requires a clear winner, as the content sniff does.
+    """
+    if not known_orders:
+        return None
+    counts: dict[Platform, int] = {}
+    for row in rows[:sample]:
+        for cell in row:
+            platform = known_orders.get((cell or "").strip())
+            if platform is not None:
+                counts[platform] = counts.get(platform, 0) + 1
+    if not counts:
+        return None
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
+
+
+def _dominant_cycle(rows: list[list[str]], sample: int = 400) -> Optional[str]:
+    """The period most of the file's dates fall in.
+
+    A settlement file is one period. When neither a statement column nor the
+    filename says which, the rows themselves decide — and the majority wins, so
+    that the handful of lines a statement always carries into the next month do
+    not split one close in two.
+    """
+    counts: dict[str, int] = {}
+    for row in rows[:sample]:
+        for cell in row:
+            cycle = _normalise_cycle(cell) if re.search(r"\d{4}", cell or "") else None
+            if cycle:
+                counts[cycle] = counts.get(cycle, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
 def parse_reported(reported: str) -> dict[Platform, float]:
     """Parse `"Lazada=1038;Shopee=725"` into reported payouts.
 
@@ -523,12 +593,14 @@ def parse_settlement_csv(
     filename: str = "upload.csv",
     default_platform: Optional[Platform] = None,
     default_cycle: Optional[str] = None,
+    known_orders: Optional[dict[str, Platform]] = None,
 ) -> ParsedSettlement:
     """Read one settlement export into SettlementLines.
 
-    The platform is taken from a column when the file has one, otherwise from
-    the filename, otherwise from `default_platform`. A file that resolves to no
-    platform at all is rejected rather than guessed at.
+    The platform is taken from a column when the file has one, then the
+    filename, then the file's own contents, then the orders it refers to, then
+    `default_platform`. A file that resolves to no platform at all is rejected
+    rather than guessed at.
     """
     # Blank rows are kept: they are how a second section announces itself.
     rows = _rows_from_xlsx(raw) if _is_xlsx(raw, filename) else _rows_from_csv(raw)
@@ -539,8 +611,16 @@ def parse_settlement_csv(
     if not blocks:
         raise SettlementParseError("That file has a header but no rows.")
 
-    file_platform = platform_from_text(filename) or default_platform
-    file_cycle = cycle_from_filename(filename)
+    # Filename first, then what the file says about itself, then the caller's
+    # default. A WhatsApp attachment is named by Twilio's media SID, so the
+    # content sniff is what makes that path work at all.
+    file_platform = (
+        platform_from_text(filename)
+        or platform_from_content(rows)
+        or platform_from_known_orders(rows, known_orders or {})
+        or default_platform
+    )
+    file_cycle = cycle_from_filename(filename) or _dominant_cycle(rows)
     parsed = ParsedSettlement()
 
     for block in blocks:
@@ -553,6 +633,13 @@ def parse_settlement_csv(
             _melt_long(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed)
 
     if not parsed.lines:
+        if file_platform is None:
+            raise SettlementParseError(
+                "I can't tell which marketplace that file is from. Nothing in the "
+                "filename, the columns or the contents names one.\n\n"
+                "Rename it to include the platform — shopee-jan.csv — or send it "
+                "from the upload page, where you can pick."
+            )
         detail = f" ({parsed.skipped[0]})" if parsed.skipped else ""
         raise SettlementParseError(f"No settlement lines could be read from that file{detail}.")
 
