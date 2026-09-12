@@ -182,10 +182,16 @@ uvicorn main:app --reload --port 8000
 Then open <http://localhost:8000>.
 
 Locally no password is needed. In production one is: set `FYNN_PASSWORD` and the
-whole app sits behind HTTP Basic. With it unset Fynn serves localhost only and
-refuses every other caller with an explanatory 503, so deploying without it
-produces a locked app rather than an open one. `/health` stays public so a
-platform health check still works.
+whole app sits behind it. With it unset Fynn serves localhost only and refuses
+every other caller with an explanatory 503, so deploying without it produces a
+locked app rather than an open one. `/health` stays public so a platform health
+check still works.
+
+A browser gets a sign-in page and a signed cookie lasting 14 days, so the
+password is typed once rather than on every visit. Scripts get an HTTP Basic
+challenge instead and keep working with `curl -u fynn:…`. Changing
+`FYNN_PASSWORD` invalidates every session already issued, which is the only
+revocation a shared password can offer.
 
 This is a shared password, not an accounts system. Every visitor is the same
 workspace, and the audit trail names whoever the firm put in Settings — not

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fynn — sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#FBFBF8;--panel:#fff;--ink:#15181C;--slate:#5D6570;--faint:#8B939E;
+--rule:#E6E4DE;--ruleF:#CFCCC4;--ledger:#17563F;--link:#1F4E79}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,system-ui,sans-serif;background:var(--paper);color:var(--ink);
+line-height:1.5;-webkit-font-smoothing:antialiased;display:flex;align-items:center;
+justify-content:center;min-height:100vh;padding:24px}
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:10px;
+padding:32px;width:100%;max-width:380px}
+.brand{font-size:17px;font-weight:600;letter-spacing:-.02em;margin-bottom:4px}
+.brand span{color:var(--ledger)}
+.sub{font-size:13.5px;color:var(--slate);margin-bottom:24px}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+input{width:100%;font:400 14px Inter,sans-serif;padding:10px 12px;
+border:1px solid var(--ruleF);border-radius:7px;background:var(--panel);color:var(--ink)}
+input:focus{outline:2px solid var(--link);outline-offset:-1px}
+button{width:100%;margin-top:16px;font:500 14px Inter,sans-serif;padding:11px;
+border-radius:7px;border:1px solid var(--ledger);background:var(--ledger);color:#fff;cursor:pointer}
+button:hover{background:#12452F}
+.err{background:#FDECEA;border:1px solid #F3BDB7;color:#B3261E;border-radius:7px;
+padding:10px 12px;font-size:13px;margin-bottom:16px}
+.note{font-size:12.5px;color:var(--faint);margin-top:18px;line-height:1.5}
+</style>
+</head>
+<body>
+<form class="card" method="POST" action="/login">
+  <div class="brand">F<span>y</span>nn</div>
+  <p class="sub">Settlement reconciliation for Shopee, Lazada and TikTok Shop.</p>
+  <div class="err" id="err" style="display:none">That password is not right.</div>
+  <label for="password">Password</label>
+  <input type="password" id="password" name="password" autocomplete="current-password"
+         autofocus required>
+  <input type="hidden" name="next" id="next">
+  <button type="submit">Sign in</button>
+  <p class="note">One shared password for the whole workspace. Approvals are recorded
+  against the name in Settings, not against whoever signs in.</p>
+</form>
+<script>
+const q = new URLSearchParams(location.search);
+if (q.get("error")) document.getElementById("err").style.display = "block";
+// Carry the page the visitor was trying to reach, but only ever a path on this
+// site — an absolute URL here would make the form an open redirect.
+const wanted = q.get("next") || "/";
+document.getElementById("next").value =
+  (wanted.startsWith("/") && !wanted.startsWith("//")) ? wanted : "/";
+</script>
+</body>
+</html>

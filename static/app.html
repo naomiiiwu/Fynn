@@ -35,6 +35,8 @@ input:focus,select:focus{outline:2px solid var(--link);outline-offset:-1px}
 .tabs{margin-left:auto;display:flex;gap:4px}
 .tab{background:transparent;border:1px solid transparent;color:var(--slate);padding:7px 12px}
 .tab.on{background:var(--bubF);border-color:var(--rule);color:var(--ink);font-weight:600}
+a.tab.out{text-decoration:none;color:var(--faint);display:inline-flex;align-items:center}
+a.tab.out:hover{color:var(--slate)}
 .stage{display:flex;align-items:flex-start;max-width:1060px;margin:0 auto;
 padding:26px 20px 60px;justify-content:center}
 .main{width:600px;flex:0 0 600px;background:var(--panel);border:1px solid var(--rule);
@@ -197,8 +199,9 @@ function render(){
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
   const tabs=[["cycle","Cycle"],["upload","Upload"],["rules","Rules"],["settings","Settings"]];
   $("#tabs").innerHTML = tabs.map(([k,l])=>
-    `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("");
-  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
+    `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("")
+    + `<a class="tab out" href="/logout">Sign out</a>`;
+  document.querySelectorAll("button.tab").forEach(b=>b.onclick=()=>{
     TAB=b.dataset.tab; closeDrawer(); render();
   });
   ({cycle:viewCycle, upload:viewUpload, rules:viewRules, settings:viewSettings})[TAB]();

@@ -10,15 +10,20 @@ FastAPI entry point. One workspace, one web application:
 The engine is utils.formatter.Cycle. The page and the JSON are the same
 reconciliation rendered twice, never two code paths that can drift.
 
-There is no authentication and no per-user state: a deployment is one firm's
-workspace. Every store below already takes a firm id, so supporting several
-firms is an authentication problem rather than an engine one.
+A deployment is one firm's workspace behind one shared password — see the
+Access section below. There is no per-user state: every store already takes a
+firm id, so supporting several firms, or knowing which person approved
+something, is an authentication problem rather than an engine one.
 """
 
 import base64
+import hashlib
+import hmac
 import os
 import secrets
 import sys
+import time
+from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -28,7 +33,12 @@ load_dotenv()
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from pydantic import BaseModel
 
 from agents.explainer import opening_message, reply
@@ -68,8 +78,36 @@ STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 AUTH_USER = os.getenv("FYNN_USER", "fynn").strip() or "fynn"
 AUTH_PASSWORD = os.getenv("FYNN_PASSWORD", "").strip()
-OPEN_PATHS = {"/health"}
+OPEN_PATHS = {"/health", "/login", "/logout"}
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+SESSION_COOKIE = "fynn_session"
+SESSION_DAYS = 14
+
+
+def _sign(expires: int) -> str:
+    """A session token: when it lapses, and proof we issued it.
+
+    Keyed on the password itself, so changing FYNN_PASSWORD invalidates every
+    session already handed out. That is the only revocation a shared password
+    can offer, and it should not need a second secret to work.
+    """
+    signature = hmac.new(
+        AUTH_PASSWORD.encode(), str(expires).encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{expires}.{signature}"
+
+
+def _valid_session(token: str) -> bool:
+    expires, _, signature = (token or "").partition(".")
+    if not expires.isdigit() or not signature:
+        return False
+    if int(expires) < int(time.time()):
+        return False
+    expected = hmac.new(
+        AUTH_PASSWORD.encode(), expires.encode(), hashlib.sha256
+    ).hexdigest()
+    return secrets.compare_digest(signature, expected)
 
 
 def _authorised(request: Request) -> bool:
@@ -103,13 +141,53 @@ async def require_password(request: Request, call_next):
             status_code=503,
         )
 
-    if not _authorised(request):
-        return Response(
-            status_code=401,
-            content="Authentication required.",
-            headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
-        )
-    return await call_next(request)
+    if _valid_session(request.cookies.get(SESSION_COOKIE, "")) or _authorised(request):
+        return await call_next(request)
+
+    # A browser gets the sign-in page; anything else gets the Basic challenge,
+    # so curl and scripts keep working with -u.
+    if "text/html" in request.headers.get("accept", ""):
+        wanted = request.url.path
+        if request.url.query:
+            wanted += "?" + request.url.query
+        return RedirectResponse(f"/login?next={quote(wanted, safe='')}", status_code=303)
+
+    return Response(
+        status_code=401,
+        content="Authentication required.",
+        headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
+    )
+
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    return FileResponse(os.path.join(STATIC, "login.html"))
+
+
+@app.post("/login", include_in_schema=False)
+def login(password: str = Form(...), next: str = Form("/")):
+    if not AUTH_PASSWORD or not secrets.compare_digest(password, AUTH_PASSWORD):
+        return RedirectResponse("/login?error=1", status_code=303)
+
+    # Only ever redirect within this site.
+    target = next if next.startswith("/") and not next.startswith("//") else "/"
+    expires = int(time.time()) + SESSION_DAYS * 86400
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE, _sign(expires), max_age=SESSION_DAYS * 86400,
+        httponly=True, samesite="lax",
+        # Railway terminates TLS, so the cookie travels over https there. Left
+        # off for local http, where it would simply never be sent back.
+        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")),
+    )
+    return response
+
+
+@app.get("/logout", include_in_schema=False)
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
 
 # ── State ─────────────────────────────────────────────────────────────────────
 # One workspace. Rules are written through to Supabase as they are learned; the
