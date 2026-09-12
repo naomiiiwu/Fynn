@@ -302,7 +302,11 @@ account a cycle touches is unmapped, naming the ones that are missing. Dry run
 posts anyway and lists the gaps, which is what a dry run is for. The mapping is
 per ledger: a Xero code is not a QuickBooks Id, so switching starts a fresh one.
 
-**Settings** — firm name, who signs off, marketplaces, destination ledger.
+**Settings** — firm name, who signs off, marketplaces, destination ledger, and a
+**Storage** panel saying whether anything is actually being persisted. Every
+database write is deliberately best-effort so a close keeps running through an
+outage, which also means a misconfiguration is invisible; that panel is how you
+tell the difference, and `GET /api/diagnostics` returns the same thing.
 
 ---
 

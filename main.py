@@ -54,7 +54,7 @@ from models.firm_profile import (
 from models.transaction import Platform, Side
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
-from services.database import save_posted_entry, save_settlement_file
+from services.database import diagnose, save_posted_entry, save_settlement_file
 from services.ledger import get_adapter
 from utils.formatter import Cycle
 
@@ -529,6 +529,24 @@ def api_save_accounts(req: AccountMapRequest):
     for account, value in req.mapping.items():
         amap.set(account, (value or {}).get("code", ""), (value or {}).get("name", ""))
     return api_get_accounts(target)
+
+
+@app.get("/api/diagnostics")
+def api_diagnostics():
+    """Whether anything is actually being persisted.
+
+    Every database write is deliberately best-effort, so a close keeps running
+    through an outage — which also means a misconfiguration is invisible. This
+    endpoint is how you tell the difference.
+    """
+    storage = diagnose()
+    return {
+        "storage": storage,
+        "warning": None if storage.get("connected") else (
+            "Rules, settings, account mappings and retained files exist only in "
+            "this process. A restart or redeploy loses them."
+        ),
+    }
 
 
 @app.get("/api/rules")

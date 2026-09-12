@@ -549,10 +549,14 @@ function viewSettings(){
       returns the exact payload that would be sent.</p></div>
     <div class="acts" style="margin-top:24px">
       <button class="go" id="s-save">Save settings</button>
-      <span class="st" id="s-status"></span></div>`;
+      <span class="st" id="s-status"></span></div>
+    <p class="sect" style="margin-top:32px;margin-bottom:12px">Storage
+      <span id="d-head">checking…</span></p>
+    <div id="diag"><p class="note">Checking whether anything is being saved…</p></div>`;
   document.querySelectorAll("#s-plat .pill input").forEach(i=>{
     i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
   });
+  loadDiagnostics();
   $("#s-save").onclick=async()=>{
     const platforms=[...document.querySelectorAll("#s-plat input:checked")].map(i=>i.value);
     try{
@@ -564,6 +568,30 @@ function viewSettings(){
       $("#firmname").textContent=S.firm.firm+(S.cycle?" · cycle "+S.cycle.cycle:"");
     }catch(e){ $("#s-status").textContent=e.message; }
   };
+}
+
+async function loadDiagnostics(){
+  try{
+    const d=await api("/api/diagnostics"), st=d.storage;
+    const tables=Object.entries(st.tables||{});
+    const ok = st.connected && tables.every(([,t])=>t.ok);
+    $("#d-head").textContent = ok ? "connected" : "not saving";
+    $("#d-head").style.color = ok ? "var(--ledger)" : "var(--flag)";
+    let h = `<div class="${ok?"closed":"err"}" style="margin-bottom:0">
+      <p style="font-size:13.5px">${esc(st.detail)}</p></div>`;
+    if(tables.length){
+      h += `<table class="rules-t" style="margin-top:14px"><thead><tr><th>Table</th>
+        <th>Rows</th><th>State</th></tr></thead><tbody>` +
+        tables.map(([n,t])=>`<tr><td>${esc(n)}</td>
+          <td class="num">${t.ok? (t.rows ?? 0) : "—"}</td>
+          <td>${t.ok? "ok" : esc(t.error||"error")}</td></tr>`).join("") +
+        `</tbody></table>`;
+    }
+    if(!ok) h += `<p class="note">Set SUPABASE_URL and SUPABASE_SERVICE_KEY, then run
+      the files in migrations/ in the Supabase SQL editor. Until then your rules,
+      settings and account mappings live only in memory and a redeploy clears them.</p>`;
+    $("#diag").innerHTML = h;
+  }catch(e){ $("#diag").innerHTML = `<p class="note">${esc(e.message)}</p>`; }
 }
 
 load();

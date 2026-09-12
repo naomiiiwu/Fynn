@@ -287,3 +287,79 @@ def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
     except Exception as exc:
         print(f"  [DB] Failed to load account mappings: {exc}")
         return []
+
+
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+
+EXPECTED_TABLES = (
+    "firm_profiles", "firm_rules", "settlement_files",
+    "posted_entries", "account_mappings",
+)
+
+
+def diagnose() -> dict:
+    """Why persistence is or is not working, in the order things fail.
+
+    Every write in this module is best-effort and silent on failure, which is
+    right for keeping a close running through an outage but means a
+    misconfiguration looks exactly like working software. This says which it is.
+
+    Never returns the service key, or anything derived from it.
+    """
+    import re
+    import socket
+
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    out: dict = {
+        "configured": bool(url and key),
+        "url_set": bool(url),
+        "key_set": bool(key),
+        "host": re.sub(r"^https?://", "", url).rstrip("/").split("/")[0] if url else "",
+        "dns": None,
+        "connected": False,
+        "tables": {},
+        "detail": "",
+    }
+    if not out["configured"]:
+        missing = [n for n, v in (("SUPABASE_URL", url), ("SUPABASE_SERVICE_KEY", key)) if not v]
+        out["detail"] = f"Not configured: {', '.join(missing)} unset. Nothing is persisted."
+        return out
+
+    try:
+        socket.getaddrinfo(out["host"], 443, proto=socket.IPPROTO_TCP)
+        out["dns"] = True
+    except Exception as exc:
+        out["dns"] = False
+        out["detail"] = (
+            f"{out['host']} does not resolve ({type(exc).__name__}). The project is "
+            "probably paused or deleted, or the URL has a typo. Nothing is persisted."
+        )
+        return out
+
+    client = _get_client()
+    if client is None:
+        out["detail"] = "Credentials are set but the client would not start."
+        return out
+
+    for table in EXPECTED_TABLES:
+        try:
+            result = client.table(table).select("*", count="exact").limit(1).execute()
+            out["tables"][table] = {"ok": True, "rows": result.count}
+            out["connected"] = True
+        except Exception as exc:
+            message = str(exc)
+            missing = "does not exist" in message or "PGRST205" in message
+            out["tables"][table] = {
+                "ok": False,
+                "error": "table missing — run the migrations" if missing else message[:160],
+            }
+
+    if out["connected"] and all(t["ok"] for t in out["tables"].values()):
+        out["detail"] = "Connected. Every table is present."
+    elif out["connected"]:
+        broken = [n for n, t in out["tables"].items() if not t["ok"]]
+        out["detail"] = f"Connected, but these tables are not usable: {', '.join(broken)}"
+    else:
+        out["detail"] = "Reached the host but no table could be read."
+    return out
