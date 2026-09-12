@@ -44,7 +44,7 @@ from pydantic import BaseModel
 from agents.explainer import opening_message, reply
 from agents.investigator import investigate
 from data.sample_settlements import REPORTED_PAYOUTS, prior_cycle_lines, sample_lines
-from models.account_map import AccountMap
+from models.account_map import AccountMap, suggest
 from models.firm_profile import (
     SUPPORTED_LEDGERS,
     SUPPORTED_PLATFORMS,
@@ -56,7 +56,7 @@ from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
 from services import connections, oauth
 from services.database import diagnose, save_posted_entry, save_settlement_file
-from services.ledger import get_adapter
+from services.ledger import fetch_chart, get_adapter
 from utils.formatter import Cycle
 
 app = FastAPI(
@@ -534,6 +534,35 @@ def api_get_accounts(ledger: Optional[str] = None):
         ],
         "unmapped": amap.missing(names),
     }
+
+
+@app.get("/api/accounts/chart")
+def api_chart(ledger: Optional[str] = None):
+    """The connected ledger's own chart of accounts, plus a suggested match.
+
+    Typing codes by hand is the tedious, error-prone part of setup. With the
+    ledger connected its chart can be read, so the mapping becomes a choice
+    from a list — and each row arrives pre-selected where the match is
+    unambiguous. A suggestion is never saved on its own.
+    """
+    target = (ledger or _profile().ledger or "dry-run").lower()
+    connection = connections.get(WORKSPACE_ID, target)
+    if connection is None:
+        return {"ledger": target, "connected": False, "chart": [], "suggestions": {}}
+    try:
+        chart = fetch_chart(target, connection)
+    except Exception as exc:
+        raise HTTPException(502, f"Could not read the chart of accounts: {exc}")
+
+    amap = _accounts(target)
+    suggestions = {}
+    for account in accounts_in_use():
+        if amap.get(account) is None:
+            hit = suggest(account, chart)
+            if hit:
+                suggestions[account] = hit
+    return {"ledger": target, "connected": True, "chart": chart,
+            "suggestions": suggestions}
 
 
 @app.put("/api/accounts")

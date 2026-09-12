@@ -105,3 +105,100 @@ class AccountMap:
                     code=code, name=row.get("name") or ""
                 )
         return cls(firm_id, ledger, mapping)
+
+
+# Words that identify what an account is for, beyond a fuzzy name match.
+# "Marketing Expense" and "Advertising" share no characters but are the same
+# idea; "Sales Revenue" and "Sales Returns" share almost all of them and are
+# opposites. Keywords fix both cases where plain similarity cannot.
+_HINTS: dict[str, tuple[str, ...]] = {
+    "sales revenue":               ("sales", "revenue", "income", "turnover"),
+    "sales returns & allowances":  ("return", "refund", "allowance", "credit note"),
+    "commission expense":          ("commission",),
+    "payment processing fees":     ("payment", "merchant", "bank fee", "transaction fee",
+                                    "processing"),
+    "platform service fees":       ("service fee", "platform", "subscription"),
+    "marketing expense":           ("marketing", "advertis", "promotion", "campaign"),
+    "shipping expense":            ("shipping", "freight", "courier", "postage", "delivery"),
+    "shipping income":             ("shipping", "freight", "delivery", "courier"),
+    "warehouse & storage":         ("storage", "warehouse", "fulfil", "fulfill"),
+    "gst input tax":               ("gst", "vat", "input tax", "sst", "tax"),
+    "withholding tax receivable":  ("withholding", "wht"),
+    "other income":                ("other income", "sundry", "miscellaneous"),
+    "other expense":               ("other expense", "sundry", "general expense"),
+    "clearing account":            ("clearing", "suspense", "holding", "undeposited"),
+}
+
+# Which side of the ledger an account belongs on, so a revenue line is never
+# suggested an expense account however similar the names look.
+_CONTRA = ("return", "refund", "allowance", "credit note", "reversal", "discount")
+_INCOME = ("revenue", "income")
+_EXPENSE = ("expense", "fee", "cost", "returns", "tax")
+
+
+def _hints_for(account: str) -> tuple[str, ...]:
+    key = account.strip().lower()
+    if key in _HINTS:
+        return _HINTS[key]
+    for suffix, words in _HINTS.items():
+        if key.endswith(suffix):          # "Shopee Clearing Account"
+            return words
+    return ()
+
+
+def suggest(account: str, chart: list[dict]) -> Optional[str]:
+    """The code in `chart` most likely to be what `account` means, or None.
+
+    A suggestion, never a decision: it arrives pre-selected so the common case
+    is one glance rather than one lookup, and the accountant changes it or
+    leaves it. Nothing is saved until they say so.
+    """
+    import difflib
+
+    if not chart:
+        return None
+    wanted = account.strip().lower()
+    hints = _hints_for(account)
+    best, best_score = None, 0.0
+
+    for entry in chart:
+        name = (entry.get("name") or "").strip().lower()
+        if not name:
+            continue
+        score = difflib.SequenceMatcher(None, wanted, name).ratio()
+        # A shared keyword is far stronger evidence than character overlap.
+        if any(h in name for h in hints):
+            score += 0.55
+        # An exact word in common helps too, but only a real word.
+        shared = {w for w in wanted.split() if len(w) > 3} & set(name.split())
+        score += 0.1 * len(shared)
+        # A contra account reads almost identically to the account it offsets —
+        # "Sales Revenue" against "Sales Returns" scores 0.77 on characters
+        # alone — and putting revenue in a returns account is the worst miss
+        # available. Only offer one when the line is itself a contra.
+        if any(c in name for c in _CONTRA) and not any(c in wanted for c in _CONTRA):
+            score -= 0.8
+        # A catch-all account is rarely what a specific line means. Without
+        # this, "Sales Revenue" matches "Other Revenue" more closely than it
+        # matches "Sales", and revenue quietly lands in the wrong account.
+        if any(w in name for w in ("other", "sundry", "miscellaneous")) and \
+                not any(w in wanted for w in ("other", "sundry", "miscellaneous")):
+            score -= 0.45
+        # Do not offer an expense account for a revenue line, or the reverse.
+        kind = (entry.get("type") or "").lower()
+        if any(w in wanted for w in _INCOME) and any(w in kind for w in ("expense", "cost")):
+            score -= 0.6
+        if any(w in wanted for w in _EXPENSE) and "income" in kind and "returns" not in wanted:
+            score -= 0.4
+        # Only offer a match that rests on something: a shared keyword, or
+        # names that genuinely look alike. Character overlap alone matched
+        # "Platform Service Fees" to "Bank Fees", which is a guess wearing a
+        # suggestion's clothes.
+        grounded = any(h in name for h in hints) or \
+            difflib.SequenceMatcher(None, wanted, name).ratio() >= 0.62
+        if grounded and score > best_score:
+            best, best_score = entry.get("code"), score
+
+    # Below this the guess is noise, and a blank field is more honest than a
+    # confident wrong answer an accountant might not check.
+    return best if best_score >= 0.62 else None

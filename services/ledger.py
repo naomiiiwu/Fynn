@@ -286,3 +286,68 @@ def get_adapter(
 ) -> LedgerAdapter:
     name = (name or os.getenv("LEDGER_ADAPTER", "dry-run")).lower()
     return ADAPTERS.get(name, DryRunAdapter)(accounts, connection)
+
+
+# ── Reading the destination's chart of accounts ───────────────────────────────
+
+def fetch_chart(ledger: str, connection) -> list[dict]:
+    """The firm's chart of accounts, as the ledger holds it.
+
+    Typing account codes by hand is the worst part of setup and the easiest
+    place to put a journal in the wrong account. Once a ledger is connected its
+    own chart can be read, so the mapping becomes a choice from a list.
+
+    Returns [{code, name, type}] sorted by code, where `code` is whatever that
+    ledger expects in a journal line — a Xero AccountCode, a QuickBooks Id.
+    """
+    if connection is None:
+        raise RuntimeError(f"{ledger} is not connected.")
+    token = connection.access_token()
+
+    if ledger == "xero":
+        response = httpx.get(
+            "https://api.xero.com/api.xro/2.0/Accounts",
+            headers={
+                "Authorization": f"Bearer {token}",
+                **({"Xero-tenant-id": connection.org_id} if connection.org_id else {}),
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Xero refused the chart request "
+                               f"({response.status_code}): {response.text[:200]}")
+        out = []
+        for account in response.json().get("Accounts", []):
+            # An account with no code cannot be referenced in a journal line, so
+            # it is not offered as a destination.
+            if not account.get("Code"):
+                continue
+            out.append({
+                "code": account["Code"],
+                "name": account.get("Name", ""),
+                "type": account.get("Type", ""),
+            })
+        return sorted(out, key=lambda a: a["code"])
+
+    if ledger == "quickbooks":
+        response = httpx.get(
+            f"https://quickbooks.api.intuit.com/v3/company/{connection.org_id}/query",
+            params={"query": "select Id, Name, AccountType, Active from Account maxresults 1000",
+                    "minorversion": "75"},
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"QuickBooks refused the chart request "
+                               f"({response.status_code}): {response.text[:200]}")
+        accounts = response.json().get("QueryResponse", {}).get("Account", [])
+        return sorted(
+            [
+                {"code": a["Id"], "name": a.get("Name", ""), "type": a.get("AccountType", "")}
+                for a in accounts if a.get("Active", True)
+            ],
+            key=lambda a: a["name"].lower(),
+        )
+
+    raise RuntimeError(f"No chart of accounts available for {ledger}.")

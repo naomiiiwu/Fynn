@@ -134,6 +134,7 @@ padding:8px 6px;border-bottom:1px solid var(--ruleF)}
 .rules-t td{padding:8px 6px;border-bottom:1px solid var(--rule)}
 .src{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--bubF);color:var(--slate)}
 .src.firm{background:var(--ledgerBg);color:var(--ledger)}
+.sug{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--flagBg);color:var(--flag)}
 .ledrow{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;
 border-bottom:1px solid var(--rule);font-size:13.5px}
 .ledrow:last-child{border-bottom:none}
@@ -497,18 +498,36 @@ async function viewAccounts(){
     of accounts, so Fynn cannot guess them, and will not post until every account a
     cycle touches has one.</p><p class="loading">Loading…</p>`;
   try{
-    const a=await api("/api/accounts");
-    const rows=a.accounts.map(x=>`<tr>
-      <td>${esc(x.account)}</td>
-      <td><input data-acct="${esc(x.account)}" data-f="code" value="${esc(x.code)}"
-           placeholder="${a.ledger==="quickbooks"?"account Id":"code"}" style="max-width:110px"></td>
-      <td><input data-acct="${esc(x.account)}" data-f="name" value="${esc(x.name)}"
-           placeholder="name in your ledger"></td></tr>`).join("");
+    const [a, c] = await Promise.all([api("/api/accounts"), api("/api/accounts/chart")]);
+    const byCode = Object.fromEntries((c.chart||[]).map(e=>[e.code, e]));
+    let prefilled = 0;
+    const cell = x => {
+      if(!c.connected){                       // no ledger yet: type the code
+        return `<td><input data-acct="${esc(x.account)}" data-f="code" value="${esc(x.code)}"
+                 placeholder="${a.ledger==="quickbooks"?"account Id":"code"}" style="max-width:120px"></td>
+                <td><input data-acct="${esc(x.account)}" data-f="name" value="${esc(x.name)}"
+                 placeholder="name in your ledger"></td>`;
+      }
+      const chosen = x.code || c.suggestions[x.account] || "";
+      if(!x.code && chosen) prefilled++;
+      const opts = [`<option value=""${chosen?"":" selected"}>— not mapped —</option>`]
+        .concat(c.chart.map(e=>`<option value="${esc(e.code)}"${e.code===chosen?" selected":""}>
+           ${esc(e.name)} · ${esc(e.code)}</option>`)).join("");
+      const tag = (!x.code && chosen) ? `<span class="sug">suggested</span>` : "";
+      return `<td colspan="2"><select data-acct="${esc(x.account)}" data-f="code">${opts}</select> ${tag}</td>`;
+    };
+    const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}</tr>`).join("");
     $("#main").querySelector(".loading").outerHTML=
       `<p class="sect" style="margin-bottom:10px">Mapping for ${esc(a.ledger)}
         <span>${a.unmapped.length? a.unmapped.length+" still to map" : "all mapped"}</span></p>
+       ${c.connected? `<p class="note" style="margin:0 0 12px">Read from your ${esc(a.ledger)}
+         chart of accounts — ${c.chart.length} accounts.${prefilled? " "+prefilled+
+         " pre-selected where the match was unambiguous; check them, then save." : ""}</p>`
+         : `<p class="note" style="margin:0 0 12px">Connect ${esc(a.ledger)} in Settings and this
+         becomes a list from your own chart of accounts instead of codes typed by hand.</p>`}
        <table class="rules-t"><thead><tr><th>Fynn account</th>
-       <th>${a.ledger==="quickbooks"?"Account Id":"Code"}</th><th>Name in your ledger</th>
+       <th colspan="2">${c.connected? "Account in your ledger" :
+          (a.ledger==="quickbooks"?"Account Id":"Code")+" / name"}</th>
        </tr></thead><tbody>${rows}</tbody></table>
        <div class="acts" style="margin-top:20px">
          <button class="go" id="a-save">Save mapping</button>
@@ -521,6 +540,10 @@ async function viewAccounts(){
         const k=i.dataset.acct;
         mapping[k]=mapping[k]||{code:"",name:""};
         mapping[k][i.dataset.f]=i.value.trim();
+        // With a dropdown the ledger's own name comes along for free, so the
+        // saved mapping shows what it points at without another lookup.
+        if(i.tagName==="SELECT" && i.value && byCode[i.value])
+          mapping[k].name = byCode[i.value].name;
       });
       try{
         const r=await api("/api/accounts",{method:"PUT",

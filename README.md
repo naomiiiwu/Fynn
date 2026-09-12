@@ -295,6 +295,13 @@ because each folds into the same open cycle and concurrent writes would race.
 separately from what the firm decided.
 
 **Accounts** — Fynn's account names mapped onto the firm's own chart of accounts.
+Once a ledger is connected the chart is read from it, so this is a list to
+choose from rather than codes typed by hand, and each row arrives pre-selected
+where the match is unambiguous. The matcher refuses to guess: it will not offer
+a contra account for a revenue line ("Sales Revenue" scores 0.77 against "Sales
+Returns" on characters alone), nor a catch-all for a specific one, and leaves
+the field blank rather than pre-selecting something an accountant might not
+check. On a plausible Xero chart that is 12 right, 0 wrong, 2 blank.
 A journal line names an account; Xero wants its code and QuickBooks wants its Id,
 and both come from the firm's chart. Two firms use different codes for the same
 idea, so Fynn does not guess — and a live ledger refuses to post while any
