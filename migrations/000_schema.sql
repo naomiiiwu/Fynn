@@ -1,11 +1,15 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007 +
--- 008 already applied, so a new project does not have to replay a rename.
+-- 008 + 009 already applied, so a new project does not have to replay a rename.
 --
--- On a database that already has the 005 schema, run 007 and 008 instead of
--- this file; `create table if not exists` would skip the existing tables and
+-- On a database that already has the 005 schema, run 007, 008 and 009 instead
+-- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
+--
+-- Keep this file in step when a migration adds a table. It was the source of a
+-- real gap: a project built from an earlier copy of this file was missing
+-- ledger_connections, so authorising Xero succeeded and stored nothing.
 --
 -- Migrations 001-004 belong to the earlier seller-facing P&L product and are
 -- kept only as history. Nothing here depends on them.
@@ -94,3 +98,25 @@ create table if not exists posted_entries (
 
 create index if not exists idx_posted_entries_firm_cycle
     on posted_entries (firm_id, cycle);
+
+-- OAuth tokens for Xero and QuickBooks Online, one row per firm per ledger.
+-- The refresh token is the valuable one: access tokens last 30 minutes (Xero)
+-- or an hour (QBO), so every call refreshes as needed, and losing the refresh
+-- token means the firm has to authorise again.
+--
+-- These are secrets at rest. The table is only reachable with the service_role
+-- key, which the application holds and no browser ever sees. Encrypting them
+-- properly wants a key-management story Fynn does not have yet.
+create table if not exists ledger_connections (
+    firm_id       text not null references firm_profiles(workspace_id) on delete cascade,
+    ledger        text not null,                 -- 'xero' | 'quickbooks'
+    access_token  text not null,
+    refresh_token text not null,
+    expires_at    timestamptz not null,          -- of the access token
+    -- Which organisation the tokens are for: Xero calls it a tenant, QuickBooks
+    -- a realm. One column, because a connection only ever has one.
+    org_id        text not null default '',
+    org_name      text not null default '',
+    connected_at  timestamptz not null default now(),
+    primary key (firm_id, ledger)
+);
