@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from agents.explainer import opening_message, reply
 from agents.investigator import investigate
 from data.sample_settlements import REPORTED_PAYOUTS, prior_cycle_lines, sample_lines
+from models.account_map import AccountMap
 from models.firm_profile import (
     SUPPORTED_LEDGERS,
     SUPPORTED_PLATFORMS,
@@ -196,6 +197,9 @@ def logout():
 _profiles = FirmProfileStore()
 _cycle: Optional[Cycle] = None
 _store: Optional[RuleStore] = None
+# Keyed by ledger: a Xero code and a QuickBooks id are different things, so a
+# firm that switches ledgers maps again rather than inheriting the wrong codes.
+_account_maps: dict[str, AccountMap] = {}
 
 
 def _rules() -> RuleStore:
@@ -204,6 +208,32 @@ def _rules() -> RuleStore:
     if _store is None:
         _store = RuleStore.for_firm(WORKSPACE_ID)
     return _store
+
+
+def _accounts(ledger: Optional[str] = None) -> AccountMap:
+    """The firm's chart-of-accounts mapping for a ledger, loaded on first use."""
+    ledger = (ledger or _profile().ledger or "dry-run").lower()
+    if ledger not in _account_maps:
+        _account_maps[ledger] = AccountMap.for_firm(WORKSPACE_ID, ledger)
+    return _account_maps[ledger]
+
+
+def accounts_in_use() -> list[str]:
+    """Every account name a posting would touch.
+
+    Taken from the rules the firm has accumulated and from the open cycle's
+    journals, so the mapping screen is useful before a cycle exists as well as
+    during one. Clearing accounts are generated per platform rather than named
+    in any rule, so they are added from settings.
+    """
+    names = {r.account for r in _rules().rules}
+    for platform in _profile().platforms:
+        names.add(f"{platform} Clearing Account")
+    if _cycle is not None:
+        for result in _cycle.run().values():
+            if result.journal:
+                names.update(l.account for l in result.journal.lines)
+    return sorted(names)
 
 
 def _require_cycle() -> Cycle:
@@ -295,16 +325,20 @@ def _post_cycle() -> dict:
             409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
         )
 
-    adapter = get_adapter(profile.ledger)
+    adapter = get_adapter(profile.ledger, _accounts(profile.ledger))
     actor = profile.approver()
     out = []
     for _platform, result in results.items():
         try:
             out.append(adapter.post(result.journal))
         except NotImplementedError as exc:
-            # The Xero adapter prepares the payload but cannot send it yet. That
+            # The live adapters prepare the payload but cannot send it yet. That
             # is a configuration state, not a server fault.
             raise HTTPException(501, str(exc).split(". Payload prepared")[0])
+        except RuntimeError as exc:
+            # Unmapped accounts, or missing credentials. Both are things the
+            # firm can fix, and the message says which.
+            raise HTTPException(409, str(exc))
         cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
         save_posted_entry(
             WORKSPACE_ID, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
@@ -358,6 +392,11 @@ def api_state():
             "starter": len(store.starter_rules),
             "firm": len([r for r in store.rules if r.decided_by
                          and r.decided_by != "Fynn starter pack"]),
+        },
+        "accounts": {
+            "ledger": profile.ledger,
+            "total": len(accounts_in_use()),
+            "unmapped": len(_accounts().missing(accounts_in_use())),
         },
         "cycle": _cycle.digest() if _cycle else None,
     }
@@ -460,6 +499,36 @@ def api_journal(platform: str):
                 "balanced": j.balanced,
             }
     raise HTTPException(404, f"No journal for {platform}")
+
+
+class AccountMapRequest(BaseModel):
+    # {"Marketing Expense": {"code": "6200", "name": "Advertising"}, ...}
+    mapping: dict[str, dict]
+    ledger: Optional[str] = None
+
+
+@app.get("/api/accounts")
+def api_get_accounts(ledger: Optional[str] = None):
+    """Every account a posting would touch, with wherever it is mapped to."""
+    target = (ledger or _profile().ledger or "dry-run").lower()
+    names = accounts_in_use()
+    amap = _accounts(target)
+    return {
+        "ledger": target,
+        "accounts": [
+            {"account": n, **amap.as_dict([n])[n]} for n in names
+        ],
+        "unmapped": amap.missing(names),
+    }
+
+
+@app.put("/api/accounts")
+def api_save_accounts(req: AccountMapRequest):
+    target = (req.ledger or _profile().ledger or "dry-run").lower()
+    amap = _accounts(target)
+    for account, value in req.mapping.items():
+        amap.set(account, (value or {}).get("code", ""), (value or {}).get("name", ""))
+    return api_get_accounts(target)
 
 
 @app.get("/api/rules")

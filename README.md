@@ -294,6 +294,14 @@ because each folds into the same open cycle and concurrent writes would race.
 **Rules** — everything the firm has accumulated, with what Fynn supplied marked
 separately from what the firm decided.
 
+**Accounts** — Fynn's account names mapped onto the firm's own chart of accounts.
+A journal line names an account; Xero wants its code and QuickBooks wants its Id,
+and both come from the firm's chart. Two firms use different codes for the same
+idea, so Fynn does not guess — and a live ledger refuses to post while any
+account a cycle touches is unmapped, naming the ones that are missing. Dry run
+posts anyway and lists the gaps, which is what a dry run is for. The mapping is
+per ledger: a Xero code is not a QuickBooks Id, so switching starts a fresh one.
+
 **Settings** — firm name, who signs off, marketplaces, destination ledger.
 
 ---
@@ -336,9 +344,14 @@ purpose.
 
 - Platform OAuth. Shopee, Lazada and TikTok Shop all expose finance APIs, and
   Lazada requires partner-program approval for production rate limits.
-- Xero posting. The adapter prepares a DRAFT manual journal payload but the HTTP
-  call is not wired up — OAuth 2.0 with `accounting.transactions` scope and a
-  refresh-token flow are needed first. Access tokens expire after 30 minutes.
+- Ledger posting. Both adapters build a correct payload against the firm's
+  mapped chart of accounts — Xero as a DRAFT manual journal, QuickBooks as a
+  JournalEntry with a PostingType per line — but neither makes the HTTP call.
+  Each needs its app registered, OAuth 2.0 consent, and a refresh-token flow;
+  Xero access tokens last 30 minutes. Refresh tokens must outlive a redeploy, so
+  this wants persistence working first. Posting also needs to be idempotent
+  before it goes live: pressing Post twice must not put two journals in a
+  client's books.
 - Accounts. A deployment is one firm's workspace behind a shared password.
   Several firms on one instance, or knowing which person approved something
   rather than which firm, both need real authentication.

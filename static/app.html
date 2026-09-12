@@ -41,6 +41,9 @@ a.tab.out:hover{color:var(--slate)}
 padding:26px 20px 60px;justify-content:center}
 .main{width:600px;flex:0 0 600px;background:var(--panel);border:1px solid var(--rule);
 border-radius:10px;padding:26px 30px 30px;min-height:520px}
+/* The account mapping is three columns of its own; 600px cuts the last one off. */
+.main.wide{width:860px;flex-basis:860px}
+.stage.wide{max-width:none}
 .drawer{flex:0 0 0;width:0;overflow:hidden;margin-left:0;
 transition:flex-basis .42s cubic-bezier(.4,0,.2,1),width .42s cubic-bezier(.4,0,.2,1),margin-left .42s}
 .drawer.open{flex:0 0 420px;width:420px;margin-left:16px}
@@ -197,14 +200,19 @@ async function load(){
 
 function render(){
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
-  const tabs=[["cycle","Cycle"],["upload","Upload"],["rules","Rules"],["settings","Settings"]];
+  const tabs=[["cycle","Cycle"],["upload","Upload"],["rules","Rules"],
+              ["accounts","Accounts"],["settings","Settings"]];
   $("#tabs").innerHTML = tabs.map(([k,l])=>
     `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("")
     + `<a class="tab out" href="/logout">Sign out</a>`;
   document.querySelectorAll("button.tab").forEach(b=>b.onclick=()=>{
     TAB=b.dataset.tab; closeDrawer(); render();
   });
-  ({cycle:viewCycle, upload:viewUpload, rules:viewRules, settings:viewSettings})[TAB]();
+  const wide = TAB==="accounts";
+  $("#main").classList.toggle("wide", wide);
+  document.querySelector(".stage").classList.toggle("wide", wide);
+  ({cycle:viewCycle, upload:viewUpload, rules:viewRules,
+    accounts:viewAccounts, settings:viewSettings})[TAB]();
 }
 
 /* ── cycle ── */
@@ -469,6 +477,50 @@ async function viewRules(){
     $("#main").querySelector(".loading").outerHTML=
       `<table class="rules-t"><thead><tr><th>Platform</th><th>Applies to</th>
        <th>Account</th><th>Usually</th><th>Decided by</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }catch(e){ $("#main").querySelector(".loading").textContent=e.message; }
+}
+
+/* ── accounts ── */
+async function viewAccounts(){
+  $("#main").innerHTML=`<div class="head"><h1>Accounts</h1></div>
+    <p class="sub">A journal line names an account — “Marketing Expense”. Xero needs
+    its account code, QuickBooks needs its account Id. Both come from your own chart
+    of accounts, so Fynn cannot guess them, and will not post until every account a
+    cycle touches has one.</p><p class="loading">Loading…</p>`;
+  try{
+    const a=await api("/api/accounts");
+    const rows=a.accounts.map(x=>`<tr>
+      <td>${esc(x.account)}</td>
+      <td><input data-acct="${esc(x.account)}" data-f="code" value="${esc(x.code)}"
+           placeholder="${a.ledger==="quickbooks"?"account Id":"code"}" style="max-width:110px"></td>
+      <td><input data-acct="${esc(x.account)}" data-f="name" value="${esc(x.name)}"
+           placeholder="name in your ledger"></td></tr>`).join("");
+    $("#main").querySelector(".loading").outerHTML=
+      `<p class="sect" style="margin-bottom:10px">Mapping for ${esc(a.ledger)}
+        <span>${a.unmapped.length? a.unmapped.length+" still to map" : "all mapped"}</span></p>
+       <table class="rules-t"><thead><tr><th>Fynn account</th>
+       <th>${a.ledger==="quickbooks"?"Account Id":"Code"}</th><th>Name in your ledger</th>
+       </tr></thead><tbody>${rows}</tbody></table>
+       <div class="acts" style="margin-top:20px">
+         <button class="go" id="a-save">Save mapping</button>
+         <span class="st" id="a-status"></span></div>
+       <p class="note">Leave a code blank to unmap it. Switching ledger in Settings
+       starts a separate mapping — a Xero code is not a QuickBooks Id.</p>`;
+    $("#a-save").onclick=async()=>{
+      const mapping={};
+      document.querySelectorAll("[data-acct]").forEach(i=>{
+        const k=i.dataset.acct;
+        mapping[k]=mapping[k]||{code:"",name:""};
+        mapping[k][i.dataset.f]=i.value.trim();
+      });
+      try{
+        const r=await api("/api/accounts",{method:"PUT",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({mapping})});
+        $("#a-status").textContent = r.unmapped.length
+          ? `Saved. ${r.unmapped.length} still unmapped.` : "Saved. Every account is mapped.";
+        S=await api("/api/state");
+      }catch(e){ $("#a-status").textContent=e.message; }
+    };
   }catch(e){ $("#main").querySelector(".loading").textContent=e.message; }
 }
 

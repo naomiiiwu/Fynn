@@ -236,3 +236,54 @@ def load_posted_entries(firm_id: str, cycle: Optional[str] = None) -> list[dict]
     except Exception as exc:
         print(f"  [DB] Failed to load posted entries: {exc}")
         return []
+
+
+# ── Account mappings ──────────────────────────────────────────────────────────
+
+def save_account_mapping(firm_id: str, ledger: str, account: str, entry) -> bool:
+    """Upsert one Fynn account → ledger account mapping."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("account_mappings").upsert(
+            {
+                "firm_id":      firm_id,
+                "ledger":       ledger,
+                "fynn_account": account,
+                "code":         entry.code,
+                "name":         entry.name,
+            },
+            on_conflict="firm_id,ledger,fynn_account",
+        ).execute()
+        print(f"  [DB] Account mapped for {ledger}: {account} → {entry.code}")
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to save account mapping: {exc}")
+        return False
+
+
+def delete_account_mapping(firm_id: str, ledger: str, account: str) -> bool:
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("account_mappings").delete()
+         .eq("firm_id", firm_id).eq("ledger", ledger)
+         .eq("fynn_account", account).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to clear account mapping: {exc}")
+        return False
+
+
+def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return (client.table("account_mappings").select("*")
+                .eq("firm_id", firm_id).eq("ledger", ledger).execute().data or [])
+    except Exception as exc:
+        print(f"  [DB] Failed to load account mappings: {exc}")
+        return []
