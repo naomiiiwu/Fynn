@@ -15,7 +15,9 @@ workspace. Every store below already takes a firm id, so supporting several
 firms is an authentication problem rather than an engine one.
 """
 
+import base64
 import os
+import secrets
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -25,8 +27,8 @@ load_dotenv()
 
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from agents.explainer import opening_message, reply
@@ -52,6 +54,62 @@ app = FastAPI(
 )
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+
+# ── Access ────────────────────────────────────────────────────────────────────
+# A shared password over HTTP Basic. Not an accounts system: every visitor is
+# the same workspace, and the audit trail names whoever the firm put in
+# Settings, not whoever typed the password. It exists so that a public URL is
+# not an open door to approving and posting journals.
+#
+# With FYNN_PASSWORD unset, local requests are allowed and everything else is
+# refused. Deploying without setting it therefore produces a locked app with an
+# explanatory message, rather than an open one — the failure that matters here
+# is the silent one.
+
+AUTH_USER = os.getenv("FYNN_USER", "fynn").strip() or "fynn"
+AUTH_PASSWORD = os.getenv("FYNN_PASSWORD", "").strip()
+OPEN_PATHS = {"/health"}
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def _authorised(request: Request) -> bool:
+    header = request.headers.get("authorization", "")
+    scheme, _, encoded = header.partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return False
+    try:
+        user, _, password = base64.b64decode(encoded).decode("utf-8").partition(":")
+    except Exception:
+        return False
+    # Compare both halves in constant time, and always both, so the response
+    # time does not reveal whether the username was right.
+    return secrets.compare_digest(user, AUTH_USER) & secrets.compare_digest(
+        password, AUTH_PASSWORD
+    )
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    if request.url.path in OPEN_PATHS:
+        return await call_next(request)
+
+    if not AUTH_PASSWORD:
+        client = request.client.host if request.client else ""
+        if client in LOCAL_HOSTS:
+            return await call_next(request)
+        return PlainTextResponse(
+            "Fynn has no password set, so it will not serve anything beyond this "
+            "machine.\n\nSet FYNN_PASSWORD in the environment and restart.\n",
+            status_code=503,
+        )
+
+    if not _authorised(request):
+        return Response(
+            status_code=401,
+            content="Authentication required.",
+            headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
+        )
+    return await call_next(request)
 
 # ── State ─────────────────────────────────────────────────────────────────────
 # One workspace. Rules are written through to Supabase as they are learned; the

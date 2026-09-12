@@ -181,6 +181,16 @@ uvicorn main:app --reload --port 8000
 
 Then open <http://localhost:8000>.
 
+Locally no password is needed. In production one is: set `FYNN_PASSWORD` and the
+whole app sits behind HTTP Basic. With it unset Fynn serves localhost only and
+refuses every other caller with an explanatory 503, so deploying without it
+produces a locked app rather than an open one. `/health` stays public so a
+platform health check still works.
+
+This is a shared password, not an accounts system. Every visitor is the same
+workspace, and the audit trail names whoever the firm put in Settings — not
+whoever typed the password.
+
 No API keys are needed. Without `ANTHROPIC_API_KEY` the investigator returns no
 suggestion and the exception reaches the accountant unannotated — a valid state,
 not a failure. Without `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` every write
@@ -306,7 +316,8 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT   # Procfile
 python-3.12                                          # runtime.txt
 ```
 
-Environment variables are listed in `.env.example`.
+Environment variables are listed in `.env.example`. `FYNN_PASSWORD` is the one
+that matters: without it a deployment refuses all non-local traffic.
 
 Supabase schema lives in `migrations/`. Run `005_reconciliation.sql` then
 `007_workspace_identity.sql`; `006_drop_legacy.sql` documents removing the tables
@@ -322,8 +333,9 @@ purpose.
 - Xero posting. The adapter prepares a DRAFT manual journal payload but the HTTP
   call is not wired up — OAuth 2.0 with `accounting.transactions` scope and a
   refresh-token flow are needed first. Access tokens expire after 30 minutes.
-- Accounts. A deployment is one firm's workspace, with no login. Several firms
-  on one instance needs authentication first.
+- Accounts. A deployment is one firm's workspace behind a shared password.
+  Several firms on one instance, or knowing which person approved something
+  rather than which firm, both need real authentication.
 - Cycle persistence. Firm rules, source files and posted entries are in
   Supabase; the *open* cycle is in-process, so a restart mid-review loses the
   approvals not yet posted. Source settlement files must be retained for the
