@@ -650,7 +650,14 @@ def api_disconnect(ledger: str):
 
 @app.get("/api/ledger/status")
 def api_ledger_status():
-    return {"base_url": base_url(), "ledgers": connections.status(WORKSPACE_ID)}
+    # Each ledger's redirect URI is returned in full rather than as a pattern
+    # to fill in. Both providers match it byte-for-byte, so a URI retyped from
+    # a template is the likeliest way a connection fails — and the error comes
+    # back from the provider, after the redirect, where it is hard to read.
+    status = connections.status(WORKSPACE_ID)
+    for name, row in status.items():
+        row["redirect_uri"] = oauth.redirect_uri(base_url(), oauth.get_provider(name))
+    return {"base_url": base_url(), "ledgers": status}
 
 
 @app.get("/api/diagnostics")

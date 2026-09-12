@@ -139,6 +139,11 @@ padding:8px 6px;border-bottom:1px solid var(--ruleF)}
 border-bottom:1px solid var(--rule);font-size:13.5px}
 .ledrow:last-child{border-bottom:none}
 .ledright{display:flex;gap:10px;align-items:center}
+/* The redirect URI is long and must be copied whole, so it wraps under its
+   label rather than being truncated to fit the row. */
+.ledrow.redir{display:block;padding-top:0;font-size:12px;color:var(--faint)}
+.ledrow.redir code{display:block;margin-top:4px;font-size:12px;word-break:break-all;
+color:var(--ink);user-select:all}
 .ok-txt{color:var(--ledger);font-weight:500}
 .pd-txt{color:var(--faint)}
 a.btn-link{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:6px;
@@ -617,10 +622,15 @@ async function loadLedgers(){
       }else{
         right = `<span class="pd-txt">no client credentials set</span>`;
       }
-      return `<div class="ledrow"><span>${esc(v.label)}</span><span class="ledright">${right}</span></div>`;
+      // The provider matches this string exactly, so show the whole thing —
+      // not a pattern to fill in — and make it selectable for copying.
+      const uri = v.connected ? "" : `<div class="ledrow redir"><span>Redirect URI —
+        paste this into your ${esc(v.label)} app</span><code>${esc(v.redirect_uri||"")}</code></div>`;
+      return `<div class="ledrow"><span>${esc(v.label)}</span>
+              <span class="ledright">${right}</span></div>${uri}`;
     }).join("");
     $("#ledgers").innerHTML = `<p class="sect" style="margin-top:26px;margin-bottom:10px">
-      Connections <span>redirect URI: ${esc(r.base_url)}/oauth/&lt;ledger&gt;/callback</span></p>
+      Connections</p>
       <div class="je">${rows}</div>`;
     document.querySelectorAll("[data-dis]").forEach(b=>b.onclick=async()=>{
       if(!confirm("Disconnect? The account mapping is kept.")) return;
