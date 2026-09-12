@@ -64,7 +64,19 @@ def get(firm_id: str, ledger: str) -> Optional[Connection]:
 
 
 def store(firm_id: str, ledger: str, tokens: dict) -> Connection:
-    save_connection(firm_id, ledger, tokens)
+    """Remember an authorisation, or say plainly that it was not remembered.
+
+    Every other write in Fynn is best-effort and silent, which is right when the
+    data can be reproduced from the settlement file. Tokens cannot: the refresh
+    token is issued once, and a consent screen that reported success while
+    storing nothing leaves the firm believing they are connected until the first
+    post fails. This is the one write that must not fail quietly.
+    """
+    if not save_connection(firm_id, ledger, tokens):
+        raise RuntimeError(
+            f"Authorised with {ledger}, but the connection could not be saved. "
+            "Check Storage under Settings — ledger_connections may be missing."
+        )
     return Connection(firm_id, ledger, tokens)
 
 

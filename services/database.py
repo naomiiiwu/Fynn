@@ -343,17 +343,26 @@ def diagnose() -> dict:
         return out
 
     for table in EXPECTED_TABLES:
-        try:
-            result = client.table(table).select("*", count="exact").limit(1).execute()
-            out["tables"][table] = {"ok": True, "rows": result.count}
-            out["connected"] = True
-        except Exception as exc:
-            message = str(exc)
-            missing = "does not exist" in message or "PGRST205" in message
-            out["tables"][table] = {
-                "ok": False,
-                "error": "table missing — run the migrations" if missing else message[:160],
-            }
+        # Six probes means six chances to be unlucky. A pooled connection that
+        # Supabase has already closed fails once and succeeds on a fresh one,
+        # and reporting that as "not usable" is indistinguishable from a real
+        # schema problem — which is the one thing this screen exists to tell
+        # apart. A missing table is deterministic, so retrying costs nothing.
+        for attempt in (1, 2):
+            try:
+                result = client.table(table).select("*", count="exact").limit(1).execute()
+                out["tables"][table] = {"ok": True, "rows": result.count}
+                out["connected"] = True
+                break
+            except Exception as exc:
+                message = str(exc)
+                missing = "does not exist" in message or "PGRST205" in message
+                if not missing and attempt == 1:
+                    continue
+                out["tables"][table] = {
+                    "ok": False,
+                    "error": "table missing — run the migrations" if missing else message[:160],
+                }
 
     if out["connected"] and all(t["ok"] for t in out["tables"].values()):
         out["detail"] = "Connected. Every table is present."

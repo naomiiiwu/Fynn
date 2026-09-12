@@ -626,7 +626,12 @@ def oauth_callback(
     except oauth.OAuthError as exc:
         return fail(str(exc))
 
-    connections.store(WORKSPACE_ID, provider.name, tokens)
+    try:
+        connections.store(WORKSPACE_ID, provider.name, tokens)
+    except Exception as exc:
+        # Do not point the profile at a ledger we cannot reach tokens for.
+        return fail(str(exc))
+
     # Point the firm at what they just connected, so posting goes there.
     profile = _profile()
     profile.ledger = provider.name
