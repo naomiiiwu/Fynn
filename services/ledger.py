@@ -15,9 +15,12 @@ Building bank access here would duplicate infrastructure the ledger already has.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from abc import ABC, abstractmethod
 from typing import Optional
+
+import httpx
 
 from models.account_map import AccountMap
 from models.transaction import JournalEntry
@@ -26,8 +29,26 @@ from models.transaction import JournalEntry
 class LedgerAdapter(ABC):
     name: str
 
-    def __init__(self, accounts: Optional[AccountMap] = None) -> None:
+    def __init__(
+        self, accounts: Optional[AccountMap] = None, connection=None
+    ) -> None:
         self.accounts = accounts
+        self.connection = connection
+
+    def idempotency_key(self, entry: JournalEntry) -> str:
+        """Stable for a given entry, so a retry cannot create a second journal.
+
+        Derived from the firm, the cycle and the entry reference rather than
+        from the moment of sending: a network timeout followed by a retry must
+        present the same key, or the retry is a new journal in a client's books.
+
+        The corollary is that deliberately re-posting a corrected entry for the
+        same cycle is also deduplicated. That is the safer way round — a
+        duplicate is silent and a rejection is not.
+        """
+        firm = getattr(self.accounts, "firm_id", "") or ""
+        raw = f"{firm}|{self.name}|{entry.cycle}|{entry.reference}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     @abstractmethod
     def post(self, entry: JournalEntry) -> dict:
@@ -108,19 +129,22 @@ class XeroAdapter(LedgerAdapter):
     def __init__(
         self,
         accounts: Optional[AccountMap] = None,
+        connection=None,
         access_token: str | None = None,
         tenant_id: str | None = None,
     ):
-        super().__init__(accounts)
-        self.access_token = access_token or os.getenv("XERO_ACCESS_TOKEN")
-        self.tenant_id = tenant_id or os.getenv("XERO_TENANT_ID")
+        super().__init__(accounts, connection)
+        self._token = access_token or os.getenv("XERO_ACCESS_TOKEN")
+        self._tenant = tenant_id or os.getenv("XERO_TENANT_ID")
 
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
         codes = self._resolve(entry)
-        if not self.access_token:
+        token = self._token or (self.connection.access_token() if self.connection else None)
+        tenant = self._tenant or (self.connection.org_id if self.connection else None)
+        if not token:
             raise RuntimeError(
-                "XERO_ACCESS_TOKEN is required. Complete the OAuth flow first."
+                "Xero is not connected. Connect it in Settings first."
             )
         # Entries are posted as DRAFT. An accountant approves in Xero before the
         # entry is final — no automated output becomes accounting truth unreviewed.
@@ -138,9 +162,33 @@ class XeroAdapter(LedgerAdapter):
                 ],
             }]
         }
-        raise NotImplementedError(
-            "Xero HTTP call not implemented. Payload prepared: " + str(payload)
+        response = httpx.post(
+            self.ENDPOINT,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                # Not required for a custom connection, which covers one
+                # organisation, but required for a standard app.
+                **({"Xero-tenant-id": tenant} if tenant else {}),
+                "Accept": "application/json",
+                "Idempotency-Key": self.idempotency_key(entry),
+            },
+            timeout=45,
         )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"Xero refused {entry.reference} ({response.status_code}): "
+                f"{response.text[:300]}"
+            )
+        body = response.json()
+        posted = (body.get("ManualJournals") or [{}])[0]
+        return {
+            "status": "posted",
+            "adapter": self.name,
+            "reference": entry.reference,
+            "ledger_id": posted.get("ManualJournalID", ""),
+            "ledger_status": posted.get("Status", "DRAFT"),
+        }
 
 
 class QuickBooksAdapter(LedgerAdapter):
@@ -161,20 +209,22 @@ class QuickBooksAdapter(LedgerAdapter):
     def __init__(
         self,
         accounts: Optional[AccountMap] = None,
+        connection=None,
         access_token: str | None = None,
         realm_id: str | None = None,
     ):
-        super().__init__(accounts)
-        self.access_token = access_token or os.getenv("QBO_ACCESS_TOKEN")
-        self.realm_id = realm_id or os.getenv("QBO_REALM_ID")
+        super().__init__(accounts, connection)
+        self._token = access_token or os.getenv("QBO_ACCESS_TOKEN")
+        self._realm = realm_id or os.getenv("QBO_REALM_ID")
 
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
         codes = self._resolve(entry)
-        if not self.access_token or not self.realm_id:
+        token = self._token or (self.connection.access_token() if self.connection else None)
+        realm = self._realm or (self.connection.org_id if self.connection else None)
+        if not token or not realm:
             raise RuntimeError(
-                "QBO_ACCESS_TOKEN and QBO_REALM_ID are required. "
-                "Complete the OAuth flow first."
+                "QuickBooks is not connected. Connect it in Settings first."
             )
         payload = {
             "DocNumber": entry.reference,
@@ -192,9 +242,34 @@ class QuickBooksAdapter(LedgerAdapter):
                 for l in entry.lines
             ],
         }
-        raise NotImplementedError(
-            "QuickBooks HTTP call not implemented. Payload prepared: " + str(payload)
+        # RequestId is Intuit's idempotency control: the same value replays the
+        # original result rather than creating a second entry.
+        url = self.ENDPOINT.format(realm_id=realm)
+        response = httpx.post(
+            url,
+            json=payload,
+            params={"minorversion": "75", "requestid": self.idempotency_key(entry)},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=45,
         )
+        if response.status_code >= 400:
+            raise RuntimeError(
+                f"QuickBooks refused {entry.reference} ({response.status_code}): "
+                f"{response.text[:300]}"
+            )
+        body = response.json()
+        posted = body.get("JournalEntry", {})
+        return {
+            "status": "posted",
+            "adapter": self.name,
+            "reference": entry.reference,
+            "ledger_id": posted.get("Id", ""),
+            "ledger_status": "posted",
+        }
 
 
 ADAPTERS = {
@@ -205,7 +280,9 @@ ADAPTERS = {
 
 
 def get_adapter(
-    name: str | None = None, accounts: Optional[AccountMap] = None
+    name: str | None = None,
+    accounts: Optional[AccountMap] = None,
+    connection=None,
 ) -> LedgerAdapter:
     name = (name or os.getenv("LEDGER_ADAPTER", "dry-run")).lower()
-    return ADAPTERS.get(name, DryRunAdapter)(accounts)
+    return ADAPTERS.get(name, DryRunAdapter)(accounts, connection)

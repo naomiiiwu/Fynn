@@ -134,6 +134,15 @@ padding:8px 6px;border-bottom:1px solid var(--ruleF)}
 .rules-t td{padding:8px 6px;border-bottom:1px solid var(--rule)}
 .src{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--bubF);color:var(--slate)}
 .src.firm{background:var(--ledgerBg);color:var(--ledger)}
+.ledrow{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;
+border-bottom:1px solid var(--rule);font-size:13.5px}
+.ledrow:last-child{border-bottom:none}
+.ledright{display:flex;gap:10px;align-items:center}
+.ok-txt{color:var(--ledger);font-weight:500}
+.pd-txt{color:var(--faint)}
+a.btn-link{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:6px;
+border:1px solid var(--ledger);background:var(--ledger);color:#fff;text-decoration:none}
+a.btn-link:hover{background:#12452F}
 
 /* ── drawer chat ── */
 .chat{width:420px;background:var(--panel);border:1px solid var(--rule);border-radius:10px;
@@ -544,9 +553,11 @@ function viewSettings(){
       <select id="s-ledger">
         <option value="dry-run"${f.ledger==="dry-run"?" selected":""}>Dry run — prepare the entry, post nothing</option>
         <option value="xero"${f.ledger==="xero"?" selected":""}>Xero — DRAFT manual journal</option>
+        <option value="quickbooks"${f.ledger==="quickbooks"?" selected":""}>QuickBooks Online — journal entry</option>
       </select>
-      <p class="hint">Xero posting needs OAuth credentials that are not wired up yet; dry run
-      returns the exact payload that would be sent.</p></div>
+      <p class="hint">Dry run returns the exact payload that would be sent. Choosing a
+      live ledger needs it connected below, and every account mapped.</p></div>
+    <div id="ledgers"></div>
     <div class="acts" style="margin-top:24px">
       <button class="go" id="s-save">Save settings</button>
       <span class="st" id="s-status"></span></div>
@@ -556,7 +567,7 @@ function viewSettings(){
   document.querySelectorAll("#s-plat .pill input").forEach(i=>{
     i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
   });
-  loadDiagnostics();
+  loadDiagnostics(); loadLedgers();
   $("#s-save").onclick=async()=>{
     const platforms=[...document.querySelectorAll("#s-plat input:checked")].map(i=>i.value);
     try{
@@ -568,6 +579,32 @@ function viewSettings(){
       $("#firmname").textContent=S.firm.firm+(S.cycle?" · cycle "+S.cycle.cycle:"");
     }catch(e){ $("#s-status").textContent=e.message; }
   };
+}
+
+async function loadLedgers(){
+  try{
+    const r=await api("/api/ledger/status");
+    const rows=Object.entries(r.ledgers).map(([k,v])=>{
+      let right;
+      if(v.connected){
+        right = `<span class="ok-txt">connected${v.org_name?" — "+esc(v.org_name):""}</span>
+                 <button data-dis="${k}">Disconnect</button>`;
+      }else if(v.configured){
+        right = `<a class="btn-link" href="/oauth/${k}/connect">Connect ${esc(v.label)}</a>`;
+      }else{
+        right = `<span class="pd-txt">no client credentials set</span>`;
+      }
+      return `<div class="ledrow"><span>${esc(v.label)}</span><span class="ledright">${right}</span></div>`;
+    }).join("");
+    $("#ledgers").innerHTML = `<p class="sect" style="margin-top:26px;margin-bottom:10px">
+      Connections <span>redirect URI: ${esc(r.base_url)}/oauth/&lt;ledger&gt;/callback</span></p>
+      <div class="je">${rows}</div>`;
+    document.querySelectorAll("[data-dis]").forEach(b=>b.onclick=async()=>{
+      if(!confirm("Disconnect? The account mapping is kept.")) return;
+      await api("/api/ledger/disconnect?ledger="+encodeURIComponent(b.dataset.dis),{method:"POST"});
+      S=await api("/api/state"); viewSettings();
+    });
+  }catch(e){ $("#ledgers").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
 }
 
 async function loadDiagnostics(){
@@ -593,6 +630,16 @@ async function loadDiagnostics(){
     $("#diag").innerHTML = h;
   }catch(e){ $("#diag").innerHTML = `<p class="note">${esc(e.message)}</p>`; }
 }
+
+(function(){
+  const q=new URLSearchParams(location.search);
+  const ok=q.get("connected"), err=q.get("ledger_error");
+  if(ok||err){
+    TAB="settings";
+    history.replaceState({}, "", "/");
+    if(err) setTimeout(()=>alert(err), 100);
+  }
+})();
 
 load();
 </script>

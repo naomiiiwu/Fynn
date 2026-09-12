@@ -302,6 +302,21 @@ account a cycle touches is unmapped, naming the ones that are missing. Dry run
 posts anyway and lists the gaps, which is what a dry run is for. The mapping is
 per ledger: a Xero code is not a QuickBooks Id, so switching starts a fresh one.
 
+**Connections** (in Settings) — OAuth to Xero or QuickBooks Online. The
+accountant clicks Connect, consents at the ledger, and Fynn stores the tokens;
+access tokens are refreshed automatically, and because both providers rotate the
+refresh token on use, the new one is stored immediately or the connection is
+lost at the next expiry. Xero entries post as DRAFT so a human still approves
+inside the ledger.
+
+Every post carries an idempotency key — `Idempotency-Key` for Xero, `requestid`
+for QuickBooks — derived from the firm, cycle and entry reference rather than
+from the moment of sending. A retry after a timeout presents the same key and
+cannot create a second journal in a client's books. The corollary is that
+deliberately re-posting a corrected entry for the same cycle is deduplicated
+too; that is the safer way round, since a duplicate is silent and a rejection
+is not.
+
 **Settings** — firm name, who signs off, marketplaces, destination ledger, and a
 **Storage** panel saying whether anything is actually being persisted. Every
 database write is deliberately best-effort so a close keeps running through an
@@ -354,14 +369,10 @@ Settings → Storage tells you whether it worked.
 
 - Platform OAuth. Shopee, Lazada and TikTok Shop all expose finance APIs, and
   Lazada requires partner-program approval for production rate limits.
-- Ledger posting. Both adapters build a correct payload against the firm's
-  mapped chart of accounts — Xero as a DRAFT manual journal, QuickBooks as a
-  JournalEntry with a PostingType per line — but neither makes the HTTP call.
-  Each needs its app registered, OAuth 2.0 consent, and a refresh-token flow;
-  Xero access tokens last 30 minutes. Refresh tokens must outlive a redeploy, so
-  this wants persistence working first. Posting also needs to be idempotent
-  before it goes live: pressing Post twice must not put two journals in a
-  client's books.
+- A first real post. The Xero and QuickBooks adapters are wired end to end —
+  consent, token refresh, the HTTP call, idempotency — but have only been
+  exercised against a mock server. Nothing has yet been sent to a real
+  organisation.
 - Accounts. A deployment is one firm's workspace behind a shared password.
   Several firms on one instance, or knowing which person approved something
   rather than which firm, both need real authentication.

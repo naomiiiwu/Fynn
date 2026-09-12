@@ -293,7 +293,7 @@ def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
 
 EXPECTED_TABLES = (
     "firm_profiles", "firm_rules", "settlement_files",
-    "posted_entries", "account_mappings",
+    "posted_entries", "account_mappings", "ledger_connections",
 )
 
 
@@ -363,3 +363,53 @@ def diagnose() -> dict:
     else:
         out["detail"] = "Reached the host but no table could be read."
     return out
+
+
+# ── Ledger connections (OAuth tokens) ─────────────────────────────────────────
+
+def save_connection(firm_id: str, ledger: str, tokens: dict) -> bool:
+    """Store or replace a firm's tokens for one ledger."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("ledger_connections").upsert({
+            "firm_id":       firm_id,
+            "ledger":        ledger,
+            "access_token":  tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "expires_at":    tokens["expires_at"],
+            "org_id":        tokens.get("org_id", ""),
+            "org_name":      tokens.get("org_name", ""),
+        }, on_conflict="firm_id,ledger").execute()
+        print(f"  [DB] {ledger} connection stored for {firm_id}")
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to store {ledger} connection: {exc}")
+        return False
+
+
+def load_connection(firm_id: str, ledger: str) -> Optional[dict]:
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        result = (client.table("ledger_connections").select("*")
+                  .eq("firm_id", firm_id).eq("ledger", ledger).execute())
+        return result.data[0] if result.data else None
+    except Exception as exc:
+        print(f"  [DB] Failed to load {ledger} connection: {exc}")
+        return None
+
+
+def delete_connection(firm_id: str, ledger: str) -> bool:
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("ledger_connections").delete()
+         .eq("firm_id", firm_id).eq("ledger", ledger).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to delete {ledger} connection: {exc}")
+        return False

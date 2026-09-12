@@ -54,6 +54,7 @@ from models.firm_profile import (
 from models.transaction import Platform, Side
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
+from services import connections, oauth
 from services.database import diagnose, save_posted_entry, save_settlement_file
 from services.ledger import get_adapter
 from utils.formatter import Cycle
@@ -210,6 +211,15 @@ def _rules() -> RuleStore:
     return _store
 
 
+def base_url() -> str:
+    """The app's own public URL, which the OAuth redirect must match exactly."""
+    explicit = os.getenv("PUBLIC_BASE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    return f"https://{domain}" if domain else "http://localhost:8000"
+
+
 def _accounts(ledger: Optional[str] = None) -> AccountMap:
     """The firm's chart-of-accounts mapping for a ledger, loaded on first use."""
     ledger = (ledger or _profile().ledger or "dry-run").lower()
@@ -325,7 +335,10 @@ def _post_cycle() -> dict:
             409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
         )
 
-    adapter = get_adapter(profile.ledger, _accounts(profile.ledger))
+    adapter = get_adapter(
+        profile.ledger, _accounts(profile.ledger),
+        connections.get(WORKSPACE_ID, profile.ledger),
+    )
     actor = profile.approver()
     out = []
     for _platform, result in results.items():
@@ -398,6 +411,7 @@ def api_state():
             "total": len(accounts_in_use()),
             "unmapped": len(_accounts().missing(accounts_in_use())),
         },
+        "ledgers": connections.status(WORKSPACE_ID),
         "cycle": _cycle.digest() if _cycle else None,
     }
 
@@ -529,6 +543,85 @@ def api_save_accounts(req: AccountMapRequest):
     for account, value in req.mapping.items():
         amap.set(account, (value or {}).get("code", ""), (value or {}).get("name", ""))
     return api_get_accounts(target)
+
+
+OAUTH_STATE_COOKIE = "fynn_oauth_state"
+
+
+@app.get("/oauth/{ledger}/connect", include_in_schema=False)
+def oauth_connect(ledger: str):
+    """Send the accountant to the ledger's consent screen."""
+    try:
+        provider = oauth.get_provider(ledger)
+        # Signed, single-use, and checked on the way back: without it, a link
+        # from anywhere could complete a connection into this workspace.
+        state = _sign(int(time.time()) + 600)
+        url = oauth.authorize_url(provider, base_url(), state)
+    except oauth.OAuthError as exc:
+        raise HTTPException(400, str(exc))
+
+    response = RedirectResponse(url, status_code=303)
+    response.set_cookie(
+        OAUTH_STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax",
+        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")),
+    )
+    return response
+
+
+@app.get("/oauth/{ledger}/callback", include_in_schema=False)
+def oauth_callback(
+    request: Request,
+    ledger: str,
+    code: str = "",
+    state: str = "",
+    realmId: str = "",
+    error: str = "",
+):
+    """Consent came back. Swap the code for tokens and remember them."""
+    def fail(message: str):
+        return RedirectResponse(f"/?ledger_error={quote(message, safe='')}", status_code=303)
+
+    if error:
+        return fail(f"{ledger} returned: {error}")
+    if not code:
+        return fail("No authorisation code came back.")
+
+    expected = request.cookies.get(OAUTH_STATE_COOKIE, "")
+    if not state or not expected or not secrets.compare_digest(state, expected) \
+            or not _valid_session(state):
+        return fail("That sign-in did not come from here, or it expired. Try again.")
+
+    try:
+        provider = oauth.get_provider(ledger)
+        tokens = oauth.exchange_code(provider, code, base_url(), realm_id=realmId or None)
+    except oauth.OAuthError as exc:
+        return fail(str(exc))
+
+    connections.store(WORKSPACE_ID, provider.name, tokens)
+    # Point the firm at what they just connected, so posting goes there.
+    profile = _profile()
+    profile.ledger = provider.name
+    _profiles.save(profile)
+
+    response = RedirectResponse(f"/?connected={provider.name}", status_code=303)
+    response.delete_cookie(OAUTH_STATE_COOKIE)
+    return response
+
+
+@app.post("/api/ledger/disconnect")
+def api_disconnect(ledger: str):
+    """Forget a ledger's tokens. The account mapping is kept."""
+    connections.forget(WORKSPACE_ID, ledger)
+    profile = _profile()
+    if profile.ledger == ledger:
+        profile.ledger = "dry-run"
+        _profiles.save(profile)
+    return connections.status(WORKSPACE_ID)
+
+
+@app.get("/api/ledger/status")
+def api_ledger_status():
+    return {"base_url": base_url(), "ledgers": connections.status(WORKSPACE_ID)}
 
 
 @app.get("/api/diagnostics")
