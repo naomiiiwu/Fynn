@@ -87,6 +87,43 @@ without anyone reviewing them, so the working paper must not imply the firm
 approved treatments it never saw. Any of them can be overridden by approving
 differently once.
 
+**A rule can key on the platform's own classification.** Lazada files every line
+under a Fee Classification — `Orders-Marketing Fees`, `Refunds-Logistics`, and
+about twenty more covering some eighty fee names, a list it keeps adding to.
+Approving with `scope: "category"` saves the decision against the classification
+instead of the single fee name, so the other fees under that heading are covered
+now and any new ones are covered the first time they appear. A decision about a
+named fee always beats a decision about its classification, so a firm can widen
+once and then carve out exceptions.
+
+Category rules take their side from each line's sign, because a classification
+holds both charges and their reversals — a fixed side would put a credit in the
+debit column and unbalance the entry.
+
+**Not every classification can carry a decision.** Lazada's published taxonomy
+is transcribed in `data/lazada_taxonomy.py` — 21 classifications over 99 terms,
+each mapped to one of BigSeller's profit buckets — and which classifications are
+safe to widen is *derived* from it rather than asserted. A classification whose
+terms land in more than one bucket cannot carry a single treatment:
+`Orders-Lazada Fees` spans six, `Orders-Sales` three. Widening across one would
+post unrelated fees to the same account, so Fynn refuses — the rule narrows back
+to the named fee and the audit trail says why.
+
+Bucket spread alone is not enough, because the source sometimes files plainly
+different fees under one bucket. `Refunds-Marketing Fees` sits entirely in
+Discount Promotion yet holds reversals of Seller Picks commission, DPP service
+fees and item charges beside the voucher reversals. Those are named explicitly
+in `ACCOUNT_HETEROGENEOUS`, with the reason, rather than inferred.
+
+`Orders-Logistics`, `3P Services-Logistics`, `Refunds-Logistics`,
+`Orders-Marketing Fees`, `Refunds-Claims` and the rest widen normally.
+
+None are shipped pre-decided, for the same reason. The classification is offered
+as a way to apply the firm's *own* decision widely, never as Fynn's guess.
+
+Shopee publishes no equivalent — its statement is wide, and the columns are the
+fee names — so category rules are Lazada-only for now.
+
 **Some labels must never become a rule.** Lazada ships an explicit catch-all for
 fees outside its own taxonomy ("The fee that does not belong to the terms
 above"). What arrives under it differs every cycle, so a rule there would post
@@ -196,6 +233,17 @@ so an extra tax column in another market becomes a line instead of vanishing.
 A settlement file *is* a period, so the cycle comes from an explicit statement
 column first, then the filename, and only then a row's own date. Rows dated into
 the next month are normal in a statement and must not split the close in two.
+Lazada states that period as a range — `14 Dec 2020 - 20 Dec 2020` — because it
+settles weekly rather than monthly, so a period is named by where it starts.
+
+**Amounts are read in the file's own convention.** Indonesia and Vietnam write
+`2.861` for two thousand eight hundred and sixty-one; Malaysia and Singapore
+write `2.861` for two point eight six one. Fynn decides which from evidence in
+the file — a value carrying both separators settles it outright, otherwise a
+separator followed by one or two digits is a decimal point and one followed by
+exactly three digits is a thousands group, since money is written to at most two
+places. Guessing wrong understates an Indonesian file by a factor of a thousand,
+and on a long-format file nothing downstream would catch it.
 
 The one thing a wide file is checked against is its own arithmetic: every row's
 components must sum to its stated total. A file that fails that is rejected

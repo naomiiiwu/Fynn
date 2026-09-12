@@ -46,7 +46,7 @@ def build_journal(
             rule = store.find(line)
             if rule is None:
                 continue
-            account, side = rule.account, rule.side
+            account, side = rule.account, rule.side_for(line)
         buckets[(account, side)] += abs(line.amount)
         net += line.amount
 

@@ -96,6 +96,29 @@ STARTER_RULES: list[Rule] = [
          account="Warehouse & Storage", side=Side.DEBIT, decided_by=STARTER_ACTOR),
 ]
 
+# Classifications that hold fees belonging to different accounts, so one
+# decision must never be widened across them. Derived from Lazada's published
+# taxonomy rather than asserted: a classification whose terms land in more than
+# one of BigSeller's profit buckets cannot carry a single treatment —
+# "Orders-Lazada Fees" spans six of them, "Orders-Sales" three.
+#
+# Bucket spread alone is not sufficient, because BigSeller sometimes files
+# plainly different fees under one bucket, so a short named list is unioned in.
+# See data/lazada_taxonomy.ACCOUNT_HETEROGENEOUS.
+def _mixed_categories() -> set[str]:
+    from data.lazada_taxonomy import ACCOUNT_HETEROGENEOUS, classifications
+
+    spread = {name for name, buckets in classifications().items() if len(buckets) > 1}
+    return {name.strip().lower() for name in spread | ACCOUNT_HETEROGENEOUS}
+
+
+MIXED_CATEGORIES = _mixed_categories()
+
+
+def is_mixed_category(category: Optional[str]) -> bool:
+    return (category or "").strip().lower() in MIXED_CATEGORIES
+
+
 # Labels that must never become a rule, however often they are approved.
 # Lazada ships an explicit catch-all for fees outside its own taxonomy: what
 # arrives under it differs every cycle, so a rule would silently post next
@@ -138,12 +161,30 @@ class RuleStore:
         return list(self._rules)
 
     def find(self, line: SettlementLine) -> Optional[Rule]:
-        # Platform-specific rules win over global ones.
-        specific = [r for r in self._rules if r.platform is not None and r.matches(line)]
-        if specific:
-            return specific[0]
-        generic = [r for r in self._rules if r.platform is None and r.matches(line)]
-        return generic[0] if generic else None
+        """The most specific rule covering this line.
+
+        Order of precedence, most specific first: a rule naming this exact fee
+        on this platform, then one naming the fee on any platform, then one
+        covering the platform's whole classification. A firm that has decided
+        how to treat "Campaign Fee" must not have that overridden by its more
+        general decision about Lazada marketing fees.
+        """
+        def ranked(candidates: list[Rule]) -> list[Rule]:
+            return [r for r in candidates if r.matches(line)]
+
+        by_label = [r for r in self._rules if r.category is None]
+        by_category = [r for r in self._rules if r.category is not None]
+
+        for pool in (
+            [r for r in by_label if r.platform is not None],
+            [r for r in by_label if r.platform is None],
+            [r for r in by_category if r.platform is not None],
+            [r for r in by_category if r.platform is None],
+        ):
+            hits = ranked(pool)
+            if hits:
+                return hits[0]
+        return None
 
     def add(
         self,
@@ -152,10 +193,28 @@ class RuleStore:
         side: Side,
         decided_by: str,
         platform_specific: bool = True,
+        scope: str = "label",
     ) -> Rule:
+        """Save a decision as a rule.
+
+        scope="category" writes it against the platform's own classification
+        instead of the single fee name, so every fee filed under that heading —
+        including ones that have never appeared before — inherits the treatment.
+        Those take their side from each line's sign, because a classification
+        holds both charges and their reversals.
+        """
+        # A classification that holds fees belonging to different accounts
+        # cannot carry one decision, so the rule narrows back to the fee name.
+        as_category = (
+            scope == "category"
+            and bool(line.category)
+            and not is_mixed_category(line.category)
+        )
         rule = Rule(
             platform=line.platform if platform_specific else None,
-            label=line.label,
+            label="" if as_category else line.label,
+            category=line.category if as_category else None,
+            follow_sign=as_category,
             account=account,
             side=side,
             decided_by=decided_by,

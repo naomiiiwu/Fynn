@@ -69,6 +69,7 @@ def investigate(exc: ReconException, context: Optional[str] = None) -> Optional[
 Line label: {line.label if line else 'n/a'}
 Amount: {exc.amount}
 Order reference: {line.order_id if line and line.order_id else 'none'}
+Note from the platform: {line.note if line and line.note else 'none'}
 Problem: {exc.why}
 {f'Additional context: {context}' if context else ''}
 

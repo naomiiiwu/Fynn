@@ -63,6 +63,14 @@ _COLUMNS: dict[str, list[str]] = {
                  "release time", "settlement date", "payout date"],
     "credit":   ["credit"],
     "debit":    ["debit"],
+    # Lazada's "Fee Classification". Kept because it is the platform's own
+    # taxonomy: it groups fee names nobody has seen yet under a heading a firm
+    # has already made a decision about.
+    "category": ["fee classification", "classification", "fee category", "category",
+                 "fee type"],
+    # Free text the platform attached to the line, and the reference it filed it
+    # under. Both appear in Lazada's Transaction Overview export.
+    "note":     ["comment", "note", "memo", "item name", "description detail"],
 }
 
 # In a wide file these identify the row rather than a fee it carries. Kept
@@ -73,6 +81,7 @@ _WIDE_META = [
     "order id", "order no", "order sn", "order number", "order item no",
     "date", "time", "status", "statement", "payment ref", "ref id", "currency",
     "buyer name", "buyer username", "seller sku", "product name", "tracking",
+    "item name", "comment", "note", "transaction number", "payment ref id",
 ]
 
 # The stated total a wide row's components must sum to.
@@ -230,20 +239,86 @@ def _looks_like_header(header: list[str], row: list[str]) -> bool:
 
 # ── Value helpers ─────────────────────────────────────────────────────────────
 
-def _parse_amount(raw: str) -> Optional[float]:
-    """Strip currency symbols, thousands separators and bracketed negatives."""
+def _parse_amount(raw: str, decimal: str = ".") -> Optional[float]:
+    """Strip currency symbols, thousands separators and bracketed negatives.
+
+    `decimal` says which character this file uses as the decimal point, because
+    that is not universal across the markets these platforms serve. Indonesia
+    and Vietnam write 2.861 for two thousand eight hundred and sixty-one; read
+    with the wrong convention it becomes 2.861, a thousandfold understatement
+    that no later check would catch on a long-format file. See
+    _detect_decimal_separator for how the convention is established.
+    """
     text = (raw or "").strip()
     if not text:
         return None
-    negative = text.startswith("(") and text.endswith(")")
-    cleaned = re.sub(r"[^\d.\-]", "", text.replace(",", ""))
-    if cleaned in ("", "-", ".", "-.") or cleaned.count(".") > 1:
+    negative = (text.startswith("(") and text.endswith(")")) or text.lstrip().startswith("-")
+
+    cleaned = re.sub(r"[^\d.,]", "", text)
+    if not cleaned:
         return None
+
+    thousands = "," if decimal == "." else "."
+    cleaned = cleaned.replace(thousands, "")
+    if decimal != ".":
+        cleaned = cleaned.replace(decimal, ".")
+    if cleaned.count(".") > 1 or cleaned in ("", "."):
+        return None
+
     try:
         value = float(cleaned)
     except ValueError:
         return None
     return -value if negative else value
+
+
+def _detect_decimal_separator(rows: list[list[str]], sample: int = 400) -> str:
+    """Work out whether this file writes 1.234,56 or 1,234.56.
+
+    Decided on evidence from the file itself, never assumed:
+
+      a value containing both separators settles it — the last one is the
+      decimal point, as in 1.234,56 and 1,234.56 alike;
+
+      otherwise a separator followed by one or two digits is a decimal point
+      (853.59), while one followed by exactly three digits is a thousands
+      grouping (2.861). Money is written to at most two places, so three digits
+      after a separator is a group, not a fraction.
+
+    Where a file offers no evidence either way, '.' is assumed and the caller is
+    warned rather than left to find out from a wrong total.
+    """
+    both = {".": 0, ",": 0}
+    fraction = {".": 0, ",": 0}
+    grouping = {".": 0, ",": 0}
+
+    for row in rows[:sample]:
+        for cell in row:
+            text = re.sub(r"[^\d.,]", "", (cell or "").strip())
+            if not text or not any(c.isdigit() for c in text):
+                continue
+            last_dot, last_comma = text.rfind("."), text.rfind(",")
+            if last_dot >= 0 and last_comma >= 0:
+                both["." if last_dot > last_comma else ","] += 1
+                continue
+            for sep, last in ((".", last_dot), (",", last_comma)):
+                if last < 0:
+                    continue
+                after = len(text) - last - 1
+                if text.count(sep) > 1 or after == 3:
+                    grouping[sep] += 1
+                elif 1 <= after <= 2:
+                    fraction[sep] += 1
+
+    if both["."] or both[","]:
+        return "." if both["."] >= both[","] else ","
+    if fraction["."] or fraction[","]:
+        return "." if fraction["."] >= fraction[","] else ","
+    if grouping["."] and not grouping[","]:
+        return ","   # every dot is a thousands group, so the decimal point is a comma
+    if grouping[","] and not grouping["."]:
+        return "."
+    return "."
 
 
 def _clean_label(header: str) -> str:
@@ -262,6 +337,12 @@ def _normalise_cycle(value: str) -> Optional[str]:
     text = (value or "").strip()
     if not text:
         return None
+    # Lazada states the statement period as a range — "14 Dec 2020 - 20 Dec
+    # 2020" — because it settles weekly, not monthly. The period is named by
+    # where it starts.
+    span = re.split(r"\s+(?:-|–|—|to)\s+", text, maxsplit=1)
+    if len(span) == 2 and any(c.isdigit() for c in span[1]):
+        text = span[0].strip()
     if re.fullmatch(r"\d{4}-\d{2}", text):
         return text
     match = re.match(r"(\d{4})[-/](\d{1,2})", text)
@@ -452,6 +533,7 @@ def _melt_wide(
     file_cycle: Optional[str],
     default_cycle: Optional[str],
     parsed: ParsedSettlement,
+    decimal: str = ".",
 ) -> None:
     """One row per order, fees as columns → one SettlementLine per fee."""
     total_col = next(h for h in fieldnames if _matches_any(h, _WIDE_TOTAL))
@@ -482,7 +564,7 @@ def _melt_wide(
 
         components = 0.0
         for header in fee_cols:
-            amount = _parse_amount(row.get(header, ""))
+            amount = _parse_amount(row.get(header, ""), decimal)
             if amount is None:
                 continue
             components += amount
@@ -497,7 +579,7 @@ def _melt_wide(
             )
         parsed.cycles.add(cycle)
 
-        stated = _parse_amount(row.get(total_col, ""))
+        stated = _parse_amount(row.get(total_col, ""), decimal)
         if stated is not None and abs(round(components - stated, 2)) >= 0.005:
             mismatches.append(
                 f"{order_id or f'row {row_number}'}: components {components:.2f} "
@@ -522,6 +604,7 @@ def _melt_long(
     file_cycle: Optional[str],
     default_cycle: Optional[str],
     parsed: ParsedSettlement,
+    decimal: str = ".",
 ) -> None:
     """One row per fee line → one SettlementLine each."""
     cols = _resolve_columns(fieldnames)
@@ -550,10 +633,10 @@ def _melt_long(
             continue
 
         if "amount" in cols:
-            amount = _parse_amount(row.get(cols["amount"], ""))
+            amount = _parse_amount(row.get(cols["amount"], ""), decimal)
         else:
-            credit = _parse_amount(row.get(cols.get("credit", ""), "")) or 0.0
-            debit = _parse_amount(row.get(cols.get("debit", ""), "")) or 0.0
+            credit = _parse_amount(row.get(cols.get("credit", ""), ""), decimal) or 0.0
+            debit = _parse_amount(row.get(cols.get("debit", ""), ""), decimal) or 0.0
             amount = credit - abs(debit)
         if amount is None:
             parsed.skipped.append(f"row {row_number}: unreadable amount")
@@ -577,10 +660,13 @@ def _melt_long(
             continue
 
         order_id = (row.get(cols["order"], "") or "").strip() if "order" in cols else ""
+        category = (row.get(cols["category"], "") or "").strip() if "category" in cols else ""
+        note = (row.get(cols["note"], "") or "").strip() if "note" in cols else ""
         parsed.lines.append(
             SettlementLine(
                 platform=platform, cycle=cycle, label=label, amount=amount,
                 order_id=order_id or None, date=date or None, source_ref=filename,
+                category=category or None, note=note or None,
             )
         )
         parsed.cycles.add(cycle)
@@ -621,16 +707,21 @@ def parse_settlement_csv(
         or default_platform
     )
     file_cycle = cycle_from_filename(filename) or _dominant_cycle(rows)
+    decimal = _detect_decimal_separator(rows)
     parsed = ParsedSettlement()
+    if decimal != ".":
+        parsed.warnings.append(
+            f"Amounts read with '{decimal}' as the decimal point (this file writes 1.234,56)."
+        )
 
     for block in blocks:
         fieldnames = list(block[0].keys())
         cols = _resolve_columns(fieldnames)
         if _is_wide(fieldnames, cols):
             parsed.layout = "wide"
-            _melt_wide(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed)
+            _melt_wide(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed, decimal)
         else:
-            _melt_long(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed)
+            _melt_long(block, fieldnames, filename, file_platform, file_cycle, default_cycle, parsed, decimal)
 
     if not parsed.lines:
         if file_platform is None:

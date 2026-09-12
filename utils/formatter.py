@@ -158,12 +158,18 @@ class Cycle:
         return None
 
     def approve(
-        self, key: str, account: str, side: Side, actor: str, save_rule: bool = True
+        self, key: str, account: str, side: Side, actor: str, save_rule: bool = True,
+        scope: str = "label",
     ) -> dict[Platform, CycleResult]:
         """Record an accountant's decision, then re-reconcile.
 
         Saving the rule is what makes the next cycle cheaper: the same label
         will not be raised again for this firm.
+
+        scope="category" widens the rule to the platform's own classification,
+        so the decision also covers the other fees filed under it and any new
+        ones the platform adds later. Only offered where the file carries a
+        classification — Lazada does, Shopee does not.
         """
         self.resolutions[key] = (account, side)
         # The key may address a single line or every line carrying one label,
@@ -171,8 +177,8 @@ class Cycle:
         covered = [l for l in self.lines if key in (l.key, group_key(l))]
         line = covered[0] if covered else None
 
-        scope = f" ({len(covered)} lines)" if len(covered) > 1 else ""
-        self.trail.add("decision", f"Approved — {key} posts to {account}{scope}", actor=actor)
+        spread = f" ({len(covered)} lines)" if len(covered) > 1 else ""
+        self.trail.add("decision", f"Approved — {key} posts to {account}{spread}", actor=actor)
 
         if line is not None and is_never_rule(line.label):
             # A platform's catch-all bucket holds something different every
@@ -186,11 +192,31 @@ class Cycle:
                 actor=actor,
             )
 
-        if save_rule and line is not None and self.store.find(line) is None:
-            self.store.add(line, account, side, decided_by=actor)
+        existing = self.store.find(line) if line is not None else None
+        # A decision about one named fee is more specific than a decision about
+        # its whole classification, so it is worth saving even when a category
+        # rule already covers the line — find() will prefer the label rule.
+        overrides_category = scope == "label" and existing is not None and existing.category is not None
+
+        if save_rule and line is not None and (existing is None or overrides_category):
+            rule = self.store.add(line, account, side, decided_by=actor, scope=scope)
+            target = (
+                f'everything classified "{rule.category}"' if rule.category
+                else f'"{line.label}"'
+            )
+            note = (
+                f' — overrides the "{existing.category}" rule for this fee only'
+                if overrides_category else ""
+            )
+            if scope == "category" and rule.category is None and line.category:
+                # Asked to widen, but the classification is not homogeneous.
+                note = (
+                    f' — not widened: "{line.category}" holds fees that belong to '
+                    "different accounts, so this covers the named fee only"
+                )
             self.trail.add(
                 "rule",
-                f'Rule saved — {line.platform.value} "{line.label}" posts to {account}',
+                f"Rule saved — {line.platform.value} {target} posts to {account}{note}",
                 actor=actor,
             )
         return self.run()
@@ -227,6 +253,7 @@ class Cycle:
                     "kind": e.kind,
                     "amount": e.amount,
                     "why": e.why,
+                    "category": e.line.category if e.line else None,
                     "evidence": e.evidence.model_dump(mode="json") if e.evidence else None,
                 }
                 for e in open_exceptions

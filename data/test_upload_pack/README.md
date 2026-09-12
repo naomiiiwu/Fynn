@@ -20,3 +20,27 @@ Reported payouts, where a file does not state one:
 02_shopee_native_headers.csv   Shopee=725.00
 04_credit_debit_columns.csv    Lazada=760.00
 ```
+
+## Seller Center export shapes
+
+`05_lazada_seller_center_export.csv` carries the exact column set Lazada Seller
+Center shows under Finance → Account Statements → **Transaction Overview →
+Export**:
+
+```
+Transaction Date | Transaction Type | Transaction Number | Order Number
+Order Item ID | Item Name | Comment | Amount | Statement Period
+```
+
+Two things it establishes:
+
+- **Statement Period is a range** — `2022-01-12 - 2022-01-19`. Lazada settles
+  weekly, so a cycle is not a calendar month. Fynn names the period by where it
+  starts, which is a patch over an assumption, not a fix for it.
+- **There is no Fee Classification column.** BigSeller's documentation lists one
+  because BigSeller reads Lazada's API; this export does not carry it. Category
+  rules (`scope: "category"`) therefore do nothing on a file exported this way —
+  they need the API, or an export variant that includes the column.
+
+The `Comment` column is captured onto the line and passed to the investigator
+and the explainer. On an adjustment it usually holds the reason.

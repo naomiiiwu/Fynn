@@ -11,7 +11,16 @@ deliberately-broken ones.
 | | Verified | Not verified |
 |---|---|---|
 | Shopee | Fee names, the wide order-level structure, the reconciliation identity | Column order, header casing, CSV vs XLSX, whether adjustments are a separate file or a section, per-country columns |
-| Lazada | Fee names, fee classifications, the long transaction-line structure, Grand Total as the target | Same list |
+| Lazada | Fee names, fee classifications, the long transaction-line structure | Same list |
+
+**Correction — "Grand Total" is not the payout.** `LAZADA_PROVENANCE.md` calls
+Grand Total the target, and the figure below is labelled that way. Lazada Seller
+Center's own order detail shows otherwise: on its worked example, Subtotal 853.59
+plus shipping 99.00 gives **Grand Total 952.59**, while the transaction lines for
+the same order — item price credit, commission, payment fee, both shipping legs —
+net to **519.18**. Grand Total is what the customer paid; the payout is what the
+transaction lines sum to. The 5,816.66 below is the latter, which is the right
+figure to reconcile against, under the wrong name.
 
 Rates are illustrative. Because the second column is unverified, the parser does
 not depend on any of it — see the module docstring in `services/csv_parser.py`

@@ -1,0 +1,7 @@
+Transaction Date,Transaction Type,Transaction Number,Order Number,Order Item ID,Item Name,Comment,Amount,Statement Period
+2022-01-12,Item Price Credit,PH1000123,747557871,747557871-1,Baby Hair Clip Set,,62.50,2022-01-12 - 2022-01-19
+2022-01-12,Commission,PH1000124,747557871,747557871-1,Baby Hair Clip Set,,-2.81,2022-01-12 - 2022-01-19
+2022-01-12,Payment Fee,PH1000125,747557871,747557871-1,Baby Hair Clip Set,,-2.04,2022-01-12 - 2022-01-19
+2022-01-13,Shipping Fee (Paid By Customer),PH1000126,752869702,752869702-1,Poly Mailer 100pcs,,2.50,2022-01-12 - 2022-01-19
+2022-01-13,Shipping Fee Paid by Seller,PH1000127,752869702,752869702-1,Poly Mailer 100pcs,,-2.87,2022-01-12 - 2022-01-19
+2022-01-14,Reversal Item Price,PH1000128,789114520,789114520-1,Baby Hair Clip Set,Buyer returned item,-48.00,2022-01-12 - 2022-01-19

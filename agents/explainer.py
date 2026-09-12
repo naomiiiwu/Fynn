@@ -72,6 +72,7 @@ def _context(exc: ReconException, cycle_lines: list[SettlementLine],
   Amount:    {exc.amount:.2f}
   Label:     {exc.line.label if exc.line else 'n/a'}
   Order:     {exc.line.order_id if exc.line and exc.line.order_id else 'none'}
+  Platform note: {exc.line.note if exc.line and exc.line.note else 'none'}
   Problem:   {exc.why}{ev}
 
 THIS CYCLE — {exc.platform.value}

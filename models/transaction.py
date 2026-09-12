@@ -29,6 +29,15 @@ class SettlementLine(BaseModel):
     order_id: Optional[str] = None
     date: Optional[str] = None
     source_ref: Optional[str] = None  # settlement file this came from
+    # The platform's own grouping for this fee, where it publishes one. Lazada's
+    # API ships a "Fee Classification" ("Orders-Logistics"); its Seller Center
+    # CSV export does not, and Shopee has no equivalent at all.
+    category: Optional[str] = None
+    # Free text the platform attached to the line. Lazada's statement export has
+    # a Comment column that often states why an adjustment exists ("Buyer
+    # returned item") — the single most useful sentence when explaining an
+    # exception to an accountant.
+    note: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -43,16 +52,32 @@ class Rule(BaseModel):
     """
 
     platform: Optional[Platform] = None   # None = applies to all platforms
-    label: str
+    label: str = ""                       # exact fee name; empty if this is a category rule
     account: str
     side: Side
+    # Match every fee the platform files under one classification, rather than
+    # one named fee. Covers fee names nobody has seen yet — Lazada publishes
+    # ~80 terms and adds to them — at the cost of being less specific, so a
+    # label rule always wins over a category rule.
+    category: Optional[str] = None
+    # Take the side from the line's own sign instead of a fixed one. A category
+    # holding both charges and their reversals has both signs in it, and a fixed
+    # side would put a credit in the debit column and unbalance the entry.
+    follow_sign: bool = False
     decided_by: Optional[str] = None
     decided_at: Optional[datetime] = None
 
     def matches(self, line: SettlementLine) -> bool:
         if self.platform is not None and self.platform != line.platform:
             return False
+        if self.category is not None:
+            return (line.category or "").strip().lower() == self.category.strip().lower()
         return self.label.strip().lower() == line.label.strip().lower()
+
+    def side_for(self, line: SettlementLine) -> Side:
+        if self.follow_sign:
+            return Side.CREDIT if line.amount > 0 else Side.DEBIT
+        return self.side
 
 
 ExceptionKind = Literal[

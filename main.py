@@ -301,6 +301,9 @@ class ApproveRequest(BaseModel):
     side: Side = Side.DEBIT
     actor: str
     save_rule: bool = True
+    # "label" saves the decision against this fee name; "category" widens it to
+    # the platform's own classification, covering fee names not yet seen.
+    scope: str = "label"
     firm: str = API_FIRM
 
 
@@ -309,7 +312,7 @@ def approve(req: ApproveRequest):
     """Record an accountant's decision and re-reconcile."""
     firm_id = _canonical_whatsapp_phone(req.firm) if req.firm != API_FIRM else API_FIRM
     cycle = _require_cycle(firm_id)
-    cycle.approve(req.key, req.account, req.side, req.actor, req.save_rule)
+    cycle.approve(req.key, req.account, req.side, req.actor, req.save_rule, req.scope)
     return cycle.digest()
 
 
@@ -1181,6 +1184,7 @@ class PageApproveRequest(BaseModel):
     account: str
     side: Side = Side.DEBIT
     save_rule: bool = True
+    scope: str = "label"
 
 
 class NotifyRequest(BaseModel):
@@ -1272,7 +1276,7 @@ def api_approve(req: PageApproveRequest, token: str = Query(""), firm: str = Que
     cycle = _require_cycle(firm_id)
     profile = _profiles.get(firm_id)
     actor = profile.approver() if profile else "Unnamed approver"
-    cycle.approve(req.key, req.account, req.side, actor, req.save_rule)
+    cycle.approve(req.key, req.account, req.side, actor, req.save_rule, req.scope)
     return cycle.digest()
 
 
