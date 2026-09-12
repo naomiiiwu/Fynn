@@ -1,7 +1,7 @@
 """Supabase persistence for Fynn.
 
-Tables (migrations/005_reconciliation.sql):
-  firm_profiles      — one row per accounting firm, keyed by WhatsApp number
+Tables (migrations/005_reconciliation.sql, then 007):
+  firm_profiles      — one row per accounting firm, keyed by workspace id
   firm_rules         — the accumulating asset: every decision a firm has made
   settlement_files   — source files, retained for the statutory period
   posted_entries     — journals sent to a ledger, with their audit trail
@@ -49,28 +49,32 @@ def save_firm(profile) -> bool:
         return False
     try:
         client.table("firm_profiles").upsert({
-            "phone":           profile.phone,
+            "workspace_id":    profile.id,
             "firm":            profile.firm,
             "actor":           profile.actor,
-            "language":        profile.language,
             "platforms":       profile.platforms,
             "ledger":          profile.ledger,
             "onboarding_step": profile.onboarding_step,
         }).execute()
-        print(f"  [DB] Firm profile saved for {profile.phone}")
+        print(f"  [DB] Firm profile saved for {profile.id}")
         return True
     except Exception as exc:
         print(f"  [DB] Failed to save firm profile: {exc}")
         return False
 
 
-def load_firm(phone: str) -> Optional[dict]:
+def load_firm(firm_id: str) -> Optional[dict]:
     client = _get_client()
     if not client:
         return None
     try:
-        result = client.table("firm_profiles").select("*").eq("phone", phone).execute()
-        return result.data[0] if result.data else None
+        result = (client.table("firm_profiles").select("*")
+                  .eq("workspace_id", firm_id).execute())
+        if not result.data:
+            return None
+        row = dict(result.data[0])
+        row["id"] = row.get("workspace_id")
+        return row
     except Exception as exc:
         print(f"  [DB] Failed to load firm profile: {exc}")
         return None

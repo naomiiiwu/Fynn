@@ -131,19 +131,16 @@ next month's unknown charge to last month's account unseen. Approving one is
 recorded as a decision but writes no rule, and the label comes back next month —
 by design.
 
-**The digest page is the review surface; WhatsApp is the doorbell.** Accountants
-who compared a structured report with a chat interface preferred the report for
+**The report is the surface, conversation is for exceptions.** Accountants who
+compared a structured report with a chat interface preferred the report for
 reviewing and verifying entries, and wanted conversation reserved for the items
-that actually need explaining. So the link arrives over WhatsApp, and the review
-happens on a page where the evidence, the amounts and the resulting journal are
-visible at once. Approving is not a WhatsApp command — an approval is recorded
-against a named person and should not be a two-word reply.
+that actually need explaining. So the cycle is a page — evidence, amounts and
+the resulting journal visible at once — and the only conversational surface is
+the drawer that opens on a single exception.
 
-**The link is the credential.** A digest link is tokenised, scoped to one firm,
-and expires in 14 days. No login, because accountants already receive everything
-else from their clients this way and a password would just be one more thing to
-lose. A token that has expired or was never issued is a hard 410 — it never
-falls through to somebody else's cycle.
+**One workspace, no accounts.** A deployment is one firm. Every store already
+takes a firm id, so supporting several firms is an authentication problem rather
+than an engine one, and there is no point inventing half of one now.
 
 ---
 
@@ -151,8 +148,8 @@ falls through to somebody else's cycle.
 
 ```
 fynn/
-├── main.py                       FastAPI endpoints + Twilio WhatsApp webhook
-├── static/digest.html            The month-end digest page + exception drawer
+├── main.py                       FastAPI endpoints
+├── static/app.html               The web app — cycle, upload, rules, settings
 ├── models/
 │   ├── transaction.py            Settlement lines, rules, exceptions, journals
 │   └── firm_profile.py           Per-firm settings + profile store
@@ -163,13 +160,10 @@ fynn/
 │   ├── ledger.py                 Pluggable adapters (dry-run, Xero)
 │   ├── audit.py                  Audit trail + working paper export
 │   ├── csv_parser.py             Real-world settlement exports → SettlementLine
-│   ├── conversation.py           WhatsApp command grammar
-│   ├── whatsapp.py               Twilio delivery
 │   └── database.py               Supabase persistence (no-ops when unset)
 ├── agents/
 │   ├── investigator.py           LLM exception investigation (suggestions only)
-│   ├── explainer.py              Conversational drawer — explains, never decides
-│   └── notifier.py               Outbound WhatsApp sends
+│   └── explainer.py              Conversational drawer — explains, never decides
 ├── utils/formatter.py            Cycle orchestration + digest payload
 ├── data/sample_settlements.py    Sample cycle with the three known edge cases
 ├── data/test_upload_pack/        Files to break the ingest path with
@@ -185,11 +179,14 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
+Then open <http://localhost:8000>.
+
 No API keys are needed. Without `ANTHROPIC_API_KEY` the investigator returns no
 suggestion and the exception reaches the accountant unannotated — a valid state,
 not a failure. Without `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` every write
-silently no-ops and the app runs on in-process state. Without Twilio credentials
-outbound messages print to the console.
+silently no-ops and the app runs on in-process state.
+
+Everything the app does is also available to scripts:
 
 ```bash
 # Load the sample cycle
@@ -259,40 +256,29 @@ deliberately-broken files, two of which are supposed to fail.
 
 ---
 
-## The digest page
+## The app
 
-The review surface. Reached by a tokenised link at `/c/{token}` — no login, 14
-day expiry, scoped to one firm.
+Open `/`. Four tabs over one cycle.
 
-- Payouts per platform across the top, then anything that needs a decision.
-- Clicking an exception opens a drawer. The first message is deterministic; the
-  follow-up questions go to `agents/explainer.py`, which is given that one
-  exception and its cycle and told, in the system prompt, that it explains and
-  proposes but never decides. Approving is a separate, explicit action.
-- Approving records the account against the name in firm settings — the request
-  body cannot name the actor, because a page with no login cannot be trusted to
-  say who is holding the phone.
-- Journal entries expand to their lines, so any figure can be traced back.
-- Once nothing is open, **Post entries** sends them to the configured adapter.
-- The audit trail is on the same page, with the working paper one click away.
+**Cycle** — payouts per platform across the top, then anything that needs a
+decision. Clicking an exception opens a drawer: the first message is
+deterministic, and follow-up questions go to `agents/explainer.py`, which is
+given that one exception and its cycle and told in its system prompt that it
+explains and proposes but never decides. Approving is a separate, explicit
+action, recorded against the name in Settings rather than against whoever
+happens to be at the keyboard. Where a fee carries a classification, a checkbox
+offers to widen the decision across it — greyed out in practice for the
+classifications that hold unrelated fees. Journal entries expand to their lines;
+the audit trail sits below with the working paper one click away. When nothing
+is open, **Post entries** sends them to the configured adapter.
 
-## WhatsApp
+**Upload** — drag in CSV or XLSX exports. Files are ingested one at a time,
+because each folds into the same open cycle and concurrent writes would race.
 
-Twilio posts to `POST /webhook/whatsapp`. It carries files in and links out:
+**Rules** — everything the firm has accumulated, with what Fynn supplied marked
+separately from what the firm decided.
 
-| Send | What happens |
-|---|---|
-| a settlement CSV | Reconciled in the background; the digest link comes back |
-| `digest` | A fresh link to the current cycle |
-| `setup` | Link to the firm settings page |
-| anything else | The digest link, which is nearly always what was wanted |
-
-`POST /notify` issues a link and sends it out of band, for when a cycle is
-prepared some other way.
-
-Firms who prefer a browser get two more pages: `/setup?phone=…` for settings and
-`/upload?phone=…` for drag-and-drop ingest. An upload through the web page still
-sends the digest link to WhatsApp, so the surfaces cannot drift apart.
+**Settings** — firm name, who signs off, marketplaces, destination ledger.
 
 ---
 
@@ -320,13 +306,12 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT   # Procfile
 python-3.12                                          # runtime.txt
 ```
 
-Environment variables are listed in `.env.example`. Point the Twilio WhatsApp
-sandbox (or an approved sender) at `https://<your-domain>/webhook/whatsapp`, and
-set `RAILWAY_PUBLIC_DOMAIN` so the setup and upload links Fynn sends resolve.
+Environment variables are listed in `.env.example`.
 
-Supabase schema lives in `migrations/`. `005_reconciliation.sql` is the current
-one; `006_drop_legacy.sql` documents removing the tables left behind by the
-earlier seller-facing P&L product and is commented out on purpose.
+Supabase schema lives in `migrations/`. Run `005_reconciliation.sql` then
+`007_workspace_identity.sql`; `006_drop_legacy.sql` documents removing the tables
+left behind by the earlier seller-facing P&L product and is commented out on
+purpose.
 
 ---
 
@@ -337,21 +322,21 @@ earlier seller-facing P&L product and is commented out on purpose.
 - Xero posting. The adapter prepares a DRAFT manual journal payload but the HTTP
   call is not wired up — OAuth 2.0 with `accounting.transactions` scope and a
   refresh-token flow are needed first. Access tokens expire after 30 minutes.
+- Accounts. A deployment is one firm's workspace, with no login. Several firms
+  on one instance needs authentication first.
 - Cycle persistence. Firm rules, source files and posted entries are in
   Supabase; the *open* cycle is in-process, so a restart mid-review loses the
-  approvals not yet posted. Digest tokens live in the same process, so a restart
-  also invalidates every link already sent — both want the same fix. Source
-  settlement files must be retained for the statutory period (5 years — verify
-  for your jurisdiction).
+  approvals not yet posted. Source settlement files must be retained for the
+  statutory period (5 years — verify for your jurisdiction).
 - Multi-currency. Lazada alone spans six countries.
-- Multi-client. A firm is one WhatsApp number and one open cycle; separating
-  clients within a firm is the next structural change, not a field.
+- Multi-client. A workspace holds one open cycle; separating clients within a
+  firm is the next structural change, not a field.
 
 ---
 
 ## Status
 
 Pre-product. Validated through conversations with practising accountants in
-Singapore; the reconciliation engine runs end to end on sample data, accepts
-real CSVs, and is reachable over WhatsApp. Not connected to live platforms or
-ledgers.
+Singapore; the reconciliation engine runs end to end on sample data and accepts
+real exports, through a web interface with no authentication. Not connected to
+live platforms or ledgers.

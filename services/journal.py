@@ -41,12 +41,21 @@ def build_journal(
             continue
         decided = resolution_for(line, resolutions)
         if decided is not None:
-            account, side = decided
+            account, _declared = decided
         else:
             rule = store.find(line)
             if rule is None:
                 continue
-            account, side = rule.account, rule.side_for(line)
+            account = rule.account
+
+        # The side is the line's own sign, always — money in is a credit to its
+        # account, money out a debit. A decision names the *account*; the
+        # direction is a fact about the amount, not a choice. Honouring a
+        # contradicting side would unbalance the entry, because the clearing
+        # line carries the net and the rest must mirror it. A reversal landing
+        # on the opposite side of its original charge is a contra entry, which
+        # is what it should be.
+        side = Side.CREDIT if line.amount > 0 else Side.DEBIT
         buckets[(account, side)] += abs(line.amount)
         net += line.amount
 

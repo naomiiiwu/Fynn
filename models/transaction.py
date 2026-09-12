@@ -54,16 +54,16 @@ class Rule(BaseModel):
     platform: Optional[Platform] = None   # None = applies to all platforms
     label: str = ""                       # exact fee name; empty if this is a category rule
     account: str
+    # The direction this fee normally runs, recorded as the firm's intent. It is
+    # not what the journal uses: services/journal.py takes the side from each
+    # line's own sign, because a reversal runs the other way and the entry has
+    # to balance. See build_journal.
     side: Side
     # Match every fee the platform files under one classification, rather than
     # one named fee. Covers fee names nobody has seen yet — Lazada publishes
     # ~80 terms and adds to them — at the cost of being less specific, so a
     # label rule always wins over a category rule.
     category: Optional[str] = None
-    # Take the side from the line's own sign instead of a fixed one. A category
-    # holding both charges and their reversals has both signs in it, and a fixed
-    # side would put a credit in the debit column and unbalance the entry.
-    follow_sign: bool = False
     decided_by: Optional[str] = None
     decided_at: Optional[datetime] = None
 
@@ -73,11 +73,6 @@ class Rule(BaseModel):
         if self.category is not None:
             return (line.category or "").strip().lower() == self.category.strip().lower()
         return self.label.strip().lower() == line.label.strip().lower()
-
-    def side_for(self, line: SettlementLine) -> Side:
-        if self.follow_sign:
-            return Side.CREDIT if line.amount > 0 else Side.DEBIT
-        return self.side
 
 
 ExceptionKind = Literal[

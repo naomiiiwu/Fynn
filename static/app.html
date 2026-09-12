@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fynn — settlement reconciliation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#FBFBF8;--panel:#fff;--ink:#15181C;--slate:#5D6570;--faint:#8B939E;
+--rule:#E6E4DE;--ruleF:#CFCCC4;--ledger:#17563F;--ledgerBg:#EAF1ED;
+--flag:#9A5A00;--flagBg:#FBF1E1;--link:#1F4E79;--linkBg:#EAF0F6;--bubF:#F4F3EF}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,system-ui,sans-serif;background:var(--paper);color:var(--ink);
+-webkit-font-smoothing:antialiased;line-height:1.5}
+.num{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+button{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:6px;cursor:pointer;
+border:1px solid var(--ruleF);background:var(--panel);color:var(--ink)}
+button:hover{background:var(--bubF)}
+button:focus-visible{outline:2px solid var(--link);outline-offset:2px}
+button.go{background:var(--ledger);color:#fff;border-color:var(--ledger)}
+button.go:hover{background:#12452F}
+button:disabled{opacity:.55;cursor:default}
+input,select{font:400 13.5px Inter,sans-serif;padding:9px 12px;border:1px solid var(--ruleF);
+border-radius:7px;background:var(--panel);color:var(--ink);width:100%}
+input:focus,select:focus{outline:2px solid var(--link);outline-offset:-1px}
+
+/* ── chrome ── */
+.top{border-bottom:1px solid var(--rule);background:var(--panel)}
+.topin{max-width:1060px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:20px}
+.brand{font-size:16px;font-weight:600;letter-spacing:-.02em}
+.brand span{color:var(--ledger)}
+.firm{font-size:13px;color:var(--faint)}
+.tabs{margin-left:auto;display:flex;gap:4px}
+.tab{background:transparent;border:1px solid transparent;color:var(--slate);padding:7px 12px}
+.tab.on{background:var(--bubF);border-color:var(--rule);color:var(--ink);font-weight:600}
+.stage{display:flex;align-items:flex-start;max-width:1060px;margin:0 auto;
+padding:26px 20px 60px;justify-content:center}
+.main{width:600px;flex:0 0 600px;background:var(--panel);border:1px solid var(--rule);
+border-radius:10px;padding:26px 30px 30px;min-height:520px}
+.drawer{flex:0 0 0;width:0;overflow:hidden;margin-left:0;
+transition:flex-basis .42s cubic-bezier(.4,0,.2,1),width .42s cubic-bezier(.4,0,.2,1),margin-left .42s}
+.drawer.open{flex:0 0 420px;width:420px;margin-left:16px}
+@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
+
+h1{font-size:21px;font-weight:600;letter-spacing:-.02em}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
+.count{font-size:14px;color:var(--ledger);white-space:nowrap}
+.sub{font-size:14px;color:var(--slate);margin:6px 0 22px}
+
+.strip{display:flex;border:1px solid var(--rule);border-radius:8px;overflow:hidden;margin-bottom:24px}
+.strip div{flex:1;padding:11px 16px;border-right:1px solid var(--rule)}
+.strip div:last-child{border-right:none}
+.strip .p{font-size:13px;color:var(--faint);margin-bottom:3px}
+.strip .v{font-size:16px}
+.strip .r{font-size:12px;color:var(--flag);margin-top:2px}
+
+.sect{display:flex;justify-content:space-between;align-items:baseline;
+font-size:14px;font-weight:600;padding-bottom:9px;border-bottom:1px solid var(--ruleF)}
+.sect span{font-weight:400;font-size:13px;color:var(--faint)}
+
+.row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;font:inherit;color:inherit;
+padding:15px 10px 15px 14px;border:none;border-bottom:1px solid var(--rule);
+border-left:3px solid transparent;background:transparent;cursor:pointer;transition:background .18s;border-radius:0}
+.row:hover{background:#FAF9F6}
+.row.active{background:var(--flagBg);border-left-color:var(--flag)}
+.row .b{flex:1;min-width:0}
+.row .t{font-size:14.5px;font-weight:500;margin-bottom:3px}
+.row .m{font-size:13px;color:var(--slate)}
+.row .a{font-size:14.5px;font-weight:500;white-space:nowrap}
+.tag{font-size:11.5px;padding:3px 9px;border-radius:4px;background:var(--flagBg);color:var(--flag);white-space:nowrap}
+
+.closed{background:var(--ledgerBg);border-radius:8px;padding:18px 20px;margin-bottom:22px}
+.closed h2{font-size:16px;font-weight:600;color:var(--ledger);margin-bottom:5px}
+.closed p{font-size:13.5px;color:var(--ledger);opacity:.92}
+.closed .act{margin-top:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.closed .st{font-size:13px;color:var(--ledger);opacity:.92}
+
+.je{border:1px solid var(--rule);border-radius:8px;overflow:hidden;margin-bottom:14px}
+.jrow{display:flex;justify-content:space-between;align-items:center;width:100%;
+padding:13px 16px;border:none;border-bottom:1px solid var(--rule);background:transparent;
+font:inherit;color:inherit;cursor:pointer;text-align:left;border-radius:0}
+.jrow:last-of-type{border-bottom:none}
+.jrow:hover{background:#FAF9F6}
+.jright{display:flex;gap:16px;align-items:center}
+.jview{font-size:13px;color:var(--link)}
+.detail{border-top:1px solid var(--rule);padding:16px 18px;display:none;background:#FDFDFB}
+.detail.on{display:block}
+.detail h3{font-size:14px;font-weight:600;margin-bottom:10px}
+.dl{display:flex;justify-content:space-between;font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--rule)}
+.dl span:first-child{color:var(--slate)}
+.dl:last-of-type{border-bottom:none;font-weight:600;padding-top:9px}
+.dl:last-of-type span:first-child{color:var(--ink)}
+
+.trail{border:1px solid var(--rule);border-radius:8px;padding:6px 18px;margin-top:8px}
+.tr{display:flex;gap:14px;padding:10px 0;border-bottom:1px solid var(--rule);font-size:13px;align-items:flex-start}
+.tr:last-child{border-bottom:none}
+.dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:0 0 8px}
+.ts{color:var(--faint);font-size:11.5px;white-space:nowrap;padding-top:2px}
+.note{font-size:12.5px;color:var(--faint);margin-top:10px}
+
+/* ── upload ── */
+.drop{border:2px dashed var(--ruleF);border-radius:10px;padding:44px 20px;text-align:center;
+background:#FDFDFB;cursor:pointer;transition:border-color .18s,background .18s}
+.drop.over{border-color:var(--ledger);background:var(--ledgerBg)}
+.drop .ic{font-size:30px;margin-bottom:10px}
+.drop p{font-size:14px;color:var(--slate)}
+.drop b{color:var(--link)}
+#file{display:none}
+.files{margin-top:16px;display:flex;flex-direction:column;gap:8px}
+.fc{display:flex;gap:12px;align-items:center;border:1px solid var(--rule);
+border-radius:8px;padding:12px 14px;font-size:13.5px}
+.fc .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fc .ok{color:var(--ledger)}
+.fc .er{color:#B3261E}
+.fc .pd{color:var(--faint)}
+.field{margin-top:18px}
+.field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+.field .hint{font-size:12.5px;color:var(--faint);margin-top:6px}
+.field label.pill{display:inline-flex;align-items:center;gap:7px;width:auto;
+border:1px solid var(--ruleF);border-radius:99px;padding:7px 13px;font-size:13px;
+font-weight:400;margin:0 6px 6px 0;cursor:pointer;user-select:none}
+.field label.pill input{display:none;width:auto}
+.field label.pill.on{border-color:var(--ledger);background:var(--ledgerBg);color:var(--ledger);font-weight:600}
+.rules-t{width:100%;border-collapse:collapse;font-size:13px}
+.rules-t th{text-align:left;font-weight:600;color:var(--faint);font-size:12px;
+padding:8px 6px;border-bottom:1px solid var(--ruleF)}
+.rules-t td{padding:8px 6px;border-bottom:1px solid var(--rule)}
+.src{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--bubF);color:var(--slate)}
+.src.firm{background:var(--ledgerBg);color:var(--ledger)}
+
+/* ── drawer chat ── */
+.chat{width:420px;background:var(--panel);border:1px solid var(--rule);border-radius:10px;
+display:flex;flex-direction:column;height:560px}
+.chat header{padding:16px 20px;border-bottom:1px solid var(--rule)}
+.chat .ct{font-size:14.5px;font-weight:600}
+.chat .cs{font-size:12.5px;color:var(--faint);margin-top:2px}
+.thread{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
+.bub{max-width:88%;padding:11px 14px;border-radius:13px;font-size:13.5px;line-height:1.55;white-space:pre-wrap}
+.bub.f{background:var(--bubF);border-bottom-left-radius:4px;align-self:flex-start}
+.bub.u{background:var(--linkBg);color:var(--link);border-bottom-right-radius:4px;align-self:flex-end}
+.ev{background:var(--linkBg);color:var(--link);border-radius:8px;padding:11px 13px;font-size:12.5px}
+.ev b{display:block;font-size:11.5px;margin-bottom:3px}
+.typing{display:flex;gap:4px;padding:13px 15px;background:var(--bubF);border-radius:13px;
+border-bottom-left-radius:4px;align-self:flex-start;width:fit-content}
+.typing i{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:bl 1.2s infinite}
+.typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+@keyframes bl{0%,60%,100%{opacity:.3}30%{opacity:1}}
+.foot{border-top:1px solid var(--rule);padding:12px 16px}
+.ask{display:flex;gap:8px;margin-bottom:10px}
+.acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.acts select{flex:1;min-width:0}
+.scope{font-size:12.5px;color:var(--slate);display:flex;align-items:center;gap:6px;margin-top:8px}
+.scope input{width:auto}
+.loading{padding:60px 0;text-align:center;color:var(--faint);font-size:14px}
+.err{background:#FDECEA;border:1px solid #F3BDB7;color:#B3261E;border-radius:8px;
+padding:11px 14px;font-size:13.5px;margin-bottom:16px}
+</style>
+</head>
+<body>
+
+<div class="top"><div class="topin">
+  <div class="brand">F<span>y</span>nn</div>
+  <div class="firm" id="firmname"></div>
+  <div class="tabs" id="tabs"></div>
+</div></div>
+
+<div class="stage">
+  <div class="main" id="main"><p class="loading">Loading…</p></div>
+  <div class="drawer" id="drawer"></div>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+const fmt=n=>(n<0?"−":"")+Math.abs(n).toFixed(2);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let S=null, TAB="cycle", ACTIVE=null, HISTORY=[], BUSY=false;
+
+const ACCOUNTS=["Sales Revenue","Sales Returns & Allowances","Commission Expense",
+"Payment Processing Fees","Platform Service Fees","Marketing Expense","Shipping Expense",
+"Shipping Income","Warehouse & Storage","GST Input Tax","Withholding Tax Receivable",
+"Other Income","Other Expense","Clearing Account (hold)"];
+
+async function api(path,opts={}){
+  const r=await fetch(path,opts);
+  if(!r.ok){ let d=r.statusText; try{ d=(await r.json()).detail||d; }catch(e){} throw new Error(d); }
+  return r.status===204?null:r.json();
+}
+
+async function load(){
+  try{ S=await api("/api/state"); render(); }
+  catch(e){ $("#main").innerHTML=`<p class="loading">${esc(e.message)}</p>`; }
+}
+
+function render(){
+  $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
+  const tabs=[["cycle","Cycle"],["upload","Upload"],["rules","Rules"],["settings","Settings"]];
+  $("#tabs").innerHTML = tabs.map(([k,l])=>
+    `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("");
+  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{
+    TAB=b.dataset.tab; closeDrawer(); render();
+  });
+  ({cycle:viewCycle, upload:viewUpload, rules:viewRules, settings:viewSettings})[TAB]();
+}
+
+/* ── cycle ── */
+function viewCycle(){
+  if(!S.cycle){
+    $("#main").innerHTML=`
+      <div class="head"><h1>No cycle open</h1></div>
+      <p class="sub">Upload a settlement export to start a close, or load the sample
+      cycle to see how it works.</p>
+      <div class="acts">
+        <button class="go" id="toupload">Upload a file</button>
+        <button id="sample">Load sample cycle</button>
+      </div>`;
+    $("#toupload").onclick=()=>{TAB="upload";render();};
+    $("#sample").onclick=async()=>{ await api("/api/cycle/sample",{method:"POST"}); await load(); };
+    return;
+  }
+  const D=S.cycle, done=D.open_exceptions===0;
+  let h=`<div class="head"><h1>Cycle ${esc(D.cycle)}</h1>
+    <span class="count num">${D.lines_classified} of ${D.lines_total} classified</span></div>
+    <p class="sub">Settlement lines reconciled against the payout each platform reported.</p>
+    <div class="strip">`;
+  D.platforms.forEach(p=>{
+    h+=`<div><p class="p">${esc(p.platform)}</p><p class="v num">${fmt(p.reported_payout)}</p>
+      ${Math.abs(p.residual)>=0.005?`<p class="r num">residual ${fmt(p.residual)}</p>`:""}</div>`;
+  });
+  h+=`</div>`;
+
+  if(!done){
+    h+=`<p class="sect">Needs your review <span>${D.open_exceptions} open</span></p>`;
+    D.exceptions.forEach(e=>{
+      h+=`<button class="row${ACTIVE===e.key?" active":""}" data-k="${encodeURIComponent(e.key)}">
+        <span class="b"><span class="t">${esc(e.platform)} — ${esc(label(e))}</span>
+        <span class="m">${esc(e.why)}</span></span>
+        <span class="a num">${fmt(e.amount)}</span><span class="tag">Open</span></button>`;
+    });
+  }else{
+    h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
+      <p>${D.lines_total} lines classified across ${D.platforms.length} platforms,
+      summarised into ${D.platforms.length} balanced journal entries.</p>
+      <div class="act"><button class="go" id="post">Post entries</button>
+      <span class="st" id="poststatus">Nothing posts until you press this.</span></div></div>`;
+  }
+
+  h+=`<p class="sect" style="margin-top:26px;margin-bottom:12px">Journal entries
+    <span>Open any entry to trace it back</span></p><div class="je">`;
+  D.platforms.forEach(p=>{
+    h+=`<button class="jrow" data-je="${esc(p.platform)}"><span>${esc(p.platform)}</span>
+      <span class="jright"><span class="num">${fmt(p.classified_total)}</span>
+      <span class="jview">View</span></span></button>
+      <div class="detail" id="d-${p.platform.replace(/\s/g,'')}"></div>`;
+  });
+  h+=`</div>
+    <p class="sect" style="margin-top:26px;margin-bottom:10px">Audit trail
+      <span><a href="/api/audit" style="color:var(--link)">Export working paper</a></span></p>
+    <div class="trail" id="trail"><p class="note">Loading…</p></div>
+    <p class="note">${esc(D.retention)}</p>
+    <p class="note" style="margin-top:18px"><button id="clear">Close this cycle without posting</button></p>`;
+
+  $("#main").innerHTML=h;
+  document.querySelectorAll(".row").forEach(r=>r.onclick=()=>openExc(decodeURIComponent(r.dataset.k)));
+  document.querySelectorAll(".jrow").forEach(b=>b.onclick=()=>toggleJE(b.dataset.je));
+  if($("#post")) $("#post").onclick=post;
+  $("#clear").onclick=async()=>{
+    if(!confirm("Close the cycle without posting? Rules you have approved are kept.")) return;
+    await api("/api/cycle",{method:"DELETE"}); ACTIVE=null; closeDrawer(); await load();
+  };
+  loadTrail();
+}
+
+function label(e){
+  const m={orphan_refund:"refund from an earlier cycle",partial_refund:"partial refund",
+  unknown_label:"unrecognised fee",withheld_balance:"withheld balance",residual:"unexplained residual"};
+  return m[e.kind]||e.kind;
+}
+
+async function loadTrail(){
+  try{
+    const t=await api("/api/audit.json");
+    const c={source:"var(--faint)",classify:"var(--faint)",exception:"var(--flag)",
+      decision:"var(--ledger)",rule:"var(--ledger)",post:"var(--ledger)"};
+    $("#trail").innerHTML=t.records.map(r=>
+      `<div class="tr"><span class="dot" style="background:${c[r.kind]||'var(--faint)'}"></span>
+      <span class="ts num">${esc(r.at.slice(11,19))}</span><span>${esc(r.message)}</span></div>`).join("")
+      ||`<p class="note">No activity yet.</p>`;
+  }catch(e){ $("#trail").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
+}
+
+async function post(){
+  const btn=$("#post"), st=$("#poststatus");
+  btn.disabled=true; st.textContent="Posting…";
+  try{
+    const r=await api("/api/post",{method:"POST"});
+    const refs=r.entries.map(e=>e.reference).join(", ");
+    st.textContent = r.adapter==="dry-run"
+      ? `Prepared via dry run — ${refs}. Nothing was sent to a ledger.`
+      : `Sent to ${r.adapter} as DRAFT — ${refs}.`;
+    loadTrail();
+  }catch(e){ btn.disabled=false; st.textContent=e.message; }
+}
+
+async function toggleJE(platform){
+  const el=$("#d-"+platform.replace(/\s/g,''));
+  if(el.classList.contains("on")){ el.classList.remove("on"); return; }
+  document.querySelectorAll(".detail").forEach(d=>d.classList.remove("on"));
+  try{
+    const j=await api("/api/journal/"+encodeURIComponent(platform));
+    el.innerHTML=`<h3>${esc(platform)} — ${esc(j.reference)}</h3>`+
+      j.lines.map(l=>`<div class="dl"><span>${esc(l.account)}</span>
+        <span class="num">${l.side==="debit"?"":"−"}${l.amount.toFixed(2)}</span></div>`).join("")+
+      `<div class="dl"><span>Debits / credits</span>
+        <span class="num">${j.total_debit.toFixed(2)} / ${j.total_credit.toFixed(2)}</span></div>`+
+      `<p class="note">${j.balanced?"Balanced.":"Not balanced — unresolved exceptions are excluded."}</p>`;
+    el.classList.add("on");
+  }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; el.classList.add("on"); }
+}
+
+/* ── exception drawer ── */
+function closeDrawer(){ ACTIVE=null; $("#drawer").classList.remove("open"); $("#drawer").innerHTML=""; }
+
+async function openExc(key){
+  ACTIVE=key; HISTORY=[];
+  const e=S.cycle.exceptions.find(x=>x.key===key);
+  if(!e) return;
+  viewCycle();
+  const widen = e.category
+    ? `<label class="scope"><input type="checkbox" id="wide">
+       Apply to everything Lazada classifies as “${esc(e.category)}”</label>` : "";
+  $("#drawer").innerHTML=`<div class="chat">
+    <header><p class="ct">${esc(e.platform)} — ${fmt(e.amount)}</p>
+      <p class="cs">Fynn found this while classifying</p></header>
+    <div class="thread" id="thread"></div>
+    <div class="foot">
+      <div class="ask"><input id="q" placeholder="Ask about this exception…" autocomplete="off">
+        <button id="send">Ask</button></div>
+      <div class="acts"><select id="acct">${ACCOUNTS.map(a=>
+        `<option ${e.evidence&&e.evidence.suggested_account===a?"selected":""}>${esc(a)}</option>`).join("")}
+        </select><button class="go" id="ok">Approve</button></div>
+      ${widen}
+    </div></div>`;
+  $("#drawer").classList.add("open");
+
+  // Wire the controls before anything is awaited. The opening message can take
+  // a second when the investigator is asked, and a visible Approve button that
+  // silently does nothing is worse than one that is not there yet.
+  $("#send").onclick=ask;
+  $("#q").onkeydown=ev=>{ if(ev.key==="Enter") ask(); };
+  $("#ok").onclick=approve;
+  $("#q").focus();
+
+  try{
+    const op=await api("/api/exception/opening?key="+encodeURIComponent(key));
+    bubble(op.message,"f"); HISTORY.push({role:"assistant",content:op.message});
+  }catch(err){ bubble("Could not load: "+err.message,"f"); }
+  if(e.evidence){
+    const d=document.createElement("div"); d.className="ev";
+    d.innerHTML=`<b>Evidence · ${e.evidence.confidence}% confidence · ${esc(e.evidence.source.replace("_"," "))}</b>${esc(e.evidence.summary)}`;
+    $("#thread").appendChild(d);
+  }
+}
+
+function bubble(text,who){
+  const b=document.createElement("div"); b.className="bub "+who; b.textContent=text;
+  $("#thread").appendChild(b); $("#thread").scrollTop=$("#thread").scrollHeight; return b;
+}
+
+async function ask(){
+  const q=$("#q").value.trim(); if(!q||BUSY) return;
+  BUSY=true; $("#q").value=""; bubble(q,"u"); HISTORY.push({role:"user",content:q});
+  const t=document.createElement("div"); t.className="typing"; t.innerHTML="<i></i><i></i><i></i>";
+  $("#thread").appendChild(t); $("#thread").scrollTop=$("#thread").scrollHeight;
+  try{
+    const r=await api("/api/exception/chat",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({key:ACTIVE,history:HISTORY})});
+    t.remove(); bubble(r.message,"f"); HISTORY.push({role:"assistant",content:r.message});
+  }catch(e){ t.remove(); bubble("Error: "+e.message,"f"); }
+  BUSY=false;
+}
+
+async function approve(){
+  const account=$("#acct").value;
+  const scope = ($("#wide") && $("#wide").checked) ? "category" : "label";
+  try{
+    await api("/api/approve",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({key:ACTIVE,account,save_rule:true,scope})});
+    bubble(`Recorded to ${account}. Fynn will treat this the same way next cycle unless you say otherwise.`,"f");
+    setTimeout(async()=>{ closeDrawer(); await load(); },1000);
+  }catch(e){ bubble("Could not approve: "+e.message,"f"); }
+}
+
+/* ── upload ── */
+function viewUpload(){
+  $("#main").innerHTML=`
+    <div class="head"><h1>Upload settlement files</h1></div>
+    <p class="sub">Shopee, Lazada or TikTok Shop. Fynn reads each platform's own export —
+    wide order statements and long transaction statements alike — and folds them into
+    one cycle.</p>
+    <div class="drop" id="drop"><div class="ic">📄</div>
+      <p>Drop CSV or XLSX files here, or <b>browse</b></p></div>
+    <input type="file" id="file" multiple accept=".csv,.xlsx,.xls">
+    <div class="field"><label>Reported payout (optional)</label>
+      <input id="reported" placeholder="Lazada=1038.00;Shopee=725.00">
+      <p class="hint">Only needed when the file does not state the payout on a row of its own.</p>
+    </div>
+    <div class="files" id="files"></div>`;
+  const drop=$("#drop"), file=$("#file");
+  drop.onclick=()=>file.click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
+  drop.ondragleave=()=>drop.classList.remove("over");
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove("over");send([...e.dataTransfer.files]);};
+  file.onchange=()=>send([...file.files]);
+}
+
+async function send(files){
+  const list=$("#files");
+  // Sequential: each file folds into the same cycle, and concurrent writes race.
+  for(const f of files){
+    const row=document.createElement("div");
+    row.className="fc";
+    row.innerHTML=`<span class="nm">${esc(f.name)}</span><span class="pd">reconciling…</span>`;
+    list.appendChild(row);
+    const fd=new FormData();
+    fd.append("file",f);
+    fd.append("reported",$("#reported").value||"");
+    try{
+      const r=await api("/api/upload",{method:"POST",body:fd});
+      const d=r.digest;
+      row.innerHTML=`<span class="nm">${esc(f.name)}</span>
+        <span class="ok">cycle ${esc(d.cycle)} · ${d.lines_total} lines ·
+        ${d.open_exceptions?d.open_exceptions+" to review":"ties out"}</span>`;
+    }catch(e){
+      row.innerHTML=`<span class="nm">${esc(f.name)}</span><span class="er">${esc(e.message)}</span>`;
+    }
+  }
+  S=await api("/api/state");
+  $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
+  const go=document.createElement("div");
+  go.className="acts"; go.style.marginTop="16px";
+  go.innerHTML=`<button class="go" id="toreview">Review the cycle →</button>`;
+  $("#files").appendChild(go);
+  $("#toreview").onclick=()=>{TAB="cycle";render();};
+}
+
+/* ── rules ── */
+async function viewRules(){
+  $("#main").innerHTML=`<div class="head"><h1>Rules</h1>
+    <span class="count num">${S.rules.total}</span></div>
+    <p class="sub">Every approval becomes a rule, applied across every client from then on.
+    Fynn ships ${S.rules.starter} for fee names that have only one defensible treatment;
+    your firm has decided ${S.rules.firm}.</p>
+    <p class="loading">Loading…</p>`;
+  try{
+    const r=await api("/api/rules");
+    const rows=r.rules.map(x=>{
+      const starter = x.decided_by==="Fynn starter pack";
+      const scope = x.category ? `everything classified “${esc(x.category)}”` : esc(x.label);
+      return `<tr><td>${esc(x.platform||"All platforms")}</td><td>${scope}</td>
+        <td>${esc(x.account)}</td><td class="num">${esc(x.side)}</td>
+        <td><span class="src${starter?"":" firm"}">${starter?"Fynn":esc(x.decided_by||"baseline")}</span></td></tr>`;
+    }).join("");
+    $("#main").querySelector(".loading").outerHTML=
+      `<table class="rules-t"><thead><tr><th>Platform</th><th>Applies to</th>
+       <th>Account</th><th>Usually</th><th>Decided by</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }catch(e){ $("#main").querySelector(".loading").textContent=e.message; }
+}
+
+/* ── settings ── */
+function viewSettings(){
+  const f=S.firm;
+  $("#main").innerHTML=`<div class="head"><h1>Settings</h1></div>
+    <p class="sub">Fynn reconciles marketplace payouts and prepares the journals.
+    You approve every exception before anything posts.</p>
+    <div class="field"><label>Firm name</label>
+      <input id="s-firm" value="${esc(f.firm)}" placeholder="e.g. Tan &amp; Partners"></div>
+    <div class="field"><label>Approvals signed by</label>
+      <input id="s-actor" value="${esc(f.actor)}" placeholder="e.g. D. Tan">
+      <p class="hint">Every approval is written to the audit trail with this name and a timestamp.</p></div>
+    <div class="field"><label>Marketplaces</label><div id="s-plat">
+      ${["Shopee","Lazada","TikTok Shop"].map(p=>
+        `<label class="pill${f.platforms.includes(p)?" on":""}">
+         <input type="checkbox" value="${p}" ${f.platforms.includes(p)?"checked":""}>${p}</label>`).join("")}
+      </div></div>
+    <div class="field"><label>Ledger</label>
+      <select id="s-ledger">
+        <option value="dry-run"${f.ledger==="dry-run"?" selected":""}>Dry run — prepare the entry, post nothing</option>
+        <option value="xero"${f.ledger==="xero"?" selected":""}>Xero — DRAFT manual journal</option>
+      </select>
+      <p class="hint">Xero posting needs OAuth credentials that are not wired up yet; dry run
+      returns the exact payload that would be sent.</p></div>
+    <div class="acts" style="margin-top:24px">
+      <button class="go" id="s-save">Save settings</button>
+      <span class="st" id="s-status"></span></div>`;
+  document.querySelectorAll("#s-plat .pill input").forEach(i=>{
+    i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
+  });
+  $("#s-save").onclick=async()=>{
+    const platforms=[...document.querySelectorAll("#s-plat input:checked")].map(i=>i.value);
+    try{
+      await api("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({firm:$("#s-firm").value,actor:$("#s-actor").value,
+          platforms,ledger:$("#s-ledger").value})});
+      $("#s-status").textContent="Saved.";
+      S=await api("/api/state");
+      $("#firmname").textContent=S.firm.firm+(S.cycle?" · cycle "+S.cycle.cycle:"");
+    }catch(e){ $("#s-status").textContent=e.message; }
+  };
+}
+
+load();
+</script>
+</body>
+</html>

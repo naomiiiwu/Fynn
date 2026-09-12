@@ -1,6 +1,6 @@
 # Test upload pack
 
-Files to throw at `/cycle/upload`, `/upload`, or straight into WhatsApp. Each
+Files to throw at the Upload tab or `POST /cycle/upload`. Each
 one exercises a different part of the ingest path — the point is to find where
 it breaks, so two of them are meant to fail.
 

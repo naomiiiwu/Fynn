@@ -154,7 +154,7 @@ def _decode(raw: bytes) -> str:
 
 def _is_xlsx(raw: bytes, filename: str) -> bool:
     # xlsx is a zip; the magic bytes are a cheaper and more reliable signal than
-    # the extension, which a WhatsApp attachment often loses.
+    # the extension, which an upload does not always preserve.
     return raw[:2] == b"PK" or filename.lower().endswith((".xlsx", ".xlsm"))
 
 
@@ -392,10 +392,10 @@ def platform_from_text(text: str) -> Optional[Platform]:
 def platform_from_content(rows: list[list[str]], sample: int = 60) -> Optional[Platform]:
     """Identify the platform from what the file says about itself.
 
-    A file arriving over WhatsApp is named by Twilio's media SID, so the
-    filename names nothing. The contents still do: Shopee's statement has
-    "Shopee Discount" and "Shopee Coins Redeemed" as column headers, and
-    Lazada's classifies every line under "Orders-Lazada Fees".
+    A filename is not always informative — a download may arrive as
+    export(3).csv, or renamed entirely. The contents still name the platform:
+    Shopee's statement has "Shopee Discount" and "Shopee Coins Redeemed" as
+    column headers, and Lazada's classifies lines under "Orders-Lazada Fees".
 
     Requires a clear winner — a file that mentions two marketplaces is
     ambiguous, and guessing which one owns the money is not this module's call.
@@ -698,8 +698,8 @@ def parse_settlement_csv(
         raise SettlementParseError("That file has a header but no rows.")
 
     # Filename first, then what the file says about itself, then the caller's
-    # default. A WhatsApp attachment is named by Twilio's media SID, so the
-    # content sniff is what makes that path work at all.
+    # default. The content sniff is what makes an unhelpfully named file —
+    # export(3).csv — resolve to a platform at all.
     file_platform = (
         platform_from_text(filename)
         or platform_from_content(rows)

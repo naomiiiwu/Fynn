@@ -132,7 +132,7 @@ def is_never_rule(label: str) -> bool:
 
 
 class RuleStore:
-    """Per-firm rules. Persisted per firm_id (the firm's WhatsApp number).
+    """Per-firm rules, persisted per firm_id.
 
     The switching cost lives here: after a year a firm has accumulated hundreds
     of decisions, applied consistently across every client they manage.
@@ -200,8 +200,6 @@ class RuleStore:
         scope="category" writes it against the platform's own classification
         instead of the single fee name, so every fee filed under that heading —
         including ones that have never appeared before — inherits the treatment.
-        Those take their side from each line's sign, because a classification
-        holds both charges and their reversals.
         """
         # A classification that holds fees belonging to different accounts
         # cannot carry one decision, so the rule narrows back to the fee name.
@@ -214,7 +212,6 @@ class RuleStore:
             platform=line.platform if platform_specific else None,
             label="" if as_category else line.label,
             category=line.category if as_category else None,
-            follow_sign=as_category,
             account=account,
             side=side,
             decided_by=decided_by,

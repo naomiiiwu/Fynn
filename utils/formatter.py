@@ -1,12 +1,10 @@
 """Cycle orchestration and digest construction.
 
-The digest is the primary surface: accountants who reviewed both a structured
+The digest is the product's surface: accountants who reviewed both a structured
 report and a chat interface preferred the report for reviewing and verifying
-entries, with conversation reserved for explaining individual exceptions.
-
-The WhatsApp renderings below are deliberately thin views over the same digest.
-Nothing is computed twice — the message an accountant reads on their phone is
-built from the payload the API returns.
+entries, with conversation reserved for explaining individual exceptions. The
+web app renders this payload directly, so the figure on the page and the figure
+in the JSON are one reconciliation rather than two that can drift.
 """
 from __future__ import annotations
 
@@ -100,9 +98,9 @@ class Cycle:
     ) -> dict[Platform, CycleResult]:
         """Fold another settlement file into the open cycle.
 
-        A firm rarely sends all three platforms at once — files arrive one at a
-        time over WhatsApp, and each one has to join the cycle already in
-        progress without discarding decisions already made.
+        A firm rarely has all three platforms in one export — files arrive one
+        at a time, and each has to join the cycle already in progress without
+        discarding decisions already made.
         """
         existing = {l.key for l in self.lines}
         added = [l for l in lines if l.key not in existing]
@@ -260,83 +258,3 @@ class Cycle:
             ],
             "retention": self.trail.retention_note(),
         }
-
-    # ── WhatsApp renderings ───────────────────────────────────────────────────
-
-    def whatsapp_summary(self) -> str:
-        d = self.digest()
-        n = d["open_exceptions"]
-        if n == 0:
-            return (
-                f"Cycle {d['cycle']} is ready. All {d['lines_total']} transactions "
-                f"classified and every platform ties out. Nothing needs your input."
-            )
-        return (
-            f"Cycle {d['cycle']} is ready. {d['lines_classified']} of {d['lines_total']} "
-            f"transactions are classified. {n} need your call."
-        )
-
-    def whatsapp_digest(self) -> str:
-        """The full month-end review message: totals, then what needs a decision."""
-        d = self.digest()
-        parts = [f"*Cycle {d['cycle']}* — {d['firm']}", ""]
-
-        for p in d["platforms"]:
-            tick = "✅" if p["ties_out"] else "⚠️"
-            parts.append(
-                f"{tick} *{p['platform']}* — classified {p['classified_total']:,.2f} "
-                f"vs reported {p['reported_payout']:,.2f}"
-            )
-            if abs(p["residual"]) >= 0.005:
-                parts.append(f"    residual {p['residual']:,.2f}")
-
-        if not d["exceptions"]:
-            parts += ["", "Every platform ties out. Reply *post* to send the journals."]
-            return "\n".join(parts)
-
-        parts += ["", f"*{d['open_exceptions']} need your call:*"]
-        for e in d["exceptions"]:
-            parts.append(f"{e['index']}. {e['platform']} · {e['amount']:,.2f} — {e['why']}")
-            ev = e["evidence"]
-            if ev:
-                suggestion = ev.get("suggested_account")
-                if suggestion:
-                    parts.append(
-                        f"    Suggested: {suggestion} ({ev['confidence']}% confidence)"
-                    )
-
-        parts += [
-            "",
-            "Reply *approve 1* to accept a suggestion, "
-            "*approve 1 Marketing Expense* to choose the account, "
-            "or *why 1* for the reasoning.",
-        ]
-        return "\n".join(parts)
-
-    def whatsapp_exception(self, index: int) -> str:
-        """One exception in full, with whatever evidence exists for it."""
-        exc = self.exception_at(index)
-        if exc is None:
-            return f"There's no open exception {index}. Reply *digest* for the current list."
-
-        parts = [
-            f"*Exception {index}* — {exc.platform.value}",
-            f"Amount: {exc.amount:,.2f}",
-            f"Kind: {exc.kind.replace('_', ' ')}",
-            "",
-            exc.why,
-        ]
-        if exc.evidence:
-            parts += ["", f"_{exc.evidence.summary}_"]
-            if exc.evidence.suggested_account:
-                side = exc.evidence.suggested_side.value if exc.evidence.suggested_side else "debit"
-                parts.append(
-                    f"Suggested: {exc.evidence.suggested_account} ({side}) "
-                    f"— {exc.evidence.confidence}% confidence"
-                )
-            parts.append(f"Source: {exc.evidence.source.replace('_', ' ')}")
-        else:
-            parts += ["", "No suggestion available — this one needs your judgement."]
-
-        parts += ["", f"Reply *approve {index} <account>* to decide."]
-        return "\n".join(parts)
