@@ -14,7 +14,7 @@ from typing import Optional
 
 from models.transaction import CycleResult, Platform, ReconException, SettlementLine, Side
 from services.audit import AuditTrail
-from services.classification import RuleStore
+from services.classification import RuleStore, is_never_rule
 from services.journal import build_journal
 from services.reconciliation import group_by_platform, group_key, reconcile
 
@@ -50,6 +50,32 @@ class Cycle:
         for src in sorted(sources):
             self.trail.add("source", f"Settlement file {src} ingested")
         self.trail.add("source", f"{len(lines)} lines parsed across {len(set(l.platform for l in lines))} platforms")
+        self._note_starter_coverage(lines)
+
+    def _note_starter_coverage(self, lines: list[SettlementLine]) -> None:
+        """Record what was classified by Fynn's rules rather than the firm's.
+
+        These lines post without anyone looking at them, which is the whole
+        point of a starter pack — so the trail has to say so, or the working
+        paper would imply the firm reviewed treatments it never saw.
+        """
+        starter = {(r.platform, r.label.strip().lower()) for r in self.store.starter_rules}
+        if not starter:
+            return
+        covered = [
+            l for l in lines
+            if (l.platform, l.label.strip().lower()) in starter
+            or (None, l.label.strip().lower()) in starter
+        ]
+        if not covered:
+            return
+        labels = sorted({l.label for l in covered})
+        self.trail.add(
+            "classify",
+            f"{len(covered)} lines classified by Fynn's starter rules, not by this firm "
+            f"({len(labels)} labels: {', '.join(labels[:6])}"
+            f"{'…' if len(labels) > 6 else ''}). Override any of them in /rules.",
+        )
 
     def run(self) -> dict[Platform, CycleResult]:
         self._results = {}
@@ -88,6 +114,7 @@ class Cycle:
             self.trail.add("source", f"Settlement file {src} ingested")
         if added:
             self.trail.add("source", f"{len(added)} further lines parsed")
+            self._note_starter_coverage(added)
         return self.run()
 
     def open_exceptions(self) -> list[ReconException]:
@@ -146,6 +173,19 @@ class Cycle:
 
         scope = f" ({len(covered)} lines)" if len(covered) > 1 else ""
         self.trail.add("decision", f"Approved — {key} posts to {account}{scope}", actor=actor)
+
+        if line is not None and is_never_rule(line.label):
+            # A platform's catch-all bucket holds something different every
+            # cycle. Saving a rule would post next month's unknown charge to
+            # this month's account without anyone looking at it.
+            save_rule = False
+            self.trail.add(
+                "rule",
+                f'No rule saved — "{line.label}" is a catch-all; '
+                "its contents change every cycle and must be read each time.",
+                actor=actor,
+            )
+
         if save_rule and line is not None and self.store.find(line) is None:
             self.store.add(line, account, side, decided_by=actor)
             self.trail.add(

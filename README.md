@@ -64,6 +64,36 @@ in identical decisions, so unrecognised labels are grouped: one label, one
 decision, one rule covering every line under it. Orphaned refunds stay per-line,
 because the question there is about a specific order.
 
+**A lookup is not a judgement.** A commission is an expense; an item price is
+revenue; a reversal of an item price is a sales return. Fee names like these
+have one defensible treatment, so Fynn ships them as a starter pack of
+platform-scoped rules (`STARTER_RULES` in `services/classification.py`) rather
+than making every firm decide them on day one. On the real January files that is
+the difference between 46 exceptions and 24.
+
+What is deliberately *not* in the pack is anything a firm could reasonably book
+two ways — and that turns out to be most of what remains:
+
+| Left to the firm | Because |
+|---|---|
+| Seller vouchers, discounts, coins, campaign and AMS fees | Marketing expense, or a reduction of revenue under IFRS 15's "consideration payable to a customer". Firms genuinely split. |
+| Service and withholding taxes | Recoverable input tax or an expense, depending on registration and jurisdiction. |
+| Claims and compensation | Other income, or an offset against the loss being compensated. |
+| Seller balance adjustments | The clearing account, or income and expense. |
+
+Starter rules are marked `decided_by: "Fynn starter pack"`, and every cycle
+records in its audit trail how many lines they classified — those lines post
+without anyone reviewing them, so the working paper must not imply the firm
+approved treatments it never saw. Any of them can be overridden by approving
+differently once.
+
+**Some labels must never become a rule.** Lazada ships an explicit catch-all for
+fees outside its own taxonomy ("The fee that does not belong to the terms
+above"). What arrives under it differs every cycle, so a rule there would post
+next month's unknown charge to last month's account unseen. Approving one is
+recorded as a decision but writes no rule, and the label comes back next month —
+by design.
+
 **The digest page is the review surface; WhatsApp is the doorbell.** Accountants
 who compared a structured report with a chat interface preferred the report for
 reviewing and verifying entries, and wanted conversation reserved for the items

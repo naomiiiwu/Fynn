@@ -38,10 +38,18 @@ The same engine cannot parse both without separate melts, which is why
 
 Reported payouts: **Shopee 6,003.75** (statement plus adjustments), **Lazada
 5,816.66** (its Grand Total). Loaded together they make one 2026-01 cycle of
-1,580 lines raising **46 exceptions**; approving all 46 ties both platforms to
-0.00 with balanced journals. Re-running the next month against the rules those
-approvals created leaves **3** — the orphaned refunds, which are per-order
-judgements rather than label rules.
+1,580 lines.
+
+| | Exceptions |
+|---|---|
+| Before the starter pack | 46 |
+| With `STARTER_RULES` (platform mechanics) | **24** |
+| Month 2, after the firm's 24 decisions | **4** |
+
+Approving the 24 ties both platforms to 0.00 with balanced journals. The four
+that survive into month 2 are the three orphaned refunds — per-order judgements
+that should never become rules — and Lazada's catch-all fee, which is refused a
+rule deliberately.
 
 ## What each file plants
 
