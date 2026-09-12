@@ -8,183 +8,283 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root{--paper:#FBFBF8;--panel:#fff;--ink:#15181C;--slate:#5D6570;--faint:#8B939E;
---rule:#E6E4DE;--ruleF:#CFCCC4;--ledger:#17563F;--ledgerBg:#EAF1ED;
---flag:#9A5A00;--flagBg:#FBF1E1;--link:#1F4E79;--linkBg:#EAF0F6;--bubF:#F4F3EF}
+:root{
+--paper:#F6F6F3;--panel:#FFFFFF;--panel2:#FCFCFA;
+--ink:#14171B;--slate:#586170;--faint:#8A929E;
+--rule:#EAE8E2;--ruleF:#D7D4CB;
+--ledger:#16553E;--ledgerHi:#1D6B4F;--ledgerBg:#ECF3EF;
+--flag:#8C5200;--flagBg:#FCF3E4;--flagRule:#EFD9AF;
+--link:#1D4E79;--linkBg:#EDF2F8;
+--danger:#A62B21;--dangerBg:#FCEEEC;--dangerRule:#EFC5BF;
+--bubF:#F3F2EE;
+--sh-sm:0 1px 2px rgba(20,23,27,.045);
+--sh:0 1px 3px rgba(20,23,27,.05),0 10px 28px -14px rgba(20,23,27,.16);
+--r:12px;--r-sm:8px;--r-xs:6px}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:Inter,system-ui,sans-serif;background:var(--paper);color:var(--ink);
--webkit-font-smoothing:antialiased;line-height:1.5}
-.num{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
-button{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:6px;cursor:pointer;
-border:1px solid var(--ruleF);background:var(--panel);color:var(--ink)}
-button:hover{background:var(--bubF)}
+-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;line-height:1.55;
+font-size:14px}
+.num{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;
+letter-spacing:-.01em}
+
+button{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:var(--r-xs);cursor:pointer;
+border:1px solid var(--ruleF);background:var(--panel);color:var(--ink);box-shadow:var(--sh-sm);
+transition:background .15s,border-color .15s,box-shadow .15s,transform .06s}
+button:hover{background:var(--panel2);border-color:var(--slate)}
+button:active{transform:translateY(.5px)}
 button:focus-visible{outline:2px solid var(--link);outline-offset:2px}
 button.go{background:var(--ledger);color:#fff;border-color:var(--ledger)}
-button.go:hover{background:#12452F}
-button:disabled{opacity:.55;cursor:default}
+button.go:hover{background:var(--ledgerHi);border-color:var(--ledgerHi)}
+button.ghost{box-shadow:none;background:var(--panel);color:var(--slate);
+padding:5px 11px;font-size:12px}
+button.ghost:hover{background:var(--bubF);color:var(--ink)}
+button:disabled{opacity:.5;cursor:default;box-shadow:none}
+button:disabled:hover{background:var(--panel);border-color:var(--ruleF)}
 input,select{font:400 13.5px Inter,sans-serif;padding:9px 12px;border:1px solid var(--ruleF);
-border-radius:7px;background:var(--panel);color:var(--ink);width:100%}
-input:focus,select:focus{outline:2px solid var(--link);outline-offset:-1px}
+border-radius:var(--r-sm);background:var(--panel);color:var(--ink);width:100%;
+transition:border-color .15s,box-shadow .15s}
+input::placeholder{color:#AEB4BD}
+input:hover,select:hover{border-color:var(--slate)}
+input:focus,select:focus{outline:none;border-color:var(--link);
+box-shadow:0 0 0 3px rgba(29,78,121,.13)}
 
 /* ── chrome ── */
-.top{border-bottom:1px solid var(--rule);background:var(--panel)}
-.topin{max-width:1060px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;gap:20px}
-.brand{font-size:16px;font-weight:600;letter-spacing:-.02em}
-.brand span{color:var(--ledger)}
-.firm{font-size:13px;color:var(--faint)}
-.tabs{margin-left:auto;display:flex;gap:4px}
-.tab{background:transparent;border:1px solid transparent;color:var(--slate);padding:7px 12px}
-.tab.on{background:var(--bubF);border-color:var(--rule);color:var(--ink);font-weight:600}
-a.tab.out{text-decoration:none;color:var(--faint);display:inline-flex;align-items:center}
-a.tab.out:hover{color:var(--slate)}
-.stage{display:flex;align-items:flex-start;max-width:1060px;margin:0 auto;
-padding:26px 20px 60px;justify-content:center}
-.main{width:600px;flex:0 0 600px;background:var(--panel);border:1px solid var(--rule);
-border-radius:10px;padding:26px 30px 30px;min-height:520px}
-/* The account mapping is three columns of its own; 600px cuts the last one off. */
-.main.wide{width:860px;flex-basis:860px}
+.top{border-bottom:1px solid var(--rule);background:rgba(255,255,255,.85);
+backdrop-filter:saturate(1.6) blur(10px);position:sticky;top:0;z-index:20}
+.topin{max-width:1120px;margin:0 auto;padding:11px 22px;display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:9px;font-size:15.5px;font-weight:650;
+letter-spacing:-.021em}
+/* A mark rather than a coloured letter: the wordmark reads as a name at a
+   glance instead of as a typo. */
+.mark{width:23px;height:23px;border-radius:7px;background:var(--ledger);color:#fff;
+display:grid;place-items:center;font-size:13px;font-weight:700;letter-spacing:0}
+.firm{font-size:12.5px;color:var(--faint);padding-left:14px;border-left:1px solid var(--rule);
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px}
+.tabs{margin-left:auto;display:flex;gap:2px;align-items:center}
+.tab{background:transparent;border:1px solid transparent;color:var(--slate);
+padding:6px 12px;box-shadow:none;border-radius:var(--r-xs);font-weight:500}
+.tab:hover{background:var(--bubF);border-color:transparent;color:var(--ink)}
+.tab.on{background:var(--ledgerBg);color:var(--ledger);font-weight:600;border-color:transparent}
+a.tab.out{text-decoration:none;color:var(--faint);display:inline-flex;align-items:center;
+font:500 13px Inter,sans-serif;margin-left:8px;padding-left:12px;
+border-left:1px solid var(--rule);border-radius:0}
+a.tab.out:hover{color:var(--ink);background:transparent}
+
+.stage{display:flex;align-items:flex-start;max-width:1120px;margin:0 auto;
+padding:28px 22px 72px;justify-content:center}
+.main{width:640px;flex:0 0 640px;background:var(--panel);border:1px solid var(--rule);
+border-radius:var(--r);padding:30px 34px 34px;min-height:520px;box-shadow:var(--sh)}
+/* The account mapping is three columns of its own; 640px cuts the last one off. */
+.main.wide{width:880px;flex-basis:880px}
 .stage.wide{max-width:none}
 .drawer{flex:0 0 0;width:0;overflow:hidden;margin-left:0;
 transition:flex-basis .42s cubic-bezier(.4,0,.2,1),width .42s cubic-bezier(.4,0,.2,1),margin-left .42s}
-.drawer.open{flex:0 0 420px;width:420px;margin-left:16px}
-@media(prefers-reduced-motion:reduce){.drawer{transition:none}}
+.drawer.open{flex:0 0 428px;width:428px;margin-left:18px}
+@media(prefers-reduced-motion:reduce){.drawer{transition:none}
+*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 
-h1{font-size:21px;font-weight:600;letter-spacing:-.02em}
+h1{font-size:22px;font-weight:650;letter-spacing:-.025em;line-height:1.25}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
-.count{font-size:14px;color:var(--ledger);white-space:nowrap}
-.sub{font-size:14px;color:var(--slate);margin:6px 0 22px}
+.count{font-size:12.5px;color:var(--ledger);white-space:nowrap;background:var(--ledgerBg);
+padding:4px 11px;border-radius:99px;font-weight:500}
+.count b{font-weight:600}
+.sub{font-size:13.5px;color:var(--slate);margin:8px 0 24px;max-width:56ch}
 
-.strip{display:flex;border:1px solid var(--rule);border-radius:8px;overflow:hidden;margin-bottom:24px}
-.strip div{flex:1;padding:11px 16px;border-right:1px solid var(--rule)}
-.strip div:last-child{border-right:none}
-.strip .p{font-size:13px;color:var(--faint);margin-bottom:3px}
-.strip .v{font-size:16px}
-.strip .r{font-size:12px;color:var(--flag);margin-top:2px}
+/* ── flash banner: a connection result is news, not an alert() ── */
+.flashwrap{max-width:1120px;margin:0 auto;padding:0 22px}
+.flash{display:flex;gap:11px;align-items:flex-start;margin-top:18px;padding:13px 16px;
+border-radius:var(--r-sm);font-size:13.5px;border:1px solid;animation:drop .3s ease}
+.flash.ok{background:var(--ledgerBg);border-color:#BEDACB;color:var(--ledger)}
+.flash.bad{background:var(--dangerBg);border-color:var(--dangerRule);color:var(--danger)}
+.flash b{display:block;margin-bottom:2px}
+.flash .x{margin-left:auto;cursor:pointer;border:none;background:transparent;box-shadow:none;
+color:inherit;opacity:.6;padding:0 4px;font-size:16px;line-height:1}
+.flash .x:hover{opacity:1;background:transparent}
+@keyframes drop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+
+/* ── payout cards ── */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
+margin-bottom:26px}
+.strip div{padding:13px 15px;border:1px solid var(--rule);border-radius:var(--r-sm);
+background:var(--panel2)}
+.strip .p{font-size:11.5px;color:var(--faint);margin-bottom:4px;text-transform:uppercase;
+letter-spacing:.05em;font-weight:600}
+.strip .v{font-size:19px;letter-spacing:-.02em}
+.strip .r{font-size:11.5px;color:var(--flag);margin-top:3px}
 
 .sect{display:flex;justify-content:space-between;align-items:baseline;
-font-size:14px;font-weight:600;padding-bottom:9px;border-bottom:1px solid var(--ruleF)}
-.sect span{font-weight:400;font-size:13px;color:var(--faint)}
+font-size:11.5px;font-weight:700;padding-bottom:9px;border-bottom:1px solid var(--rule);
+text-transform:uppercase;letter-spacing:.055em;color:var(--slate)}
+.sect span{font-weight:500;font-size:12px;color:var(--faint);text-transform:none;letter-spacing:0}
 
 .row{display:flex;align-items:center;gap:12px;width:100%;text-align:left;font:inherit;color:inherit;
-padding:15px 10px 15px 14px;border:none;border-bottom:1px solid var(--rule);
-border-left:3px solid transparent;background:transparent;cursor:pointer;transition:background .18s;border-radius:0}
-.row:hover{background:#FAF9F6}
+padding:14px 12px 14px 13px;border:none;border-bottom:1px solid var(--rule);
+border-left:3px solid transparent;background:transparent;cursor:pointer;
+transition:background .16s,border-color .16s;border-radius:0;box-shadow:none}
+.row:hover{background:var(--panel2);border-color:var(--rule)}
 .row.active{background:var(--flagBg);border-left-color:var(--flag)}
 .row .b{flex:1;min-width:0}
-.row .t{font-size:14.5px;font-weight:500;margin-bottom:3px}
-.row .m{font-size:13px;color:var(--slate)}
-.row .a{font-size:14.5px;font-weight:500;white-space:nowrap}
-.tag{font-size:11.5px;padding:3px 9px;border-radius:4px;background:var(--flagBg);color:var(--flag);white-space:nowrap}
+/* Both are spans so the row can stay a <button>; without this they run on as
+   one sentence and the reason is indistinguishable from the title. */
+.row .t,.row .m{display:block}
+.row .t{font-size:14px;font-weight:600;margin-bottom:3px;letter-spacing:-.01em}
+.row .m{font-size:12.5px;color:var(--slate);line-height:1.45}
+.row .a{font-size:14px;font-weight:500;white-space:nowrap}
+.tag{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--flagBg);
+color:var(--flag);white-space:nowrap;font-weight:600;text-transform:uppercase;
+letter-spacing:.04em;border:1px solid var(--flagRule)}
 
-.closed{background:var(--ledgerBg);border-radius:8px;padding:18px 20px;margin-bottom:22px}
-.closed h2{font-size:16px;font-weight:600;color:var(--ledger);margin-bottom:5px}
-.closed p{font-size:13.5px;color:var(--ledger);opacity:.92}
-.closed .act{margin-top:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.closed .st{font-size:13px;color:var(--ledger);opacity:.92}
+.closed{background:linear-gradient(180deg,var(--ledgerBg),#F4F8F6);
+border:1px solid #CFE2D8;border-radius:var(--r-sm);padding:19px 21px;margin-bottom:24px}
+.closed h2{font-size:15.5px;font-weight:650;color:var(--ledger);margin-bottom:4px;
+letter-spacing:-.015em}
+.closed p{font-size:13px;color:var(--ledger);opacity:.88}
+.closed .act{margin-top:15px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.closed .st{font-size:12.5px;color:var(--ledger);opacity:.88}
 
-.je{border:1px solid var(--rule);border-radius:8px;overflow:hidden;margin-bottom:14px}
+.je{border:1px solid var(--rule);border-radius:var(--r-sm);overflow:hidden;margin-bottom:14px}
 .jrow{display:flex;justify-content:space-between;align-items:center;width:100%;
 padding:13px 16px;border:none;border-bottom:1px solid var(--rule);background:transparent;
-font:inherit;color:inherit;cursor:pointer;text-align:left;border-radius:0}
+font:inherit;color:inherit;cursor:pointer;text-align:left;border-radius:0;box-shadow:none;
+font-weight:500}
 .jrow:last-of-type{border-bottom:none}
-.jrow:hover{background:#FAF9F6}
+.jrow:hover{background:var(--panel2);border-color:var(--rule)}
 .jright{display:flex;gap:16px;align-items:center}
-.jview{font-size:13px;color:var(--link)}
-.detail{border-top:1px solid var(--rule);padding:16px 18px;display:none;background:#FDFDFB}
+.jview{font-size:12.5px;color:var(--link);font-weight:500}
+.detail{border-top:1px solid var(--rule);padding:17px 19px;display:none;background:var(--panel2)}
 .detail.on{display:block}
-.detail h3{font-size:14px;font-weight:600;margin-bottom:10px}
-.dl{display:flex;justify-content:space-between;font-size:13.5px;padding:6px 0;border-bottom:1px solid var(--rule)}
+.detail h3{font-size:12px;font-weight:700;margin-bottom:11px;text-transform:uppercase;
+letter-spacing:.05em;color:var(--slate)}
+.dl{display:flex;justify-content:space-between;gap:16px;font-size:13px;padding:7px 0;
+border-bottom:1px solid var(--rule)}
 .dl span:first-child{color:var(--slate)}
-.dl:last-of-type{border-bottom:none;font-weight:600;padding-top:9px}
+.dl:last-of-type{border-bottom:none;font-weight:600;padding-top:10px}
 .dl:last-of-type span:first-child{color:var(--ink)}
 
-.trail{border:1px solid var(--rule);border-radius:8px;padding:6px 18px;margin-top:8px}
-.tr{display:flex;gap:14px;padding:10px 0;border-bottom:1px solid var(--rule);font-size:13px;align-items:flex-start}
+.trail{border:1px solid var(--rule);border-radius:var(--r-sm);padding:4px 18px;margin-top:10px;
+background:var(--panel2);max-height:290px;overflow-y:auto}
+.tr{display:flex;gap:13px;padding:9px 0;border-bottom:1px solid var(--rule);font-size:12.5px;
+align-items:flex-start;line-height:1.5}
 .tr:last-child{border-bottom:none}
-.dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:0 0 8px}
-.ts{color:var(--faint);font-size:11.5px;white-space:nowrap;padding-top:2px}
-.note{font-size:12.5px;color:var(--faint);margin-top:10px}
+.dot{width:7px;height:7px;border-radius:50%;margin-top:6px;flex:0 0 7px}
+.ts{color:var(--faint);font-size:11px;white-space:nowrap;padding-top:1px}
+.note{font-size:12px;color:var(--faint);margin-top:10px;line-height:1.55}
 
 /* ── upload ── */
-.drop{border:2px dashed var(--ruleF);border-radius:10px;padding:44px 20px;text-align:center;
-background:#FDFDFB;cursor:pointer;transition:border-color .18s,background .18s}
+.drop{border:1.5px dashed var(--ruleF);border-radius:var(--r);padding:46px 20px;text-align:center;
+background:var(--panel2);cursor:pointer;transition:border-color .18s,background .18s}
+.drop:hover{border-color:var(--slate);background:var(--bubF)}
 .drop.over{border-color:var(--ledger);background:var(--ledgerBg)}
-.drop .ic{font-size:30px;margin-bottom:10px}
-.drop p{font-size:14px;color:var(--slate)}
-.drop b{color:var(--link)}
+.drop .ic{margin:0 auto 12px;width:38px;height:38px;display:grid;place-items:center;
+color:var(--faint)}
+.drop.over .ic{color:var(--ledger)}
+.drop p{font-size:13.5px;color:var(--slate)}
+.drop b{color:var(--ledger);font-weight:600}
 #file{display:none}
 .files{margin-top:16px;display:flex;flex-direction:column;gap:8px}
 .fc{display:flex;gap:12px;align-items:center;border:1px solid var(--rule);
-border-radius:8px;padding:12px 14px;font-size:13.5px}
-.fc .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+border-radius:var(--r-sm);padding:12px 14px;font-size:13px;background:var(--panel2)}
+.fc .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+font-weight:500}
 .fc .ok{color:var(--ledger)}
-.fc .er{color:#B3261E}
+.fc .er{color:var(--danger)}
 .fc .pd{color:var(--faint)}
-.field{margin-top:18px}
-.field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
-.field .hint{font-size:12.5px;color:var(--faint);margin-top:6px}
+.field{margin-top:20px}
+.field label{display:block;font-size:12.5px;font-weight:600;margin-bottom:7px}
+.field .hint{font-size:12px;color:var(--faint);margin-top:7px;line-height:1.5}
 .field label.pill{display:inline-flex;align-items:center;gap:7px;width:auto;
-border:1px solid var(--ruleF);border-radius:99px;padding:7px 13px;font-size:13px;
-font-weight:400;margin:0 6px 6px 0;cursor:pointer;user-select:none}
+border:1px solid var(--ruleF);border-radius:99px;padding:7px 14px;font-size:13px;
+font-weight:500;margin:0 6px 6px 0;cursor:pointer;user-select:none;
+transition:border-color .15s,background .15s,color .15s}
+.field label.pill:hover{border-color:var(--slate)}
 .field label.pill input{display:none;width:auto}
-.field label.pill.on{border-color:var(--ledger);background:var(--ledgerBg);color:var(--ledger);font-weight:600}
+.field label.pill.on{border-color:var(--ledger);background:var(--ledgerBg);color:var(--ledger)}
+
 .rules-t{width:100%;border-collapse:collapse;font-size:13px}
-.rules-t th{text-align:left;font-weight:600;color:var(--faint);font-size:12px;
-padding:8px 6px;border-bottom:1px solid var(--ruleF)}
-.rules-t td{padding:8px 6px;border-bottom:1px solid var(--rule)}
-.src{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--bubF);color:var(--slate)}
+.rules-t th{text-align:left;font-weight:700;color:var(--slate);font-size:10.5px;
+padding:9px 8px;border-bottom:1px solid var(--ruleF);text-transform:uppercase;
+letter-spacing:.055em}
+.rules-t td{padding:10px 8px;border-bottom:1px solid var(--rule);vertical-align:middle}
+.rules-t tbody tr:last-child td{border-bottom:none}
+.rules-t tbody tr:hover{background:var(--panel2)}
+.rules-t td.num,.rules-t th.num{text-align:right}
+.src{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--bubF);
+color:var(--slate);font-weight:600;white-space:nowrap}
 .src.firm{background:var(--ledgerBg);color:var(--ledger)}
-.sug{font-size:11.5px;padding:2px 7px;border-radius:4px;background:var(--flagBg);color:var(--flag)}
-.ledrow{display:flex;justify-content:space-between;align-items:center;padding:13px 16px;
-border-bottom:1px solid var(--rule);font-size:13.5px}
+.sug{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--flagBg);
+color:var(--flag);font-weight:600;border:1px solid var(--flagRule)}
+
+.ledrow{display:flex;justify-content:space-between;align-items:center;gap:14px;
+padding:14px 16px;border-bottom:1px solid var(--rule);font-size:13.5px;font-weight:500}
 .ledrow:last-child{border-bottom:none}
 .ledright{display:flex;gap:10px;align-items:center}
 /* The redirect URI is long and must be copied whole, so it wraps under its
    label rather than being truncated to fit the row. */
-.ledrow.redir{display:block;padding-top:0;font-size:12px;color:var(--faint)}
-.ledrow.redir code{display:block;margin-top:4px;font-size:12px;word-break:break-all;
-color:var(--ink);user-select:all}
-.ok-txt{color:var(--ledger);font-weight:500}
-.pd-txt{color:var(--faint)}
-a.btn-link{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:6px;
-border:1px solid var(--ledger);background:var(--ledger);color:#fff;text-decoration:none}
-a.btn-link:hover{background:#12452F}
+.ledrow.redir{display:block;padding:0 16px 14px;font-size:12px;color:var(--faint);
+font-weight:400;background:var(--panel2)}
+.ledrow.redir code{display:block;margin-top:5px;font:500 11.5px "IBM Plex Mono",monospace;
+word-break:break-all;color:var(--ink);user-select:all;background:var(--panel);
+border:1px solid var(--rule);border-radius:var(--r-xs);padding:8px 10px}
+.ok-txt{color:var(--ledger);font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.ok-txt::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ledger)}
+.pd-txt{color:var(--faint);font-weight:400}
+a.btn-link{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:var(--r-xs);
+border:1px solid var(--ledger);background:var(--ledger);color:#fff;text-decoration:none;
+box-shadow:var(--sh-sm);transition:background .15s}
+a.btn-link:hover{background:var(--ledgerHi)}
 
 /* ── drawer chat ── */
-.chat{width:420px;background:var(--panel);border:1px solid var(--rule);border-radius:10px;
-display:flex;flex-direction:column;height:560px}
-.chat header{padding:16px 20px;border-bottom:1px solid var(--rule)}
-.chat .ct{font-size:14.5px;font-weight:600}
-.chat .cs{font-size:12.5px;color:var(--faint);margin-top:2px}
-.thread{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
-.bub{max-width:88%;padding:11px 14px;border-radius:13px;font-size:13.5px;line-height:1.55;white-space:pre-wrap}
-.bub.f{background:var(--bubF);border-bottom-left-radius:4px;align-self:flex-start}
-.bub.u{background:var(--linkBg);color:var(--link);border-bottom-right-radius:4px;align-self:flex-end}
-.ev{background:var(--linkBg);color:var(--link);border-radius:8px;padding:11px 13px;font-size:12.5px}
-.ev b{display:block;font-size:11.5px;margin-bottom:3px}
-.typing{display:flex;gap:4px;padding:13px 15px;background:var(--bubF);border-radius:13px;
-border-bottom-left-radius:4px;align-self:flex-start;width:fit-content}
+.chat{width:428px;background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);
+display:flex;flex-direction:column;height:580px;box-shadow:var(--sh);overflow:hidden}
+.chat header{padding:16px 20px;border-bottom:1px solid var(--rule);background:var(--panel2)}
+.chat .ct{font-size:14px;font-weight:650;letter-spacing:-.015em}
+.chat .cs{font-size:12px;color:var(--faint);margin-top:2px}
+.thread{flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:12px}
+.bub{max-width:88%;padding:11px 14px;border-radius:14px;font-size:13.5px;line-height:1.55;
+white-space:pre-wrap}
+.bub.f{background:var(--bubF);border-bottom-left-radius:5px;align-self:flex-start}
+.bub.u{background:var(--ledger);color:#fff;border-bottom-right-radius:5px;align-self:flex-end}
+.ev{background:var(--linkBg);color:var(--link);border-radius:var(--r-sm);padding:12px 14px;
+font-size:12.5px;border:1px solid #D5E2EF}
+.ev b{display:block;font-size:10.5px;margin-bottom:4px;text-transform:uppercase;
+letter-spacing:.05em}
+.typing{display:flex;gap:4px;padding:13px 15px;background:var(--bubF);border-radius:14px;
+border-bottom-left-radius:5px;align-self:flex-start;width:fit-content}
 .typing i{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:bl 1.2s infinite}
 .typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
 @keyframes bl{0%,60%,100%{opacity:.3}30%{opacity:1}}
-.foot{border-top:1px solid var(--rule);padding:12px 16px}
+.foot{border-top:1px solid var(--rule);padding:13px 16px;background:var(--panel2)}
 .ask{display:flex;gap:8px;margin-bottom:10px}
+.ask button{flex:0 0 auto}
 .acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .acts select{flex:1;min-width:0}
-.scope{font-size:12.5px;color:var(--slate);display:flex;align-items:center;gap:6px;margin-top:8px}
-.scope input{width:auto}
-.loading{padding:60px 0;text-align:center;color:var(--faint);font-size:14px}
-.err{background:#FDECEA;border:1px solid #F3BDB7;color:#B3261E;border-radius:8px;
-padding:11px 14px;font-size:13.5px;margin-bottom:16px}
+.scope{font-size:12px;color:var(--slate);display:flex;align-items:flex-start;gap:7px;
+margin-top:10px;cursor:pointer;line-height:1.45}
+.scope input{width:auto;flex:0 0 auto;margin-top:1px;accent-color:var(--ledger)}
+.loading{padding:64px 0;text-align:center;color:var(--faint);font-size:13.5px}
+.err{background:var(--dangerBg);border:1px solid var(--dangerRule);color:var(--danger);
+border-radius:var(--r-sm);padding:12px 15px;font-size:13.5px;margin-bottom:16px}
+
+@media(max-width:920px){
+  .stage{flex-direction:column;align-items:stretch;padding:18px 14px 48px}
+  .main,.main.wide{width:auto;flex:1 1 auto;padding:22px 20px 26px}
+  .drawer.open{flex:1 1 auto;width:auto;margin-left:0;margin-top:16px}
+  .chat{width:auto}
+  .topin{flex-wrap:wrap;gap:10px}
+  .firm{border-left:none;padding-left:0;order:3;width:100%}
+  .tabs{margin-left:auto;flex-wrap:wrap}
+}
 </style>
 </head>
 <body>
 
 <div class="top"><div class="topin">
-  <div class="brand">F<span>y</span>nn</div>
+  <div class="brand"><span class="mark">F</span>Fynn</div>
   <div class="firm" id="firmname"></div>
   <div class="tabs" id="tabs"></div>
 </div></div>
+
+<div class="flashwrap" id="flashwrap"></div>
 
 <div class="stage">
   <div class="main" id="main"><p class="loading">Loading…</p></div>
@@ -247,7 +347,8 @@ function viewCycle(){
   }
   const D=S.cycle, done=D.open_exceptions===0;
   let h=`<div class="head"><h1>Cycle ${esc(D.cycle)}</h1>
-    <span class="count num">${D.lines_classified} of ${D.lines_total} classified</span></div>
+    <span class="count"><b class="num">${D.lines_classified}</b> of
+      <b class="num">${D.lines_total}</b> classified</span></div>
     <p class="sub">Settlement lines reconciled against the payout each platform reported.</p>
     <div class="strip">`;
   D.platforms.forEach(p=>{
@@ -426,7 +527,11 @@ function viewUpload(){
     <p class="sub">Shopee, Lazada or TikTok Shop. Fynn reads each platform's own export —
     wide order statements and long transaction statements alike — and folds them into
     one cycle.</p>
-    <div class="drop" id="drop"><div class="ic">📄</div>
+    <div class="drop" id="drop"><div class="ic">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <path d="M7 9l5-5 5 5"/><path d="M12 4v12"/></svg></div>
       <p>Drop CSV or XLSX files here, or <b>browse</b></p></div>
     <input type="file" id="file" multiple accept=".csv,.xlsx,.xls">
     <div class="field"><label>Reported payout (optional)</label>
@@ -475,7 +580,7 @@ async function send(files){
 /* ── rules ── */
 async function viewRules(){
   $("#main").innerHTML=`<div class="head"><h1>Rules</h1>
-    <span class="count num">${S.rules.total}</span></div>
+    <span class="count"><b class="num">${S.rules.total}</b> rules</span></div>
     <p class="sub">Every approval becomes a rule, applied across every client from then on.
     Fynn ships ${S.rules.starter} for fee names that have only one defensible treatment;
     your firm has decided ${S.rules.firm}.</p>
@@ -491,7 +596,8 @@ async function viewRules(){
     }).join("");
     $("#main").querySelector(".loading").outerHTML=
       `<table class="rules-t"><thead><tr><th>Platform</th><th>Applies to</th>
-       <th>Account</th><th>Usually</th><th>Decided by</th></tr></thead><tbody>${rows}</tbody></table>`;
+       <th>Account</th><th class="num">Usually</th><th>Decided by</th></tr></thead>
+       <tbody>${rows}</tbody></table>`;
   }catch(e){ $("#main").querySelector(".loading").textContent=e.message; }
 }
 
@@ -522,14 +628,19 @@ async function viewAccounts(){
       return `<td colspan="2"><select data-acct="${esc(x.account)}" data-f="code">${opts}</select> ${tag}</td>`;
     };
     const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}</tr>`).join("");
+    // "dry-run" is not a ledger anyone connects, so naming it in this copy asks
+    // the reader to go and do something impossible.
+    const dry = a.ledger === "dry-run";
+    const named = dry ? "a ledger" : esc(a.ledger);
     $("#main").querySelector(".loading").outerHTML=
-      `<p class="sect" style="margin-bottom:10px">Mapping for ${esc(a.ledger)}
+      `<p class="sect" style="margin-bottom:10px">Mapping for ${dry? "dry run" : esc(a.ledger)}
         <span>${a.unmapped.length? a.unmapped.length+" still to map" : "all mapped"}</span></p>
        ${c.connected? `<p class="note" style="margin:0 0 12px">Read from your ${esc(a.ledger)}
          chart of accounts — ${c.chart.length} accounts.${prefilled? " "+prefilled+
          " pre-selected where the match was unambiguous; check them, then save." : ""}</p>`
-         : `<p class="note" style="margin:0 0 12px">Connect ${esc(a.ledger)} in Settings and this
-         becomes a list from your own chart of accounts instead of codes typed by hand.</p>`}
+         : `<p class="note" style="margin:0 0 12px">Connect ${named} in Settings and this
+         becomes a list from your own chart of accounts instead of codes typed by hand.
+         ${dry? "A dry run needs no mapping — it reports which accounts are still blank." : ""}</p>`}
        <table class="rules-t"><thead><tr><th>Fynn account</th>
        <th colspan="2">${c.connected? "Account in your ledger" :
           (a.ledger==="quickbooks"?"Account Id":"Code")+" / name"}</th>
@@ -622,16 +733,33 @@ async function loadLedgers(){
       }else{
         right = `<span class="pd-txt">no client credentials set</span>`;
       }
-      // The provider matches this string exactly, so show the whole thing —
-      // not a pattern to fill in — and make it selectable for copying.
-      const uri = v.connected ? "" : `<div class="ledrow redir"><span>Redirect URI —
-        paste this into your ${esc(v.label)} app</span><code>${esc(v.redirect_uri||"")}</code></div>`;
+      // Registering this is a prerequisite, not a footnote: both providers match
+      // it byte-for-byte and refuse the request on their own error page before
+      // consent begins — so the failure looks like a broken link, and the user
+      // never gets back here to read an explanation after the fact.
+      const uri = (v.connected || !v.configured) ? "" : `<div class="ledrow redir">
+        <span>Add this redirect URI to your ${esc(v.label)} app first — it is matched
+        exactly, and ${esc(v.label)} shows its own error page if it is missing.</span>
+        <code id="uri-${k}">${esc(v.redirect_uri||"")}</code>
+        <button class="ghost" data-copy="${k}" style="margin-top:7px">Copy</button></div>`;
       return `<div class="ledrow"><span>${esc(v.label)}</span>
               <span class="ledright">${right}</span></div>${uri}`;
     }).join("");
-    $("#ledgers").innerHTML = `<p class="sect" style="margin-top:26px;margin-bottom:10px">
+    $("#ledgers").innerHTML = `<p class="sect" style="margin-top:30px;margin-bottom:10px">
       Connections</p>
       <div class="je">${rows}</div>`;
+    document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{
+      try{
+        await navigator.clipboard.writeText($("#uri-"+b.dataset.copy).textContent.trim());
+        b.textContent="Copied"; setTimeout(()=>b.textContent="Copy",1600);
+      }catch(e){
+        // Clipboard access needs a secure context and can still be refused;
+        // selecting the text is the fallback that always works.
+        const r=document.createRange(); r.selectNodeContents($("#uri-"+b.dataset.copy));
+        const s=getSelection(); s.removeAllRanges(); s.addRange(r);
+        b.textContent="Selected — press ⌘C"; setTimeout(()=>b.textContent="Copy",2400);
+      }
+    });
     document.querySelectorAll("[data-dis]").forEach(b=>b.onclick=async()=>{
       if(!confirm("Disconnect? The account mapping is kept.")) return;
       await api("/api/ledger/disconnect?ledger="+encodeURIComponent(b.dataset.dis),{method:"POST"});
@@ -651,7 +779,7 @@ async function loadDiagnostics(){
       <p style="font-size:13.5px">${esc(st.detail)}</p></div>`;
     if(tables.length){
       h += `<table class="rules-t" style="margin-top:14px"><thead><tr><th>Table</th>
-        <th>Rows</th><th>State</th></tr></thead><tbody>` +
+        <th class="num">Rows</th><th>State</th></tr></thead><tbody>` +
         tables.map(([n,t])=>`<tr><td>${esc(n)}</td>
           <td class="num">${t.ok? (t.rows ?? 0) : "—"}</td>
           <td>${t.ok? "ok" : esc(t.error||"error")}</td></tr>`).join("") +
@@ -664,13 +792,25 @@ async function loadDiagnostics(){
   }catch(e){ $("#diag").innerHTML = `<p class="note">${esc(e.message)}</p>`; }
 }
 
+/* A connection result is news about the page you are looking at, so it belongs
+   on the page. alert() blocks, cannot be styled, and reads like a browser
+   fault rather than an answer to the button you pressed. */
+function flash(title, detail, kind){
+  $("#flashwrap").innerHTML=`<div class="flash ${kind}">
+    <span><b>${esc(title)}</b>${detail?esc(detail):""}</span>
+    <button class="x" id="flashx" aria-label="Dismiss">&times;</button></div>`;
+  $("#flashx").onclick=()=>{ $("#flashwrap").innerHTML=""; };
+}
+
 (function(){
   const q=new URLSearchParams(location.search);
   const ok=q.get("connected"), err=q.get("ledger_error");
   if(ok||err){
     TAB="settings";
     history.replaceState({}, "", "/");
-    if(err) setTimeout(()=>alert(err), 100);
+    if(err) flash("Could not connect", " " + err, "bad");
+    else flash(`Connected to ${ok==="xero"?"Xero":"QuickBooks Online"}.`,
+               " Fynn will post journals there once every account is mapped.", "ok");
   }
 })();
 
