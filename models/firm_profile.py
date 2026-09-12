@@ -86,12 +86,20 @@ class FirmProfileStore:
         return None
 
     def get_or_create(self, firm_id: str = WORKSPACE_ID) -> tuple[FirmProfile, bool]:
-        """Return (profile, is_new). is_new=True means setup has not been done."""
+        """Return (profile, is_new). is_new=True means setup has not been done.
+
+        A new profile is written through immediately, before it is handed back.
+        Rules, account mappings, retained files and posted entries all carry a
+        foreign key to this row; without it the first approval on a fresh
+        database fails that constraint, and because every write here is
+        best-effort it would fail silently.
+        """
         existing = self.get(firm_id)
         if existing:
             return existing, False
         profile = FirmProfile(id=firm_id)
         self._profiles[firm_id] = profile
+        self.save(profile)
         return profile, True
 
     def save(self, profile: FirmProfile) -> None:

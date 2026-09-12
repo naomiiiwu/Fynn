@@ -337,10 +337,16 @@ python-3.12                                          # runtime.txt
 Environment variables are listed in `.env.example`. `FYNN_PASSWORD` is the one
 that matters: without it a deployment refuses all non-local traffic.
 
-Supabase schema lives in `migrations/`. Run `005_reconciliation.sql` then
-`007_workspace_identity.sql`; `006_drop_legacy.sql` documents removing the tables
-left behind by the earlier seller-facing P&L product and is commented out on
-purpose.
+Supabase schema lives in `migrations/`. On a fresh project, paste
+`000_schema.sql` into the Supabase SQL editor and run it once — it is 005, 007
+and 008 already applied. On a database that already has the 005 schema, run
+`007_workspace_identity.sql` and `008_account_mappings.sql` instead;
+`000_schema.sql` uses `create table if not exists` and would skip the existing
+tables, leaving `firm_profiles` keyed by the old `phone` column.
+`006_drop_legacy.sql` documents removing the tables left behind by the earlier
+seller-facing P&L product and is commented out on purpose.
+
+Settings → Storage tells you whether it worked.
 
 ---
 
