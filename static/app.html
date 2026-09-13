@@ -87,6 +87,13 @@ transition:flex-basis .42s cubic-bezier(.4,0,.2,1),width .42s cubic-bezier(.4,0,
 
 h1{font-size:22px;font-weight:650;letter-spacing:-.025em;line-height:1.25}
 .head{display:flex;justify-content:space-between;align-items:baseline;gap:14px}
+.headright{display:flex;align-items:center;gap:10px;flex:0 0 auto}
+/* A step you came into and will leave again, so it is signposted above the
+   title rather than buried among the page's own actions. */
+.back{display:inline-flex;align-items:center;gap:5px;margin:-6px 0 14px -8px;
+padding:5px 10px 5px 8px;box-shadow:none;border-color:transparent;background:transparent;
+color:var(--slate);font-size:12.5px}
+.back:hover{background:var(--bubF);border-color:transparent;color:var(--ink)}
 .count{font-size:12.5px;color:var(--ledger);white-space:nowrap;background:var(--ledgerBg);
 padding:4px 11px;border-radius:99px;font-weight:500}
 .count b{font-weight:600}
@@ -327,22 +334,48 @@ async function load(){
   catch(e){ $("#main").innerHTML=`<p class="loading">${esc(e.message)}</p>`; }
 }
 
+/* ── routing ──
+   Every view has a URL. Uploading is a step you take from somewhere and come
+   back from, not a place you live, so it is reached by a button and keeps a
+   Back control rather than sitting in the tab bar beside the standing views. */
+const VIEWS={cycle:viewCycle, upload:viewUpload, rules:viewRules,
+             accounts:viewAccounts, settings:viewSettings};
+const TABS=[["cycle","Cycle"],["rules","Rules"],["accounts","Accounts"],
+            ["settings","Settings"]];
+// Where Upload's Back returns to: wherever you opened it from.
+let BACK_TO="cycle";
+
+function route(){
+  const name=(location.hash||"").replace(/^#\/?/,"").split("?")[0];
+  return VIEWS[name] ? name : "cycle";
+}
+
+function go(name){
+  const target="#/"+name;
+  // Setting the hash fires hashchange, which renders. When it is already the
+  // current hash no event fires, so render directly or the click does nothing.
+  if(location.hash===target) render(); else location.hash=target;
+}
+
 function render(){
+  TAB=route();
+  if(TAB!=="upload") BACK_TO=TAB;
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
-  const tabs=[["cycle","Cycle"],["upload","Upload"],["rules","Rules"],
-              ["accounts","Accounts"],["settings","Settings"]];
-  $("#tabs").innerHTML = tabs.map(([k,l])=>
+  $("#tabs").innerHTML = TABS.map(([k,l])=>
     `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("")
     + `<a class="tab out" href="/logout">Sign out</a>`;
   document.querySelectorAll("button.tab").forEach(b=>b.onclick=()=>{
-    TAB=b.dataset.tab; closeDrawer(); render();
+    closeDrawer(); go(b.dataset.tab);
   });
   const wide = TAB==="accounts";
   $("#main").classList.toggle("wide", wide);
   document.querySelector(".stage").classList.toggle("wide", wide);
-  ({cycle:viewCycle, upload:viewUpload, rules:viewRules,
-    accounts:viewAccounts, settings:viewSettings})[TAB]();
+  VIEWS[TAB]();
 }
+
+// The browser's own Back and Forward now move between views, because each one
+// is a real history entry rather than a variable.
+addEventListener("hashchange", ()=>{ closeDrawer(); render(); });
 
 /* ── cycle ── */
 function viewCycle(){
@@ -355,14 +388,15 @@ function viewCycle(){
         <button class="go" id="toupload">Upload a file</button>
         <button id="sample">Load sample cycle</button>
       </div>`;
-    $("#toupload").onclick=()=>{TAB="upload";render();};
+    $("#toupload").onclick=()=>go("upload");
     $("#sample").onclick=async()=>{ await api("/api/cycle/sample",{method:"POST"}); await load(); };
     return;
   }
   const D=S.cycle, done=D.open_exceptions===0;
   let h=`<div class="head"><h1>Cycle ${esc(D.cycle)}</h1>
-    <span class="count"><b class="num">${D.lines_classified}</b> of
-      <b class="num">${D.lines_total}</b> classified</span></div>
+    <span class="headright"><span class="count"><b class="num">${D.lines_classified}</b> of
+      <b class="num">${D.lines_total}</b> classified</span>
+      <button id="toupload">Add files</button></span></div>
     <p class="sub">Settlement lines reconciled against the payout each platform reported.</p>
     <div class="strip">`;
   D.platforms.forEach(p=>{
@@ -403,6 +437,7 @@ function viewCycle(){
     <p class="note" style="margin-top:18px"><button id="clear">Close this cycle without posting</button></p>`;
 
   $("#main").innerHTML=h;
+  $("#toupload").onclick=()=>go("upload");
   document.querySelectorAll(".row").forEach(r=>r.onclick=()=>openExc(decodeURIComponent(r.dataset.k)));
   document.querySelectorAll(".jrow").forEach(b=>b.onclick=()=>toggleJE(b.dataset.je));
   if($("#post")) $("#post").onclick=post;
@@ -536,7 +571,13 @@ async function approve(){
 
 /* ── upload ── */
 function viewUpload(){
+  const backLabel={cycle:"Cycle",rules:"Rules",accounts:"Accounts",settings:"Settings"}[BACK_TO]
+                  || "Cycle";
   $("#main").innerHTML=`
+    <button class="back" id="back">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 18l-6-6 6-6"/></svg>${esc(backLabel)}</button>
     <div class="head"><h1>Upload settlement files</h1></div>
     <p class="sub">Shopee, Lazada or TikTok Shop. Fynn reads each platform's own export —
     wide order statements and long transaction statements alike — and folds them into
@@ -553,6 +594,9 @@ function viewUpload(){
       <p class="hint">Only needed when the file does not state the payout on a row of its own.</p>
     </div>
     <div class="files" id="files"></div>`;
+  // history.back() so Back and the browser's own back agree, rather than
+  // pushing a second entry that the user then has to walk out of twice.
+  $("#back").onclick=()=>{ if(history.length>1) history.back(); else go(BACK_TO); };
   const drop=$("#drop"), file=$("#file");
   drop.onclick=()=>file.click();
   drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
@@ -588,7 +632,7 @@ async function send(files){
   go.className="acts"; go.style.marginTop="16px";
   go.innerHTML=`<button class="go" id="toreview">Review the cycle →</button>`;
   $("#files").appendChild(go);
-  $("#toreview").onclick=()=>{TAB="cycle";render();};
+  $("#toreview").onclick=()=>go("cycle");
 }
 
 /* ── rules ── */
@@ -833,9 +877,14 @@ function flash(title, detail, kind){
   const q=new URLSearchParams(location.search);
   const ok=q.get("connected"), err=q.get("ledger_error");
   if(ok||err){
-    TAB="settings";
-    history.replaceState({}, "", "/");
+    // Land on Settings and drop the query, but keep it a real route so Back
+    // behaves like it does everywhere else.
+    history.replaceState({}, "", "/#/settings");
     if(err) flash("Could not connect", " " + err, "bad");
+    else if(q.get("readonly"))
+      flash(`Connected to ${ok==="xero"?"Xero":"QuickBooks Online"} for reading only.`,
+            " Enough to import the chart of accounts and map every account. "
+            + "Posting needs the write scope enabled on the app.", "bad");
     else flash(`Connected to ${ok==="xero"?"Xero":"QuickBooks Online"}.`,
                " Fynn will post journals there once every account is mapped.", "ok");
   }
