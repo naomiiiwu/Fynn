@@ -469,6 +469,7 @@ def _post_cycle() -> dict:
     adapter = get_adapter(
         profile.ledger, _accounts(profile.ledger),
         connections.get(ws().id, profile.ledger),
+        preview_for="xero",
     )
     actor = profile.approver()
     out = []
@@ -702,7 +703,9 @@ def api_save_accounts(req: AccountMapRequest):
     target = (req.ledger or _profile().ledger or "dry-run").lower()
     amap = _accounts(target)
     for account, value in req.mapping.items():
-        amap.set(account, (value or {}).get("code", ""), (value or {}).get("name", ""))
+        value = value or {}
+        amap.set(account, value.get("code", ""), value.get("name", ""),
+                 value.get("tax", ""))
     return api_get_accounts(target)
 
 

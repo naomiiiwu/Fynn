@@ -24,9 +24,17 @@ class LedgerAccount:
 
     code: str           # Xero AccountCode, or QuickBooks account Id
     name: str = ""      # what the ledger calls it — shown back for confirmation
+    # The tax treatment to send with a line on this account: a Xero TaxType
+    # ("OUTPUT2", "NONE", "INPUT2"), or a QuickBooks TaxCodeRef.
+    #
+    # Blank means "say nothing", and the ledger applies whatever default the
+    # account carries. That is the honest default: tax codes are jurisdiction
+    # specific, Fynn cannot derive one from a settlement file, and inventing a
+    # rate is a worse failure than deferring to the account the firm chose.
+    tax: str = ""
 
     def to_dict(self) -> dict:
-        return {"code": self.code, "name": self.name}
+        return {"code": self.code, "name": self.name, "tax": self.tax}
 
 
 class AccountMap:
@@ -49,7 +57,8 @@ class AccountMap:
     def get(self, account: str) -> Optional[LedgerAccount]:
         return self._mapping.get(self._key(account))
 
-    def set(self, account: str, code: str, name: str = "") -> Optional[LedgerAccount]:
+    def set(self, account: str, code: str, name: str = "",
+            tax: str = "") -> Optional[LedgerAccount]:
         """Map one account, or clear it when the code is blank."""
         key = self._key(account)
         code = (code or "").strip()
@@ -57,7 +66,8 @@ class AccountMap:
             self._mapping.pop(key, None)
             self._persist(account, None)
             return None
-        entry = LedgerAccount(code=code, name=(name or "").strip())
+        entry = LedgerAccount(code=code, name=(name or "").strip(),
+                              tax=(tax or "").strip())
         self._mapping[key] = entry
         self._persist(account, entry)
         return entry
@@ -71,7 +81,7 @@ class AccountMap:
         out: dict[str, dict] = {}
         for account in accounts:
             entry = self.get(account)
-            out[account] = entry.to_dict() if entry else {"code": "", "name": ""}
+            out[account] = entry.to_dict() if entry else {"code": "", "name": "", "tax": ""}
         return out
 
     def _persist(self, account: str, entry: Optional[LedgerAccount]) -> None:
@@ -102,7 +112,7 @@ class AccountMap:
             code = row.get("code") or ""
             if account and code:
                 mapping[cls._key(account)] = LedgerAccount(
-                    code=code, name=row.get("name") or ""
+                    code=code, name=row.get("name") or "", tax=row.get("tax") or ""
                 )
         return cls(firm_id, ledger, mapping)
 

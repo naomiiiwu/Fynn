@@ -1,10 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007
--- through 011 already applied, so a new project does not have to replay a
+-- through 012 already applied, so a new project does not have to replay a
 -- rename.
 --
--- On a database that already has the 005 schema, run 007 through 011 instead
+-- On a database that already has the 005 schema, run 007 through 012 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -80,6 +80,9 @@ create table if not exists account_mappings (
     fynn_account text not null,                 -- e.g. 'Marketing Expense'
     code         text not null,                 -- Xero AccountCode / QBO account Id
     name         text not null default '',      -- what the ledger calls it
+    -- Xero TaxType or QuickBooks TaxCodeRef for lines on this account. Blank
+    -- means say nothing and let the ledger apply the account's own default.
+    tax          text not null default '',
     updated_at   timestamptz not null default now(),
     unique (firm_id, ledger, fynn_account)
 );

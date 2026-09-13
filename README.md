@@ -318,8 +318,21 @@ per ledger: a Xero code is not a QuickBooks Id, so switching starts a fresh one.
 accountant clicks Connect, consents at the ledger, and Fynn stores the tokens;
 access tokens are refreshed automatically, and because both providers rotate the
 refresh token on use, the new one is stored immediately or the connection is
-lost at the next expiry. Xero entries post as DRAFT so a human still approves
-inside the ledger.
+lost at the next expiry.
+
+**What gets posted differs by ledger, and the difference is mechanical.** Xero
+receives a draft ACCREC invoice — an ACCPAY bill when the payout is negative —
+because Xero's bank reconciliation offers a match against invoices and bills and
+*not* against manual journals. A journal would leave the accountant coding the
+deposit by hand every payout, which is the work Fynn exists to remove.
+QuickBooks receives a journal entry, which QuickBooks does offer for matching.
+Both post as DRAFT so a human approves inside the ledger.
+
+The document is built from the journal rather than replacing it: the clearing
+line is the total — what the platform actually deposits, and what the bank
+statement will show — and every other line becomes an invoice line explaining
+how gross sales became that figure. The invoice total therefore equals the
+reported payout exactly, which is what makes the match possible.
 
 Every post carries an idempotency key — `Idempotency-Key` for Xero, `requestid`
 for QuickBooks — derived from the firm, cycle and entry reference rather than

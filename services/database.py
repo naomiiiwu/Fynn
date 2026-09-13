@@ -245,20 +245,32 @@ def save_account_mapping(firm_id: str, ledger: str, account: str, entry) -> bool
     client = _get_client()
     if not client:
         return False
+    row = {
+        "firm_id":      firm_id,
+        "ledger":       ledger,
+        "fynn_account": account,
+        "code":         entry.code,
+        "name":         entry.name,
+        "tax":          getattr(entry, "tax", "") or "",
+    }
     try:
         client.table("account_mappings").upsert(
-            {
-                "firm_id":      firm_id,
-                "ledger":       ledger,
-                "fynn_account": account,
-                "code":         entry.code,
-                "name":         entry.name,
-            },
-            on_conflict="firm_id,ledger,fynn_account",
-        ).execute()
+            row, on_conflict="firm_id,ledger,fynn_account").execute()
         print(f"  [DB] Account mapped for {ledger}: {account} → {entry.code}")
         return True
     except Exception as exc:
+        # `tax` arrived after this table did. Keep the mapping rather than lose
+        # it over a column the database has not been told about yet.
+        if "tax" in str(exc):
+            try:
+                row.pop("tax", None)
+                client.table("account_mappings").upsert(
+                    row, on_conflict="firm_id,ledger,fynn_account").execute()
+                print(f"  [DB] Account mapped for {ledger}: {account} → "
+                      f"{entry.code} (without tax — run migration 012)")
+                return True
+            except Exception as retry_exc:
+                exc = retry_exc
         print(f"  [DB] Failed to save account mapping: {exc}")
         return False
 

@@ -717,6 +717,13 @@ async function viewAccounts(){
     const [a, c] = await Promise.all([api("/api/accounts"), api("/api/accounts/chart")]);
     const byCode = Object.fromEntries((c.chart||[]).map(e=>[e.code, e]));
     let prefilled = 0;
+    // The tax code belongs beside the account, not on a screen of its own: a
+    // line posted to the right account with the wrong rate is still wrong, and
+    // wrong in a way that reaches a return.
+    const taxCell = x => `<td><input data-acct="${esc(x.account)}" data-f="tax"
+        value="${esc(x.tax||"")}" placeholder="default"
+        style="max-width:110px" title="Xero TaxType, or QuickBooks tax code. Blank
+        leaves it to the account's own default."></td>`;
     const cell = x => {
       if(!c.connected){                       // no ledger yet: type the code
         return `<td><input data-acct="${esc(x.account)}" data-f="code" value="${esc(x.code)}"
@@ -732,7 +739,7 @@ async function viewAccounts(){
       const tag = (!x.code && chosen) ? `<span class="sug">suggested</span>` : "";
       return `<td colspan="2"><select data-acct="${esc(x.account)}" data-f="code">${opts}</select> ${tag}</td>`;
     };
-    const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}</tr>`).join("");
+    const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}${taxCell(x)}</tr>`).join("");
     // "dry-run" is not a ledger anyone connects, so naming it in this copy asks
     // the reader to go and do something impossible.
     const dry = a.ledger === "dry-run";
@@ -749,12 +756,17 @@ async function viewAccounts(){
        <table class="rules-t"><thead><tr><th>Fynn account</th>
        <th colspan="2">${c.connected? "Account in your ledger" :
           (a.ledger==="quickbooks"?"Account Id":"Code")+" / name"}</th>
+       <th>Tax</th>
        </tr></thead><tbody>${rows}</tbody></table>
        <div class="acts" style="margin-top:20px">
          <button class="go" id="a-save">Save mapping</button>
          <span class="st" id="a-status"></span></div>
        <p class="note">Leave a code blank to unmap it. Switching ledger in Settings
-       starts a separate mapping — a Xero code is not a QuickBooks Id.</p>`;
+       starts a separate mapping — a Xero code is not a QuickBooks Id.</p>
+       <p class="note"><b>Tax</b> is the rate to send with lines on that account —
+       a Xero TaxType such as <code>OUTPUT2</code> or <code>NONE</code>, or a
+       QuickBooks tax code. Left blank, Fynn says nothing and your ledger applies
+       the account's own default, which is safer than a rate Fynn guessed.</p>`;
     $("#a-save").onclick=async()=>{
       const mapping={};
       document.querySelectorAll("[data-acct]").forEach(i=>{

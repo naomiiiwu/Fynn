@@ -59,8 +59,10 @@ def build_journal(
         buckets[(account, side)] += abs(line.amount)
         net += line.amount
 
-    # The clearing account leads the entry: it carries the net, and it is the
-    # line the ledger's own bank reconciliation matches the deposit against.
+    # The clearing account leads the entry: it carries the net — what the
+    # platform actually deposits — and every other line explains how the gross
+    # sales became that figure. Adapters read it as the total of the document
+    # they post, which is why it is first and why it is alone on its side.
     clearing = (f"{platform.value} Clearing Account", Side.DEBIT)
     journal_lines = [
         JournalLine(account=clearing[0], side=clearing[1], amount=round(net, 2))

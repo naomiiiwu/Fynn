@@ -9,9 +9,28 @@ account *name* and no ledger accepts one — see models/account_map.py. An
 adapter that cannot resolve a name refuses the whole entry rather than posting a
 partial or guessed one.
 
-Note on scope: Fynn posts the entry. It does not match against the bank. Once
-the entry is in Xero, Xero's own bank feed auto-matches it to the real deposit.
-Building bank access here would duplicate infrastructure the ledger already has.
+Fynn posts; it does not touch the bank. The ledger already has the bank feed,
+and duplicating that would be building infrastructure twice.
+
+But *what* is posted decides whether the ledger can reconcile it, and the two
+ledgers differ — A2X, which has done this at scale for years, posts a different
+shape to each, and the reason is mechanical:
+
+  Xero        A draft ACCREC invoice, or an ACCPAY bill when the payout is
+              negative. Xero's bank reconciliation offers a match against
+              invoices and bills; a manual journal is not something a statement
+              line can be matched to, so a journal leaves the accountant coding
+              the deposit by hand every payout.
+              <https://support.a2xaccounting.com/> — "Posting Your A2X
+              Summaries": the entry "appears as a Draft Invoice, or a Draft Bill
+              if it's negative... Xero will suggest a match to the approved
+              invoice."
+
+  QuickBooks  A journal entry, which QuickBooks *does* offer for matching
+              against a bank deposit — same guide: "simply click Match."
+
+So the invoice is not a stylistic choice. It is what makes the deposit
+reconcilable in Xero without manual work.
 """
 from __future__ import annotations
 
@@ -24,6 +43,27 @@ import httpx
 
 from models.account_map import AccountMap
 from models.transaction import JournalEntry
+
+
+def _today() -> str:
+    from datetime import date
+    return date.today().isoformat()
+
+
+def split_clearing(entry: JournalEntry):
+    """The clearing line, and everything else.
+
+    The clearing line carries the net — what the platform deposits — and the
+    rest explain how gross sales became that figure. Adapters that post a
+    document rather than a journal need that split: one is the total, the others
+    are the lines.
+    """
+    clearing = next(
+        (l for l in entry.lines if l.account.lower().endswith("clearing account")),
+        None,
+    )
+    rest = [l for l in entry.lines if l is not clearing]
+    return clearing, rest
 
 
 class LedgerAdapter(ABC):
@@ -106,6 +146,12 @@ class DryRunAdapter(LedgerAdapter):
 
     name = "dry-run"
 
+    def __init__(self, accounts=None, connection=None, preview_for: str = "") -> None:
+        super().__init__(accounts, connection)
+        # Which live adapter's document to render alongside. Only Xero builds a
+        # document distinct from the journal, so only Xero has one to preview.
+        self.preview_for = preview_for if preview_for == "xero" else ""
+
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
         unmapped: list[str] = []
@@ -121,25 +167,56 @@ class DryRunAdapter(LedgerAdapter):
         payload = entry.model_dump(mode="json")
         for line, rendered in zip(entry.lines, payload["lines"]):
             rendered["ledger_code"] = codes.get(line.account, "")
+            mapped = self.accounts.get(line.account) if self.accounts else None
+            rendered["tax"] = getattr(mapped, "tax", "") or ""
+
+        # What the live adapter would actually send. A dry run that shows a
+        # different shape to the real post is a dry run of nothing — and the
+        # document, not the journal, is what an accountant needs to check.
+        document = None
+        if self.preview_for and not unmapped:
+            try:
+                document = get_adapter(self.preview_for, self.accounts).build_payload(entry)
+            except Exception as exc:      # a preview must never break the dry run
+                document = {"error": str(exc)}
+
         return {
             "status": "not_posted",
             "adapter": self.name,
             "reference": entry.reference,
             "unmapped_accounts": unmapped,
             "payload": payload,
+            "would_send_to": self.preview_for or "",
+            "document": document,
         }
 
 
 class XeroAdapter(LedgerAdapter):
-    """Xero manual journal posting.
+    """Xero posting, as a draft invoice or bill.
 
-    Requires OAuth 2.0 with the accounting.transactions scope and a refresh-token
-    flow (access tokens expire after 30 minutes). Not wired up: the credentials
-    and consent flow have to exist first.
+    Not a manual journal, which is what this used to send. Xero's bank
+    reconciliation offers a match against invoices and bills; a manual journal
+    is not something a statement line can be matched to. Posting a journal
+    therefore left the accountant coding every payout against the clearing
+    account by hand — the exact work Fynn exists to remove. See the module
+    docstring for the source.
+
+    The shape follows from the journal rather than replacing it:
+
+      the clearing line   is the document total — what the platform actually
+                          deposits, and what the bank statement will show.
+      every other line    becomes an invoice line explaining how gross sales
+                          became that figure: revenue positive, fees negative.
+
+    A payout is normally money in, so the document is an ACCREC invoice. A cycle
+    where the fees exceeded the sales is money out, and Xero has a different
+    document for that: an ACCPAY bill, with the signs flipped so the total is
+    positive. Both post as DRAFT — an accountant approves in Xero before
+    anything is final.
     """
 
     name = "xero"
-    ENDPOINT = "https://api.xero.com/api.xro/2.0/ManualJournals"
+    ENDPOINT = "https://api.xero.com/api.xro/2.0/Invoices"
 
     def __init__(
         self,
@@ -152,35 +229,72 @@ class XeroAdapter(LedgerAdapter):
         self._token = access_token or os.getenv("XERO_ACCESS_TOKEN")
         self._tenant = tenant_id or os.getenv("XERO_TENANT_ID")
 
+    def build_payload(self, entry: JournalEntry) -> dict:
+        """The document Xero would receive. Separated so a dry run can show it."""
+        clearing, rest = split_clearing(entry)
+        if clearing is None:
+            raise RuntimeError(
+                f"{entry.reference} has no clearing line, so there is no payout "
+                "total to invoice. This is a bug in the journal builder."
+            )
+
+        # The clearing line is a debit for money in. Its signed value is the
+        # payout, and the document type follows the direction.
+        net = clearing.amount if clearing.side.value == "debit" else -clearing.amount
+        money_in = net >= 0
+        flip = 1 if money_in else -1
+
+        lines = []
+        for line in rest:
+            # A credit is money in and belongs on the invoice as a positive
+            # amount; a debit is money out and reduces the total.
+            amount = line.amount if line.side.value == "credit" else -line.amount
+            item = {
+                "Description": f"{entry.reference} · {line.account}",
+                "Quantity": 1,
+                "UnitAmount": round(amount * flip, 2),
+                "AccountCode": self._code(line.account),
+            }
+            tax = self._tax(line.account)
+            if tax:
+                item["TaxType"] = tax
+            lines.append(item)
+
+        return {
+            "Invoices": [{
+                "Type": "ACCREC" if money_in else "ACCPAY",
+                # Xero creates the contact if this name is new, so a firm does
+                # not have to set one up before the first post.
+                "Contact": {"Name": entry.platform.value},
+                "Date": _today(),
+                "LineAmountTypes": "Exclusive",
+                "InvoiceNumber": entry.reference,
+                "Reference": f"Fynn — {entry.platform.value} {entry.cycle}",
+                "Status": "DRAFT",
+                "LineItems": lines,
+            }]
+        }
+
+    def _code(self, account: str) -> str:
+        return self.accounts.get(account).code
+
+    def _tax(self, account: str) -> str:
+        entry = self.accounts.get(account) if self.accounts else None
+        return getattr(entry, "tax", "") or ""
+
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
         self._check_scope()
-        codes = self._resolve(entry)
+        self._resolve(entry)          # refuses before building anything
         token = self._token or (self.connection.access_token() if self.connection else None)
         tenant = self._tenant or (self.connection.org_id if self.connection else None)
         if not token:
             raise RuntimeError(
                 "Xero is not connected. Connect it in Settings first."
             )
-        # Entries are posted as DRAFT. An accountant approves in Xero before the
-        # entry is final — no automated output becomes accounting truth unreviewed.
-        payload = {
-            "ManualJournals": [{
-                "Narration": f"Fynn — {entry.platform.value} {entry.cycle}",
-                "Status": "DRAFT",
-                "JournalLines": [
-                    {
-                        "AccountCode": codes[l.account],
-                        "LineAmount": l.amount if l.side.value == "debit" else -l.amount,
-                        "Description": f"{entry.reference} · {l.account}",
-                    }
-                    for l in entry.lines
-                ],
-            }]
-        }
         response = httpx.post(
             self.ENDPOINT,
-            json=payload,
+            json=self.build_payload(entry),
             headers={
                 "Authorization": f"Bearer {token}",
                 # Not required for a custom connection, which covers one
@@ -197,13 +311,14 @@ class XeroAdapter(LedgerAdapter):
                 f"{response.text[:300]}"
             )
         body = response.json()
-        posted = (body.get("ManualJournals") or [{}])[0]
+        posted = (body.get("Invoices") or [{}])[0]
         return {
             "status": "posted",
             "adapter": self.name,
             "reference": entry.reference,
-            "ledger_id": posted.get("ManualJournalID", ""),
+            "ledger_id": posted.get("InvoiceID", ""),
             "ledger_status": posted.get("Status", "DRAFT"),
+            "document": posted.get("Type", ""),
         }
 
 
@@ -221,6 +336,10 @@ class QuickBooksAdapter(LedgerAdapter):
 
     name = "quickbooks"
     ENDPOINT = "https://quickbooks.api.intuit.com/v3/company/{realm_id}/journalentry"
+
+    def _tax(self, account: str) -> str:
+        entry = self.accounts.get(account) if self.accounts else None
+        return getattr(entry, "tax", "") or ""
 
     def __init__(
         self,
@@ -254,6 +373,11 @@ class QuickBooksAdapter(LedgerAdapter):
                     "JournalEntryLineDetail": {
                         "PostingType": "Debit" if l.side.value == "debit" else "Credit",
                         "AccountRef": {"value": codes[l.account], "name": l.account},
+                        # Only when the firm has mapped one. Absent, QuickBooks
+                        # applies the account's own default rather than a rate
+                        # Fynn invented.
+                        **({"TaxCodeRef": {"value": self._tax(l.account)}}
+                           if self._tax(l.account) else {}),
                     },
                 }
                 for l in entry.lines
@@ -300,9 +424,13 @@ def get_adapter(
     name: str | None = None,
     accounts: Optional[AccountMap] = None,
     connection=None,
+    preview_for: str = "",
 ) -> LedgerAdapter:
     name = (name or os.getenv("LEDGER_ADAPTER", "dry-run")).lower()
-    return ADAPTERS.get(name, DryRunAdapter)(accounts, connection)
+    cls = ADAPTERS.get(name, DryRunAdapter)
+    if cls is DryRunAdapter:
+        return cls(accounts, connection, preview_for=preview_for)
+    return cls(accounts, connection)
 
 
 # ── Reading the destination's chart of accounts ───────────────────────────────

@@ -44,6 +44,7 @@ APPLY = (
     "000_schema.sql",
     "010_connection_scopes.sql",
     "011_users.sql",
+    "012_account_tax.sql",
 )
 
 
