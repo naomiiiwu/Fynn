@@ -594,11 +594,20 @@ def oauth_connect(ledger: str):
     # keep the accountant here and say what to fix.
     refusal = oauth.preflight(provider, url)
     if refusal:
-        uri = oauth.redirect_uri(base_url(), provider)
-        message = (
-            f"{provider.label} refused the request: {refusal}. "
-            f"Add exactly this redirect URI to your {provider.label} app, then try again: {uri}"
-        )
+        # The remedy has to match the refusal. Telling someone to check the
+        # redirect URI when the scope is what was rejected sends them to look
+        # at the one thing that is already correct.
+        lower = refusal.lower()
+        if "redirect" in lower:
+            fix = (f"Add exactly this redirect URI to your {provider.label} app, then "
+                   f"try again: {oauth.redirect_uri(base_url(), provider)}")
+        elif "scope" in lower:
+            fix = (f"Your {provider.label} app is not allowed to request one of the "
+                   f"permissions Fynn needs. Enable these scopes on the app, then try "
+                   f"again: {provider.scopes}")
+        else:
+            fix = f"Check the app's configuration in {provider.label}, then try again."
+        message = f"{provider.label} refused the request: {refusal}. {fix}"
         return RedirectResponse(f"/?ledger_error={quote(message, safe='')}", status_code=303)
 
     response = RedirectResponse(url, status_code=303)
