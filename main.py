@@ -831,6 +831,23 @@ def api_ledger_status():
     return {"base_url": base_url(), "ledgers": status}
 
 
+@app.get("/api/auth/status")
+def api_auth_status():
+    """How people can sign in, and what Google needs in order to allow it.
+
+    The redirect URI is returned whole rather than as a pattern: Google matches
+    it exactly and, like the ledgers, renders its refusal on its own error page
+    where nothing here can explain it.
+    """
+    return {
+        "google": {
+            "configured": identity.google_configured(),
+            "redirect_uri": identity.google_redirect_uri(base_url()),
+        },
+        "user": (current_user().to_dict() if current_user() else None),
+    }
+
+
 @app.get("/api/diagnostics")
 def api_diagnostics():
     """Whether anything is actually being persisted.

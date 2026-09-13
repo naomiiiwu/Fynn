@@ -802,6 +802,7 @@ function viewSettings(){
       <p class="hint">Dry run returns the exact payload that would be sent. Choosing a
       live ledger needs it connected below, and every account mapped.</p></div>
     <div id="ledgers"></div>
+    <div id="signin"></div>
     <div class="acts" style="margin-top:24px">
       <button class="go" id="s-save">Save settings</button>
       <button id="s-setup">Run setup again</button>
@@ -812,7 +813,7 @@ function viewSettings(){
   document.querySelectorAll("#s-plat .pill input").forEach(i=>{
     i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
   });
-  loadDiagnostics(); loadLedgers();
+  loadDiagnostics(); loadLedgers(); loadSignin();
   $("#s-setup").onclick=async()=>{
     await api("/api/onboarding/restart",{method:"POST"});
     S=await api("/api/state"); obOpen(0);
@@ -828,6 +829,22 @@ function viewSettings(){
       $("#firmname").textContent=S.firm.firm+(S.cycle?" · cycle "+S.cycle.cycle:"");
     }catch(e){ $("#s-status").textContent=e.message; }
   };
+}
+
+function wireCopy(){
+  document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{
+    const el=$("#uri-"+b.dataset.copy);
+    try{
+      await navigator.clipboard.writeText(el.textContent.trim());
+      b.textContent="Copied"; setTimeout(()=>b.textContent="Copy",1600);
+    }catch(e){
+      // Clipboard access needs a secure context and can still be refused;
+      // selecting the text is the fallback that always works.
+      const r=document.createRange(); r.selectNodeContents(el);
+      const s=getSelection(); s.removeAllRanges(); s.addRange(r);
+      b.textContent="Selected — press ⌘C"; setTimeout(()=>b.textContent="Copy",2400);
+    }
+  });
 }
 
 async function loadLedgers(){
@@ -871,24 +888,37 @@ async function loadLedgers(){
     $("#ledgers").innerHTML = `<p class="sect" style="margin-top:30px;margin-bottom:10px">
       Connections</p>
       <div class="je">${rows}</div>`;
-    document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=async()=>{
-      try{
-        await navigator.clipboard.writeText($("#uri-"+b.dataset.copy).textContent.trim());
-        b.textContent="Copied"; setTimeout(()=>b.textContent="Copy",1600);
-      }catch(e){
-        // Clipboard access needs a secure context and can still be refused;
-        // selecting the text is the fallback that always works.
-        const r=document.createRange(); r.selectNodeContents($("#uri-"+b.dataset.copy));
-        const s=getSelection(); s.removeAllRanges(); s.addRange(r);
-        b.textContent="Selected — press ⌘C"; setTimeout(()=>b.textContent="Copy",2400);
-      }
-    });
+    wireCopy();
     document.querySelectorAll("[data-dis]").forEach(b=>b.onclick=async()=>{
       if(!confirm("Disconnect? The account mapping is kept.")) return;
       await api("/api/ledger/disconnect?ledger="+encodeURIComponent(b.dataset.dis),{method:"POST"});
       S=await api("/api/state"); viewSettings();
     });
   }catch(e){ $("#ledgers").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
+}
+
+async function loadSignin(){
+  try{
+    const a=await api("/api/auth/status"), g=a.google;
+    $("#signin").innerHTML=`<p class="sect" style="margin-top:30px;margin-bottom:10px">
+      Sign-in</p>
+      <div class="je">
+        <div class="ledrow"><span>Email and password</span>
+          <span class="ledright"><span class="ok-txt">always on</span></span></div>
+        <div class="ledrow"><span>Google</span><span class="ledright">${
+          g.configured ? `<span class="ok-txt">enabled</span>`
+                       : `<span class="pd-txt">no client credentials set</span>`}</span></div>
+        ${g.configured ? "" : `<div class="ledrow redir">
+          <span>To turn on Google sign-in, create an OAuth client ID (type: Web
+          application) in the Google Cloud console, set GOOGLE_CLIENT_ID and
+          GOOGLE_CLIENT_SECRET, and register this as an authorised redirect URI —
+          it is matched exactly.</span>
+          <code id="uri-google">${esc(g.redirect_uri||"")}</code>
+          <button class="ghost" data-copy="google" style="margin-top:7px">Copy</button>
+        </div>`}
+      </div>`;
+    wireCopy();
+  }catch(e){ $("#signin").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
 }
 
 async function loadDiagnostics(){
