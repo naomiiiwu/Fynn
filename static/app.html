@@ -677,11 +677,20 @@ async function send(files){
   }
   S=await api("/api/state");
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
-  const go=document.createElement("div");
-  go.className="acts"; go.style.marginTop="16px";
-  go.innerHTML=`<button class="go" id="toreview">Review the cycle →</button>`;
-  $("#files").appendChild(go);
-  $("#toreview").onclick=()=>go("cycle");
+  // Named `actions`, not `go`: a local called `go` shadows the router function
+  // of that name, and the click handler below then calls a <div>.
+  let actions = $("#toreview-wrap");
+  if(!actions){
+    actions = document.createElement("div");
+    actions.id = "toreview-wrap";
+    actions.className = "acts";
+    actions.style.marginTop = "16px";
+    $("#files").appendChild(actions);
+  }
+  // Rebuilt rather than appended, so uploading twice does not leave two
+  // buttons sharing one id.
+  actions.innerHTML = `<button class="go" id="toreview">Review the cycle →</button>`;
+  $("#toreview").onclick = () => go("cycle");
 }
 
 /* ── rules ── */
