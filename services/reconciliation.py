@@ -224,14 +224,23 @@ def reconcile(
     residual = round(total - reported_payout, 2)
 
     if abs(residual) >= 0.005 and not any(not e.resolved for e in exceptions):
+        # A residual is computed from the figures rather than read off a line,
+        # so unlike every other exception it has to look up its own decision.
+        # Without this, approving it did nothing at all: the next reconciliation
+        # recomputed the same difference and raised it again, and the cycle
+        # could never be posted.
+        residual_key = f"{platform.value}|{cycle}|residual"
+        decision = resolutions.get(residual_key)
         exceptions.append(
             ReconException(
-                key=f"{platform.value}|{cycle}|residual",
+                key=residual_key,
                 platform=platform, kind="residual", amount=residual,
                 why=(
                     f"Classified total {total:.2f} does not match the reported payout "
                     f"{reported_payout:.2f}. Difference of {residual:.2f} is unexplained."
                 ),
+                resolved=decision is not None,
+                resolved_account=decision[0] if decision else None,
             )
         )
 

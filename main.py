@@ -61,6 +61,7 @@ from services.database import (
     save_posted_entry,
     save_resolution,
     save_settlement_file,
+    update_settlement_reported,
 )
 from services.ledger import fetch_chart, get_adapter
 from utils.formatter import Cycle
@@ -693,6 +694,47 @@ def api_clear_cycle():
         profile.open_cycle = None
         _profiles.save(profile)
     return {"cycle": None}
+
+
+class ReportedRequest(BaseModel):
+    # Same shape as the upload field: "Shopee=3733.38;Lazada=1038.00"
+    reported: str
+
+
+@app.put("/api/cycle/reported")
+def api_set_reported(req: ReportedRequest):
+    """State what a platform actually deposited, after the file is already in.
+
+    A settlement export does not always carry the payout on a row of its own,
+    and the figure typed at upload is easy to leave blank. Without a way to
+    supply it afterwards the only remedy was to close the cycle and upload
+    again, losing every decision made since — so the whole payout sat as an
+    unexplained residual that no approval could clear.
+    """
+    space = ws()
+    cycle = _require_cycle()
+    try:
+        payouts = parse_reported(req.reported)
+    except SettlementParseError as exc:
+        raise HTTPException(400, str(exc))
+    if not payouts:
+        raise HTTPException(400, 'Nothing to set. Use the form "Shopee=3733.38".')
+
+    known = {p.value for p in cycle.reported} | {
+        l.platform.value for l in cycle.lines}
+    unknown = [p.value for p in payouts if p.value not in known]
+    if unknown:
+        raise HTTPException(
+            400, f"No lines in this cycle for: {', '.join(unknown)}.")
+
+    cycle.reported.update(payouts)
+    cycle.run()
+    stated = ";".join(f"{p.value}={v:.2f}" for p, v in sorted(
+        cycle.reported.items(), key=lambda kv: kv[0].value))
+    cycle.trail.add("source", f"Reported payout set — {stated}",
+                    actor=space.profile().approver())
+    update_settlement_reported(space.id, cycle.cycle, stated)
+    return cycle.digest()
 
 
 @app.get("/api/digest")

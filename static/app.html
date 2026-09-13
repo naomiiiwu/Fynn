@@ -472,10 +472,23 @@ function viewCycle(){
     // is gated, and the gate should say so rather than being inferred from an
     // absence.
     const n = D.open_exceptions;
+    // A residual is the one exception an approval cannot always answer: if the
+    // file simply never stated the payout, the honest fix is to supply it, not
+    // to write the whole deposit off to an account.
+    const residual = D.exceptions.find(e=>e.kind==="residual");
     h+=`<div class="gate"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
       <p>Each one changes the payout, so a journal posted now would be one Fynn
       already knows is wrong. Open any above and say where it belongs — most
-      become a rule, and will not be asked again next cycle.</p></div>`;
+      become a rule, and will not be asked again next cycle.</p>
+      ${residual?`<div class="field" style="margin-top:14px">
+        <label for="fix-reported">What did ${esc(residual.platform)} actually deposit?</label>
+        <div class="ask"><input id="fix-reported"
+          placeholder="${esc(residual.platform)}=0.00" autocomplete="off">
+          <button id="fix-save">Set payout</button></div>
+        <p class="hint" id="fix-status">The residual is the gap between what Fynn
+        classified and what the platform says it paid. If the export never stated
+        the payout, enter it here rather than writing the difference off.</p>
+      </div>`:""}</div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
       <p>${D.lines_total} lines classified across ${D.platforms.length} platforms,
@@ -501,6 +514,23 @@ function viewCycle(){
 
   $("#main").innerHTML=h;
   $("#toupload").onclick=()=>go("upload");
+  if($("#fix-save")){
+    const save=async()=>{
+      const v=$("#fix-reported").value.trim();
+      if(!v) return;
+      $("#fix-save").disabled=true; $("#fix-status").textContent="Setting…";
+      try{
+        await api("/api/cycle/reported",{method:"PUT",
+          headers:{"Content-Type":"application/json"},body:JSON.stringify({reported:v})});
+        await load();
+      }catch(e){
+        $("#fix-save").disabled=false;
+        $("#fix-status").textContent=e.message;
+      }
+    };
+    $("#fix-save").onclick=save;
+    $("#fix-reported").onkeydown=ev=>{ if(ev.key==="Enter") save(); };
+  }
   document.querySelectorAll(".row").forEach(r=>r.onclick=()=>openExc(decodeURIComponent(r.dataset.k)));
   document.querySelectorAll(".jrow").forEach(b=>b.onclick=()=>toggleJE(b.dataset.je));
   if($("#post")) $("#post").onclick=post;

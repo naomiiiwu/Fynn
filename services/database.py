@@ -230,6 +230,24 @@ def load_resolutions(firm_id: str, cycle: str) -> list[dict]:
         return []
 
 
+def update_settlement_reported(firm_id: str, cycle: str, reported: str) -> bool:
+    """Record a payout figure supplied after the file was uploaded.
+
+    Written to every file in the cycle rather than one, so a rebuild reaches the
+    same answer whichever order it reads them in.
+    """
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("settlement_files").update({"reported": reported})
+         .eq("firm_id", firm_id).eq("cycle", cycle).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to record reported payout: {exc}")
+        return False
+
+
 # ── Posted entries ────────────────────────────────────────────────────────────
 
 def save_posted_entry(

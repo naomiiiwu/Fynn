@@ -60,6 +60,22 @@ def build_journal(
         buckets[(account, side)] += abs(line.amount)
         net += line.amount
 
+    # A residual the accountant has decided on: the difference between what was
+    # classified and what the platform says it deposited, written to the account
+    # they chose. It carries no settlement line, so it is folded in here as one.
+    #
+    # Taking it off `net` is the point. The clearing line must equal the payout —
+    # that is what the bank deposit will match — so the unexplained part leaves
+    # the clearing account and lands where it was sent.
+    residual_key = f"{platform.value}|{cycle}|residual"
+    decided_residual = resolutions.get(residual_key)
+    if decided_residual is not None and abs(result.residual) >= 0.005:
+        account, _declared = decided_residual
+        amount = -result.residual
+        side = Side.CREDIT if amount > 0 else Side.DEBIT
+        buckets[(account, side)] += abs(amount)
+        net += amount
+
     # The clearing account leads the entry: it carries the net — what the
     # platform actually deposits — and every other line explains how the gross
     # sales became that figure. Adapters read it as the total of the document
