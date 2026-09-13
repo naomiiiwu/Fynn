@@ -13,7 +13,7 @@ from typing import Optional
 from models.transaction import CycleResult, Platform, ReconException, SettlementLine, Side
 from services.audit import AuditTrail
 from services.classification import RuleStore, is_never_rule
-from services.journal import build_journal
+from services.journal import build_journal, build_payout_journals
 from services.reconciliation import group_by_platform, group_key, reconcile
 
 
@@ -86,6 +86,11 @@ class Cycle:
                 resolutions=self.resolutions,
             )
             result.journal = build_journal(
+                platform, self.cycle, plines, self.store, result, self.resolutions
+            )
+            # And the same reconciliation split per bank deposit, for ledgers
+            # that reconcile against a document rather than a journal.
+            result.payout_journals = build_payout_journals(
                 platform, self.cycle, plines, self.store, result, self.resolutions
             )
             self._results[platform] = result

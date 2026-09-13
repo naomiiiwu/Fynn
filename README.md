@@ -332,7 +332,18 @@ The document is built from the journal rather than replacing it: the clearing
 line is the total — what the platform actually deposits, and what the bank
 statement will show — and every other line becomes an invoice line explaining
 how gross sales became that figure. The invoice total therefore equals the
-reported payout exactly, which is what makes the match possible.
+payout exactly, which is what makes the match possible.
+
+**One document per payout, not per cycle.** A cycle is a month because that is
+how a close is named; a payout is a bank deposit, and Lazada makes four of them
+in a January. One invoice covering all four matches none of them. So Xero
+receives one document per settlement, grouped on the platform's own stated
+period — never on a date Fynn inferred — and dated to the day that period
+closed, so it lands in the right period at a year end. A platform that settles
+once a cycle, like Shopee's monthly income statement, is not split.
+
+QuickBooks still receives a single journal per cycle. Splitting it the same way
+is the obvious next step and is not done yet.
 
 Every post carries an idempotency key — `Idempotency-Key` for Xero, `requestid`
 for QuickBooks — derived from the firm, cycle and entry reference rather than

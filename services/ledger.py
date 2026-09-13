@@ -50,6 +50,28 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+def _payout_date(payout: str) -> str:
+    """The day a settlement period closed, from the platform's own wording.
+
+    An invoice dated when Fynn happened to run is harder to reconcile and lands
+    in the wrong period at a year end. The end of the stated range is the
+    settlement date; anything unparseable falls back to today rather than
+    guessing.
+    """
+    import re as _re
+    from datetime import datetime
+    if not payout:
+        return ""
+    parts = _re.split(r"\s+(?:-|–|—|to)\s+", payout.strip())
+    for text in reversed(parts):
+        for fmt in ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(text.strip(), fmt).date().isoformat()
+            except ValueError:
+                continue
+    return ""
+
+
 def split_clearing(entry: JournalEntry):
     """The clearing line, and everything else.
 
@@ -68,6 +90,10 @@ def split_clearing(entry: JournalEntry):
 
 class LedgerAdapter(ABC):
     name: str
+    # Whether this ledger wants one document per bank deposit. True where the
+    # ledger reconciles a statement line against a document, because a document
+    # covering several deposits matches none of them.
+    per_payout = False
 
     def __init__(
         self, accounts: Optional[AccountMap] = None, connection=None
@@ -148,6 +174,9 @@ class DryRunAdapter(LedgerAdapter):
 
     def __init__(self, accounts=None, connection=None, preview_for: str = "") -> None:
         super().__init__(accounts, connection)
+        # A dry run of Xero must split the way a real Xero post would, or it is
+        # a dry run of something else.
+        self.per_payout = preview_for == "xero"
         # Which live adapter's document to render alongside. Only Xero builds a
         # document distinct from the journal, so only Xero has one to preview.
         self.preview_for = preview_for if preview_for == "xero" else ""
@@ -216,6 +245,7 @@ class XeroAdapter(LedgerAdapter):
     """
 
     name = "xero"
+    per_payout = True
     ENDPOINT = "https://api.xero.com/api.xro/2.0/Invoices"
 
     def __init__(
@@ -266,7 +296,7 @@ class XeroAdapter(LedgerAdapter):
                 # Xero creates the contact if this name is new, so a firm does
                 # not have to set one up before the first post.
                 "Contact": {"Name": entry.platform.value},
-                "Date": _today(),
+                "Date": _payout_date(entry.payout) or _today(),
                 "LineAmountTypes": "Exclusive",
                 "InvoiceNumber": entry.reference,
                 "Reference": f"Fynn — {entry.platform.value} {entry.cycle}",

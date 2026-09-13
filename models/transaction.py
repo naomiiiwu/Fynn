@@ -29,6 +29,11 @@ class SettlementLine(BaseModel):
     order_id: Optional[str] = None
     date: Optional[str] = None
     source_ref: Optional[str] = None  # settlement file this came from
+    # The platform's own settlement period, verbatim — "05 Jan 2026 - 11 Jan
+    # 2026". Distinct from `cycle`, which is the month it is closed in. Lazada
+    # settles weekly, so one January cycle holds four payouts and therefore four
+    # bank deposits; a document that covers all four matches none of them.
+    payout: Optional[str] = None
     # The platform's own grouping for this fee, where it publishes one. Lazada's
     # API ships a "Fee Classification" ("Orders-Logistics"); its Seller Center
     # CSV export does not, and Shopee has no equivalent at all.
@@ -118,6 +123,9 @@ class JournalEntry(BaseModel):
     cycle: str
     lines: list[JournalLine]
     reference: str
+    # Which settlement this covers, when the entry is one payout rather than a
+    # whole cycle. Blank for a cycle-wide entry.
+    payout: str = ""
 
     @property
     def total_debit(self) -> float:
@@ -140,6 +148,9 @@ class CycleResult(BaseModel):
     residual: float
     exceptions: list[ReconException]
     journal: Optional[JournalEntry] = None
+    # The same reconciliation split one entry per payout — one document per
+    # bank deposit. Empty when the platform settles once per cycle anyway.
+    payout_journals: list[JournalEntry] = []
 
     @property
     def ties_out(self) -> bool:

@@ -474,8 +474,14 @@ def _post_cycle() -> dict:
     actor = profile.approver()
     out = []
     for _platform, result in results.items():
+        # One document per bank deposit where the ledger reconciles that way,
+        # otherwise the single cycle entry.
+        entries = (result.payout_journals
+                   if adapter.per_payout and result.payout_journals
+                   else [result.journal])
         try:
-            out.append(adapter.post(result.journal))
+            for entry in entries:
+                out.append(adapter.post(entry))
         except NotImplementedError as exc:
             # The live adapters prepare the payload but cannot send it yet. That
             # is a configuration state, not a server fault.
@@ -484,10 +490,18 @@ def _post_cycle() -> dict:
             # Unmapped accounts, or missing credentials. Both are things the
             # firm can fix, and the message says which.
             raise HTTPException(409, str(exc))
-        cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
-        save_posted_entry(
-            ws().id, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
-        )
+        # Record what was actually sent, one line per document. A trail that
+        # names the cycle entry while four invoices went out is a trail of
+        # something that did not happen.
+        for entry in entries:
+            where = f" ({entry.payout})" if entry.payout else ""
+            cycle.trail.add(
+                "post", f"{entry.reference}{where} sent to {adapter.name}", actor=actor
+            )
+        for entry in entries:
+            save_posted_entry(
+                ws().id, cycle.cycle, entry, adapter.name, actor, cycle.trail.to_csv()
+            )
     return {"adapter": adapter.name, "entries": out}
 
 

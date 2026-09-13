@@ -556,11 +556,14 @@ def _melt_wide(
 
         order_id = (row.get(cols["order"], "") or "").strip() if "order" in cols else ""
         date = (row.get(cols["date"], "") or "").strip() if "date" in cols else ""
-        cycle = (row.get(cols["cycle"], "") or "").strip() if "cycle" in cols else ""
+        stated = (row.get(cols["cycle"], "") or "").strip() if "cycle" in cols else ""
         cycle = (
-            _normalise_cycle(cycle) or file_cycle
+            _normalise_cycle(stated) or file_cycle
             or _normalise_cycle(date) or default_cycle or "unknown"
         )
+        # Kept verbatim: the month is what the close is named after, but the
+        # stated period is what the platform actually paid against.
+        payout = stated or cycle
 
         components = 0.0
         for header in fee_cols:
@@ -574,7 +577,7 @@ def _melt_wide(
                 SettlementLine(
                     platform=platform, cycle=cycle, label=_clean_label(header),
                     amount=amount, order_id=order_id or None, date=date or None,
-                    source_ref=filename,
+                    source_ref=filename, payout=payout,
                 )
             )
         parsed.cycles.add(cycle)
@@ -651,6 +654,7 @@ def _melt_long(
             _normalise_cycle(cycle_cell) or file_cycle
             or _normalise_cycle(date) or default_cycle or "unknown"
         )
+        payout = cycle_cell.strip() or cycle
 
         if label.strip().lower() in PAYOUT_LABELS:
             # Stated positive; a withdrawal row is often negative because it
@@ -666,7 +670,7 @@ def _melt_long(
             SettlementLine(
                 platform=platform, cycle=cycle, label=label, amount=amount,
                 order_id=order_id or None, date=date or None, source_ref=filename,
-                category=category or None, note=note or None,
+                category=category or None, note=note or None, payout=payout,
             )
         )
         parsed.cycles.add(cycle)

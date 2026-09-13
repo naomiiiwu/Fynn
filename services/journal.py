@@ -7,6 +7,7 @@ deposit arrives Xero/QBO's own bank reconciliation can match against it.
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from models.transaction import (
@@ -82,3 +83,55 @@ def build_journal(
         platform=platform, cycle=cycle, lines=journal_lines,
         reference=reference or f"JE-{platform.value[:3].upper()}-{cycle}",
     )
+
+
+def _payout_slug(payout: str) -> str:
+    """A short, stable tag for a settlement period, safe in a reference.
+
+    Stable matters more than pretty: the idempotency key is derived from the
+    reference, so a slug that changed between runs would let a retry create a
+    second invoice in a client's books.
+    """
+    text = re.sub(r"[^A-Za-z0-9]+", "", payout or "").upper()
+    return text[:16] or "ALL"
+
+
+def build_payout_journals(
+    platform: Platform,
+    cycle: str,
+    lines: list[SettlementLine],
+    store: RuleStore,
+    result: CycleResult,
+    resolutions: dict[str, tuple[str, Side]] | None = None,
+) -> list[JournalEntry]:
+    """The same reconciliation, split one entry per payout.
+
+    A cycle is a month because that is how a close is named. A payout is a bank
+    deposit, and Lazada makes four of them in a January. One document covering
+    all four reconciles against none of them, so the ledger's bank feed has
+    nothing to offer the accountant and every deposit is coded by hand.
+
+    Grouping is on the platform's own stated period, never on a date Fynn
+    inferred: the platform decides what it paid against, and a line carried into
+    the next statement belongs to the statement that paid it.
+
+    Returns a single cycle-wide entry when the platform settles once — Shopee's
+    monthly income statement — so nothing is split that was never apart.
+    """
+    groups: dict[str, list[SettlementLine]] = defaultdict(list)
+    for line in lines:
+        groups[line.payout or cycle].append(line)
+
+    if len(groups) <= 1:
+        return []
+
+    entries = []
+    base = f"JE-{platform.value[:3].upper()}-{cycle}"
+    for payout, payout_lines in sorted(groups.items()):
+        entry = build_journal(
+            platform, cycle, payout_lines, store, result, resolutions,
+            reference=f"{base}-{_payout_slug(payout)}",
+        )
+        entry.payout = payout
+        entries.append(entry)
+    return entries
