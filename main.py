@@ -699,9 +699,12 @@ def oauth_connect(ledger: str):
     """Send the accountant to the ledger's consent screen."""
     try:
         provider = oauth.get_provider(ledger)
-        # Signed, single-use, and checked on the way back: without it, a link
-        # from anywhere could complete a connection into this workspace.
-        state = _sign(int(time.time()) + 600)
+        # Random, single-use, and compared on the way back against a copy kept
+        # in an httpOnly cookie: without it, a link from anywhere could complete
+        # a connection into this workspace. The cookie is what makes it
+        # trustworthy, so the value itself need only be unguessable — the same
+        # pattern the Google sign-in uses, and it expires with the cookie.
+        state = identity.new_state()
         url = oauth.authorize_url(provider, base_url(), state)
     except oauth.OAuthError as exc:
         raise HTTPException(400, str(exc))
@@ -774,8 +777,7 @@ def oauth_callback(
         return fail("No authorisation code came back.")
 
     expected = request.cookies.get(OAUTH_STATE_COOKIE, "")
-    if not state or not expected or not secrets.compare_digest(state, expected) \
-            or not _valid_session(state):
+    if not state or not expected or not secrets.compare_digest(state, expected):
         return fail("That sign-in did not come from here, or it expired. Try again.")
 
     try:
