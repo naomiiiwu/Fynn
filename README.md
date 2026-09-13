@@ -442,3 +442,24 @@ Pre-product. Validated through conversations with practising accountants in
 Singapore; the reconciliation engine runs end to end on sample data and accepts
 real exports, through a web interface with no authentication. Not connected to
 live platforms or ledgers.
+
+## Checks
+
+```
+python3 tests/run.py
+```
+
+No test framework and no dev dependency: it has to be runnable by anyone with
+the repo and nothing installed.
+
+What is in there is what has actually broken. The most important group is
+**schema drift**. Fynn's schema grows faster than the database it is pointed
+at, and every bug of that kind has had the same shape — a write carries a
+column the database has not got, the row is lost whole, and the failure
+surfaces somewhere unrelated: a foreign key, an empty screen, a ledger that
+will not connect. Testing only against an up-to-date schema cannot see any of
+it, which is why that class kept reaching production.
+
+`tests/fakedb.py` reproduces a lagging database on purpose, including the
+foreign keys that turn a dropped `firm_profiles` row into "Xero will not
+connect". Every column a migration has added is exercised as missing.
