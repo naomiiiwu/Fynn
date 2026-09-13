@@ -40,28 +40,64 @@ def _get_client():
         return None
 
 
+def _upsert(table: str, row: dict, optional: tuple = (), on_conflict: str = "") -> bool:
+    """Upsert a row, tolerating a database that is a migration behind.
+
+    Fynn's schema grows, and the database it is pointed at does not always grow
+    with it — a column added last week may not exist yet. Without this, a write
+    that carries a new field fails whole, and the damage is rarely local: a
+    firm_profiles row that never lands takes every foreign key with it, so
+    rules, settlement files and ledger connections all fail too, each for a
+    reason that looks nothing like the cause.
+
+    So the newest fields are named as optional. If the database rejects one,
+    it is dropped and the row is written without it. Losing a field degrades a
+    feature; losing the row breaks the account.
+    """
+    client = _get_client()
+    if not client:
+        return False
+
+    def write(payload: dict) -> None:
+        query = client.table(table).upsert(
+            payload, **({"on_conflict": on_conflict} if on_conflict else {}))
+        query.execute()
+
+    try:
+        write(row)
+        return True
+    except Exception as exc:
+        missing = [k for k in optional if k in str(exc)]
+        if not missing:
+            print(f"  [DB] Failed to write {table}: {exc}")
+            return False
+        try:
+            trimmed = {k: v for k, v in row.items() if k not in missing}
+            write(trimmed)
+            print(f"  [DB] Wrote {table} without {', '.join(missing)} — "
+                  f"the database is behind; run the migrations.")
+            return True
+        except Exception as retry_exc:
+            print(f"  [DB] Failed to write {table}: {retry_exc}")
+            return False
+
+
 # ── Firm profiles ─────────────────────────────────────────────────────────────
 
 def save_firm(profile) -> bool:
     """Upsert one firm profile."""
-    client = _get_client()
-    if not client:
-        return False
-    try:
-        client.table("firm_profiles").upsert({
-            "workspace_id":    profile.id,
-            "firm":            profile.firm,
-            "actor":           profile.actor,
-            "platforms":       profile.platforms,
-            "ledger":          profile.ledger,
-            "onboarding_step": profile.onboarding_step,
-            "open_cycle":      profile.open_cycle,
-        }).execute()
+    ok = _upsert("firm_profiles", {
+        "workspace_id":    profile.id,
+        "firm":            profile.firm,
+        "actor":           profile.actor,
+        "platforms":       profile.platforms,
+        "ledger":          profile.ledger,
+        "onboarding_step": profile.onboarding_step,
+        "open_cycle":      profile.open_cycle,
+    }, optional=("open_cycle",))
+    if ok:
         print(f"  [DB] Firm profile saved for {profile.id}")
-        return True
-    except Exception as exc:
-        print(f"  [DB] Failed to save firm profile: {exc}")
-        return False
+    return ok
 
 
 def load_firm(firm_id: str) -> Optional[dict]:
@@ -162,27 +198,21 @@ def save_settlement_file(
     Traceability was the requirement every accountant raised independently: a
     posted figure has to be walkable back to the file it came from.
     """
-    client = _get_client()
-    if not client:
-        return False
-    try:
-        client.table("settlement_files").upsert({
-            "id":         f"{firm_id}|{cycle}|{filename}",
-            "firm_id":    firm_id,
-            "cycle":      cycle,
-            "filename":   filename,
-            "line_count": line_count,
-            "csv_data":   raw.decode("utf-8-sig", errors="replace"),
-            # The payout figures typed at upload, where the file did not state
-            # them. Without these a rebuilt cycle would reconcile against zero
-            # and report the whole payout as a residual.
-            "reported":   reported or "",
-        }).execute()
+    ok = _upsert("settlement_files", {
+        "id":         f"{firm_id}|{cycle}|{filename}",
+        "firm_id":    firm_id,
+        "cycle":      cycle,
+        "filename":   filename,
+        "line_count": line_count,
+        "csv_data":   raw.decode("utf-8-sig", errors="replace"),
+        # The payout figures typed at upload, where the file did not state
+        # them. Without these a rebuilt cycle would reconcile against zero
+        # and report the whole payout as a residual.
+        "reported":   reported or "",
+    }, optional=("reported",))
+    if ok:
         print(f"  [DB] Settlement file retained: {filename} ({cycle})")
-        return True
-    except Exception as exc:
-        print(f"  [DB] Failed to retain settlement file: {exc}")
-        return False
+    return ok
 
 
 def load_settlement_files(firm_id: str, cycle: Optional[str] = None) -> list[dict]:
