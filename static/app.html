@@ -941,9 +941,18 @@ async function loadDiagnostics(){
     if(d.accounts_at_risk) h = `<div class="err" style="margin-bottom:14px">
       <b>${d.accounts_at_risk} account${d.accounts_at_risk>1?"s":""} not saved.</b>
       ${esc(d.warning)}</div>` + h;
-    if(!ok) h += `<p class="note">Set SUPABASE_URL and SUPABASE_SERVICE_KEY, then run
-      the files in migrations/ in the Supabase SQL editor. Until then your rules,
-      settings and account mappings live only in memory and a redeploy clears them.</p>`;
+    const sc = d.schema || {};
+    h += sc.configured && sc.ok
+      ? `<p class="note">Schema is managed automatically — Fynn applies it on every
+         start, so a release that needs a new table just works.</p>`
+      : sc.configured
+        ? `<p class="note">Automatic schema failed: ${esc(sc.detail||"")}</p>`
+        : `<p class="note">Set <b>DATABASE_URL</b> to your Supabase Postgres connection
+           string and Fynn will apply the schema itself on every start. Until then the
+           files in migrations/ have to be run by hand in the SQL editor.</p>`;
+    if(!ok && !(sc.configured && sc.ok))
+      h += `<p class="note">Without a usable schema your rules, settings and account
+        mappings live only in memory, and a redeploy clears them.</p>`;
     $("#diag").innerHTML = h;
   }catch(e){ $("#diag").innerHTML = `<p class="note">${esc(e.message)}</p>`; }
 }

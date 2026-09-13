@@ -53,7 +53,7 @@ from models.user import User, UserStore
 from models.transaction import Platform, Side
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
-from services import connections, identity, oauth
+from services import connections, identity, migrate, oauth
 from services.database import diagnose, save_posted_entry, save_settlement_file
 from services.ledger import fetch_chart, get_adapter
 from utils.formatter import Cycle
@@ -65,6 +65,16 @@ app = FastAPI(
 )
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
+
+
+@app.on_event("startup")
+def _apply_schema() -> None:
+    """Bring the database up to date before serving anything.
+
+    Nobody should have to notice that a release needs a new table. See
+    services/migrate.py for why running this on every boot is safe.
+    """
+    migrate.apply()
 
 # ── Accounts and access ───────────────────────────────────────────────────────
 # Every account owns one workspace and sees nothing outside it. A user's id is
@@ -865,12 +875,14 @@ def api_diagnostics():
     endpoint is how you tell the difference.
     """
     storage = diagnose()
+    schema = migrate.status()
     # An account held only in memory is worse than a rule held only in memory:
     # a workspace is keyed by its owner's id, so losing the account orphans
     # everything under it. Say so separately and plainly.
     pending = _users.pending
     return {
         "storage": storage,
+        "schema": schema,
         "accounts_at_risk": pending,
         "warning": (
             f"{pending} account(s) exist only in this process because the users "
