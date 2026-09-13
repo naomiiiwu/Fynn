@@ -148,6 +148,11 @@ transition:background .16s,border-color .16s;border-radius:0;box-shadow:none}
 color:var(--flag);white-space:nowrap;font-weight:600;text-transform:uppercase;
 letter-spacing:.04em;border:1px solid var(--flagRule)}
 
+.gate{background:var(--flagBg);border:1px solid var(--flagRule);border-radius:var(--r-sm);
+padding:17px 20px;margin:22px 0 0}
+.gate h2{font-size:14.5px;font-weight:650;color:var(--flag);margin-bottom:4px;
+letter-spacing:-.01em}
+.gate p{font-size:13px;color:var(--flag);opacity:.9}
 .closed{background:linear-gradient(180deg,var(--ledgerBg),#F4F8F6);
 border:1px solid #CFE2D8;border-radius:var(--r-sm);padding:19px 21px;margin-bottom:24px}
 .closed h2{font-size:15.5px;font-weight:650;color:var(--ledger);margin-bottom:4px;
@@ -462,6 +467,15 @@ function viewCycle(){
         <span class="m">${esc(e.why)}</span></span>
         <span class="a num">${fmt(e.amount)}</span><span class="tag">Open</span></button>`;
     });
+    // Without this the only button on the page is "Close this cycle without
+    // posting", which reads as though posting were never on offer. It is — it
+    // is gated, and the gate should say so rather than being inferred from an
+    // absence.
+    const n = D.open_exceptions;
+    h+=`<div class="gate"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
+      <p>Each one changes the payout, so a journal posted now would be one Fynn
+      already knows is wrong. Open any above and say where it belongs — most
+      become a rule, and will not be asked again next cycle.</p></div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
       <p>${D.lines_total} lines classified across ${D.platforms.length} platforms,
