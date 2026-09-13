@@ -154,7 +154,15 @@ class CycleResult(BaseModel):
 
     @property
     def ties_out(self) -> bool:
-        return abs(self.residual) < 0.005 and not [e for e in self.exceptions if not e.resolved]
+        """Whether this platform is settled enough to post.
+
+        Unresolved exceptions only. A non-zero residual is not a separate
+        condition — it is *raised* as an exception, so testing the number as
+        well double-counted it: a residual the accountant had explicitly
+        assigned to an account left the screen saying "ready to post" while the
+        API refused, which is the worst way to disagree with someone.
+        """
+        return not [e for e in self.exceptions if not e.resolved]
 
 
 class AuditRecord(BaseModel):

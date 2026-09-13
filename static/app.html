@@ -459,6 +459,27 @@ function viewCycle(){
   });
   h+=`</div>`;
 
+  // A platform with no stated payout has nothing for the bank deposit to match:
+  // the clearing line would post as zero. Shown whether or not the cycle is
+  // otherwise ready, because writing the difference off does not fix it — it
+  // only hides it behind a balanced entry.
+  const noPayout = D.platforms.filter(p=>Math.abs(p.reported_payout) < 0.005);
+  if(noPayout.length){
+    const names = noPayout.map(p=>p.platform);
+    h+=`<div class="gate" style="margin:0 0 22px"><h2>No payout stated for
+      ${names.map(esc).join(", ")}</h2>
+      <p>Fynn has nothing to reconcile against, so the clearing line would post
+      as 0.00 and no bank deposit could ever match it. If the export did not
+      carry the payout on a row of its own, enter what was actually deposited.</p>
+      <div class="field" style="margin-top:12px">
+        <div class="ask"><input id="fix-reported"
+          placeholder="${esc(names[0])}=0.00" autocomplete="off">
+          <button id="fix-save">Set payout</button></div>
+        <p class="hint" id="fix-status">One per platform, separated by
+        semicolons — <span class="num">${names.map(n=>esc(n)+"=0.00").join(";")}</span></p>
+      </div></div>`;
+  }
+
   if(!done){
     h+=`<p class="sect">Needs your review <span>${D.open_exceptions} open</span></p>`;
     D.exceptions.forEach(e=>{
@@ -475,20 +496,10 @@ function viewCycle(){
     // A residual is the one exception an approval cannot always answer: if the
     // file simply never stated the payout, the honest fix is to supply it, not
     // to write the whole deposit off to an account.
-    const residual = D.exceptions.find(e=>e.kind==="residual");
     h+=`<div class="gate"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
       <p>Each one changes the payout, so a journal posted now would be one Fynn
       already knows is wrong. Open any above and say where it belongs — most
-      become a rule, and will not be asked again next cycle.</p>
-      ${residual?`<div class="field" style="margin-top:14px">
-        <label for="fix-reported">What did ${esc(residual.platform)} actually deposit?</label>
-        <div class="ask"><input id="fix-reported"
-          placeholder="${esc(residual.platform)}=0.00" autocomplete="off">
-          <button id="fix-save">Set payout</button></div>
-        <p class="hint" id="fix-status">The residual is the gap between what Fynn
-        classified and what the platform says it paid. If the export never stated
-        the payout, enter it here rather than writing the difference off.</p>
-      </div>`:""}</div>`;
+      become a rule, and will not be asked again next cycle.</p></div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
       <p>${D.lines_total} lines classified across ${D.platforms.length} platforms,
