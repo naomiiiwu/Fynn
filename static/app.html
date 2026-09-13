@@ -364,7 +364,9 @@ const fmt=n=>(n<0?"−":"")+Math.abs(n).toFixed(2);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let S=null, TAB="cycle", ACTIVE=null, HISTORY=[], BUSY=false;
 
-const ACCOUNTS=["Sales Revenue","Sales Returns & Allowances","Commission Expense",
+// Served by the API so the dropdown and the explainer offer the same accounts.
+// The fallback is only for the moment before state has loaded.
+let ACCOUNTS=["Sales Revenue","Sales Returns & Allowances","Commission Expense",
 "Payment Processing Fees","Platform Service Fees","Marketing Expense","Shipping Expense",
 "Shipping Income","Warehouse & Storage","GST Input Tax","Withholding Tax Receivable",
 "Other Income","Other Expense","Clearing Account (hold)"];
@@ -377,7 +379,9 @@ async function api(path,opts={}){
 
 async function load(){
   try{
-    S=await api("/api/state"); render();
+    S=await api("/api/state");
+    if(S.posting_accounts && S.posting_accounts.length) ACCOUNTS = S.posting_accounts;
+    render();
     // Resume where setup left off: connecting a ledger navigates away from the
     // page entirely, and restarting from step one would be a poor welcome.
     if(obNeeded() && !$(".ob-back"))

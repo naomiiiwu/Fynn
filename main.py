@@ -45,6 +45,7 @@ from agents.investigator import investigate
 from data.sample_settlements import REPORTED_PAYOUTS, prior_cycle_lines, sample_lines
 from models.account_map import AccountMap, suggest
 from models.firm_profile import (
+    POSTING_ACCOUNTS,
     SUPPORTED_LEDGERS,
     SUPPORTED_PLATFORMS,
     FirmProfile,
@@ -636,6 +637,7 @@ def api_state():
     user = current_user()
     return {
         "user": user.to_dict() if user else None,
+        "posting_accounts": list(POSTING_ACCOUNTS),
         "firm": profile.to_dict(),
         "ledger_adapter": get_adapter(profile.ledger).name,
         "rules": {
@@ -758,9 +760,15 @@ def api_opening(key: str):
 def api_chat(req: ChatRequest):
     """Follow-up questions about one exception. This is the only LLM surface
     the accountant talks to, and it cannot approve anything."""
+    space = ws()
     cycle = _require_cycle()
     exc = _find_exception(cycle, req.key)
-    return {"message": reply(exc, req.history, cycle.lines, cycle.prior)}
+    # The firm's own decisions and the accounts actually in use. Without these
+    # the model can describe a fee but never propose where it goes, which is the
+    # only thing the accountant is in this conversation for.
+    return {"message": reply(exc, req.history, cycle.lines, cycle.prior,
+                             rules=space.rules().rules,
+                             accounts=POSTING_ACCOUNTS)}
 
 
 @app.post("/api/approve")

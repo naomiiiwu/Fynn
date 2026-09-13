@@ -19,6 +19,18 @@ from typing import Optional
 WORKSPACE_ID = "workspace"
 
 SUPPORTED_PLATFORMS = ["Shopee", "Lazada", "TikTok Shop"]
+
+# The accounts an exception can be approved to. One list, served to the browser
+# and given to the explainer, because the two disagreeing is worse than either
+# being wrong: the model declined to propose an account the accountant could
+# plainly see in the dropdown beside it.
+POSTING_ACCOUNTS = [
+    "Sales Revenue", "Sales Returns & Allowances", "Commission Expense",
+    "Payment Processing Fees", "Platform Service Fees", "Marketing Expense",
+    "Shipping Expense", "Shipping Income", "Warehouse & Storage",
+    "GST Input Tax", "Withholding Tax Receivable",
+    "Other Income", "Other Expense", "Clearing Account (hold)",
+]
 SUPPORTED_LEDGERS = ["dry-run", "xero"]
 
 
