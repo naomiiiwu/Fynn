@@ -34,6 +34,11 @@ class FirmProfile:
 
     # None = setup complete. Anything else means the firm has not finished setup.
     onboarding_step: Optional[str] = "ask_firm"
+    # The cycle currently being worked on, or None when none is open. The open
+    # cycle itself lives in memory and dies with the process; this is what says
+    # whether it should be rebuilt from the retained files on the way back, and
+    # is why closing a cycle stays closed rather than resurrecting on restart.
+    open_cycle: Optional[str] = None
 
     def is_onboarding_complete(self) -> bool:
         return self.onboarding_step is None
@@ -48,6 +53,7 @@ class FirmProfile:
             "actor": self.actor,
             "platforms": list(self.platforms),
             "ledger": self.ledger,
+            "open_cycle": self.open_cycle,
             "complete": self.is_onboarding_complete(),
         }
 
@@ -71,6 +77,7 @@ class FirmProfileStore:
             platforms=[p for p in platforms if p in SUPPORTED_PLATFORMS] or list(SUPPORTED_PLATFORMS),
             ledger=data.get("ledger") or "dry-run",
             onboarding_step=data.get("onboarding_step", "ask_firm"),
+            open_cycle=data.get("open_cycle") or None,
         )
 
     def get(self, firm_id: str = WORKSPACE_ID) -> Optional[FirmProfile]:

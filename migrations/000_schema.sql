@@ -1,10 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007
--- through 012 already applied, so a new project does not have to replay a
+-- through 014 already applied, so a new project does not have to replay a
 -- rename.
 --
--- On a database that already has the 005 schema, run 007 through 012 instead
+-- On a database that already has the 005 schema, run 007 through 014 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -47,6 +47,10 @@ create table if not exists firm_profiles (
     platforms       jsonb not null default '["Shopee","Lazada","TikTok Shop"]'::jsonb,
     ledger          text not null default 'dry-run',
     onboarding_step text,                          -- null = setup complete
+    -- The cycle being worked on, or null when none is open. The reconciliation
+    -- itself is in memory; this is what says whether to rebuild it from the
+    -- retained files after a restart.
+    open_cycle      text,
     updated_at      timestamptz not null default now()
 );
 
@@ -100,11 +104,29 @@ create table if not exists settlement_files (
     filename    text not null,
     line_count  integer not null default 0,
     csv_data    text not null,
+    -- Payouts typed at upload where the file did not state them; needed to
+    -- rebuild the cycle without reconciling against zero.
+    reported    text not null default '',
     ingested_at timestamptz not null default now()
 );
 
 create index if not exists idx_settlement_files_firm_cycle
     on settlement_files (firm_id, cycle);
+
+-- Decisions that belong to one cycle rather than to a rule. A refund with no
+-- matching sale, a withheld balance, an unexplained residual — each is about
+-- one settlement, not about a label that will recur, so no rule is written.
+-- Without these a restart re-opens them and a finished close comes back undone.
+create table if not exists cycle_resolutions (
+    firm_id    text not null references firm_profiles(workspace_id) on delete cascade,
+    cycle      text not null,
+    key        text not null,                 -- one line, or every line sharing a label
+    account    text not null,
+    side       text not null check (side in ('debit', 'credit')),
+    actor      text not null default '',
+    decided_at timestamptz not null default now(),
+    primary key (firm_id, cycle, key)
+);
 
 -- Journals sent to a ledger, with the working paper as it stood at the moment
 -- of posting. Entries are small and always read as a whole, so the lines are

@@ -45,6 +45,8 @@ APPLY = (
     "010_connection_scopes.sql",
     "011_users.sql",
     "012_account_tax.sql",
+    "013_resume_cycle.sql",
+    "014_cycle_resolutions.sql",
 )
 
 

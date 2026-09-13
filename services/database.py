@@ -55,6 +55,7 @@ def save_firm(profile) -> bool:
             "platforms":       profile.platforms,
             "ledger":          profile.ledger,
             "onboarding_step": profile.onboarding_step,
+            "open_cycle":      profile.open_cycle,
         }).execute()
         print(f"  [DB] Firm profile saved for {profile.id}")
         return True
@@ -153,7 +154,8 @@ def load_rules(firm_id: str) -> list[dict]:
 # ── Settlement files ──────────────────────────────────────────────────────────
 
 def save_settlement_file(
-    firm_id: str, filename: str, cycle: str, raw: bytes, line_count: int
+    firm_id: str, filename: str, cycle: str, raw: bytes, line_count: int,
+    reported: str = "",
 ) -> bool:
     """Retain a source settlement file.
 
@@ -171,6 +173,10 @@ def save_settlement_file(
             "filename":   filename,
             "line_count": line_count,
             "csv_data":   raw.decode("utf-8-sig", errors="replace"),
+            # The payout figures typed at upload, where the file did not state
+            # them. Without these a rebuilt cycle would reconcile against zero
+            # and report the whole payout as a residual.
+            "reported":   reported or "",
         }).execute()
         print(f"  [DB] Settlement file retained: {filename} ({cycle})")
         return True
@@ -190,6 +196,37 @@ def load_settlement_files(firm_id: str, cycle: Optional[str] = None) -> list[dic
         return query.execute().data or []
     except Exception as exc:
         print(f"  [DB] Failed to load settlement files: {exc}")
+        return []
+
+
+# ── Cycle resolutions ─────────────────────────────────────────────────────────
+
+def save_resolution(firm_id: str, cycle: str, key: str, account: str,
+                    side: str, actor: str = "") -> bool:
+    """Remember a decision that is about one settlement, not about a label."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("cycle_resolutions").upsert({
+            "firm_id": firm_id, "cycle": cycle, "key": key,
+            "account": account, "side": side, "actor": actor,
+        }, on_conflict="firm_id,cycle,key").execute()
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to save resolution: {exc}")
+        return False
+
+
+def load_resolutions(firm_id: str, cycle: str) -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return (client.table("cycle_resolutions").select("*")
+                .eq("firm_id", firm_id).eq("cycle", cycle).execute().data or [])
+    except Exception as exc:
+        print(f"  [DB] Failed to load resolutions: {exc}")
         return []
 
 
@@ -306,6 +343,7 @@ def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
 EXPECTED_TABLES = (
     "users", "firm_profiles", "firm_rules", "settlement_files",
     "posted_entries", "account_mappings", "ledger_connections",
+    "cycle_resolutions",
 )
 
 

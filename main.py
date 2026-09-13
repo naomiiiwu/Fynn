@@ -56,7 +56,12 @@ from services.audit import working_paper
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
 from services import connections, identity, migrate, oauth
-from services.database import diagnose, save_posted_entry, save_settlement_file
+from services.database import (
+    diagnose,
+    save_posted_entry,
+    save_resolution,
+    save_settlement_file,
+)
 from services.ledger import fetch_chart, get_adapter
 from utils.formatter import Cycle
 
@@ -302,12 +307,89 @@ class Workspace:
 
     def __init__(self, workspace_id: str) -> None:
         self.id = workspace_id
-        self.cycle: Optional[Cycle] = None
+        self._cycle: Optional[Cycle] = None
+        # Restoring is attempted once per process, not once per request: a
+        # workspace with nothing to restore must not re-query storage on every
+        # call, and a cycle deliberately closed must not come back.
+        self._restored = False
         self._rules: Optional[RuleStore] = None
         # Keyed by ledger: a Xero code and a QuickBooks id are different things,
         # so a firm that switches ledgers maps again rather than inheriting the
         # wrong codes.
         self._account_maps: dict[str, AccountMap] = {}
+
+    @property
+    def cycle(self) -> Optional[Cycle]:
+        """The open cycle, rebuilt from the retained files if this is a new process.
+
+        Source files are kept for the statutory period anyway, so the data to
+        rebuild was always there — nothing read it back, and a redeploy looked
+        like the upload had been lost when only the reconciliation had. Rules
+        are loaded from storage too, so the same decisions re-apply and the same
+        exceptions resolve.
+        """
+        if self._cycle is None and not self._restored:
+            self._restored = True
+            self._cycle = self._rebuild()
+        return self._cycle
+
+    @cycle.setter
+    def cycle(self, value: Optional[Cycle]) -> None:
+        self._cycle = value
+        self._restored = True
+
+    def _rebuild(self) -> Optional[Cycle]:
+        profile = self.profile()
+        if not profile.open_cycle:
+            return None
+        try:
+            from services.database import load_settlement_files
+            rows = load_settlement_files(self.id, profile.open_cycle)
+        except Exception as exc:
+            print(f"  [Cycle] Could not read retained files: {exc}")
+            return None
+        if not rows:
+            return None
+
+        rebuilt: Optional[Cycle] = None
+        # In ingest order, so a later file folds into the earlier one exactly as
+        # it did the first time.
+        for row in sorted(rows, key=lambda r: r.get("ingested_at") or ""):
+            raw = (row.get("csv_data") or "").encode("utf-8")
+            try:
+                parsed = parse_settlement_csv(
+                    raw, row.get("filename") or "",
+                    default_cycle=profile.open_cycle,
+                    known_orders={l.order_id: l.platform
+                                  for l in (rebuilt.lines if rebuilt else []) if l.order_id},
+                )
+            except SettlementParseError as exc:
+                print(f"  [Cycle] Could not re-read {row.get('filename')}: {exc}")
+                continue
+            payouts = dict(parsed.reported_payouts)
+            payouts.update(parse_reported(row.get("reported") or ""))
+            if rebuilt is None:
+                rebuilt = Cycle(
+                    lines=parsed.lines, reported_payouts=payouts, store=self.rules(),
+                    cycle=profile.open_cycle, firm=profile.firm, firm_id=self.id,
+                )
+            else:
+                rebuilt.add_lines(parsed.lines, payouts)
+
+        if rebuilt is not None:
+            # Decisions that never became rules, re-applied before the first
+            # reconciliation so the close comes back as it was left.
+            try:
+                from services.database import load_resolutions
+                for row in load_resolutions(self.id, profile.open_cycle):
+                    rebuilt.resolutions[row["key"]] = (
+                        row["account"], Side(row["side"]))
+            except Exception as exc:
+                print(f"  [Cycle] Could not re-apply decisions: {exc}")
+            rebuilt.run()
+            print(f"  [Cycle] Resumed {profile.open_cycle} for {self.id} "
+                  f"from {len(rows)} retained file(s).")
+        return rebuilt
 
     def profile(self) -> FirmProfile:
         profile, _ = _profiles.get_or_create(self.id)
@@ -452,7 +534,12 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     else:
         space.cycle.add_lines(parsed.lines, payouts)
 
-    save_settlement_file(space.id, filename, parsed.cycle, raw, len(parsed.lines))
+    save_settlement_file(space.id, filename, parsed.cycle, raw, len(parsed.lines),
+                         reported=reported)
+    # Remember which cycle is open, so it can be rebuilt after a restart.
+    if profile.open_cycle != parsed.cycle:
+        profile.open_cycle = parsed.cycle
+        _profiles.save(profile)
     return space.cycle
 
 
@@ -597,7 +684,14 @@ def api_load_sample():
 @app.delete("/api/cycle")
 def api_clear_cycle():
     """Close the open cycle without posting. Rules already learned are kept."""
-    ws().cycle = None
+    space = ws()
+    space.cycle = None
+    # Closed on purpose, so it must not reappear at the next restart. The files
+    # stay retained; only the open-cycle marker is cleared.
+    profile = space.profile()
+    if profile.open_cycle:
+        profile.open_cycle = None
+        _profiles.save(profile)
     return {"cycle": None}
 
 
@@ -640,6 +734,10 @@ def api_approve(req: ApproveRequest):
     exc = _find_exception(cycle, req.key)
     side = req.side or (Side.CREDIT if exc.amount > 0 else Side.DEBIT)
     cycle.approve(req.key, req.account, side, actor, req.save_rule, req.scope)
+    # Rules cover labels that recur. This one is about this settlement — a
+    # refund with no sale, a withheld balance — and without it a restart would
+    # re-open a decision already made.
+    save_resolution(ws().id, cycle.cycle, req.key, req.account, side.value, actor)
     return cycle.digest()
 
 
