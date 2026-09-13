@@ -938,6 +938,9 @@ async function loadDiagnostics(){
           <td>${t.ok? "ok" : esc(t.error||"error")}</td></tr>`).join("") +
         `</tbody></table>`;
     }
+    if(d.accounts_at_risk) h = `<div class="err" style="margin-bottom:14px">
+      <b>${d.accounts_at_risk} account${d.accounts_at_risk>1?"s":""} not saved.</b>
+      ${esc(d.warning)}</div>` + h;
     if(!ok) h += `<p class="note">Set SUPABASE_URL and SUPABASE_SERVICE_KEY, then run
       the files in migrations/ in the Supabase SQL editor. Until then your rules,
       settings and account mappings live only in memory and a redeploy clears them.</p>`;

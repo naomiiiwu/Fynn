@@ -94,6 +94,12 @@ def _user_from_request(request: Request) -> Optional[User]:
     Basic is kept so scripts and curl keep working, but it now means a real
     account's email and password rather than one shared secret.
     """
+    # Cheap when there is nothing pending, which is the normal case. It only
+    # does work in the window between an account being made and its table
+    # existing — exactly the window where losing it would be unrecoverable.
+    if _users.pending:
+        _users.flush()
+
     user_id = identity.read_session(request.cookies.get(SESSION_COOKIE, ""))
     if user_id:
         return _users.get(user_id)
@@ -859,12 +865,21 @@ def api_diagnostics():
     endpoint is how you tell the difference.
     """
     storage = diagnose()
+    # An account held only in memory is worse than a rule held only in memory:
+    # a workspace is keyed by its owner's id, so losing the account orphans
+    # everything under it. Say so separately and plainly.
+    pending = _users.pending
     return {
         "storage": storage,
-        "warning": None if storage.get("connected") else (
+        "accounts_at_risk": pending,
+        "warning": (
+            f"{pending} account(s) exist only in this process because the users "
+            "table is missing. A restart loses them, and with them access to the "
+            "workspace they own. Run the migrations now."
+        ) if pending else (None if storage.get("connected") else (
             "Rules, settings, account mappings and retained files exist only in "
             "this process. A restart or redeploy loses them."
-        ),
+        )),
     }
 
 

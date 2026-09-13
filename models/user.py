@@ -85,6 +85,9 @@ class UserStore:
     def __init__(self) -> None:
         self._by_id: dict[str, User] = {}
         self._loaded = False
+        # Accounts that could not be written — almost always because the table
+        # does not exist yet. Held so they can be written the moment it does.
+        self._unsaved: set[str] = set()
 
     # -- reading ---------------------------------------------------------------
 
@@ -123,12 +126,41 @@ class UserStore:
     def save(self, user: User) -> User:
         self._load()
         self._by_id[user.id] = user
+        if not self._write(user):
+            self._unsaved.add(user.id)
+        return user
+
+    def _write(self, user: User) -> bool:
         try:
             from services.database import save_user
-            save_user(user.to_row())
+            return bool(save_user(user.to_row()))
         except Exception as exc:  # pragma: no cover - storage is best-effort
             print(f"  [Users] Could not persist {user.email}: {exc}")
-        return user
+            return False
+
+    def flush(self) -> int:
+        """Write any account that storage would not take earlier.
+
+        An account held only in memory is the one loss that cannot be undone
+        from the outside: a workspace is keyed by its owner's id, so losing the
+        account orphans the rules, mappings and ledger tokens underneath it.
+        When the table appears — the migration finally run — the next request
+        puts them where they belong, rather than depending on nobody having
+        restarted in between.
+        """
+        if not self._unsaved:
+            return 0
+        written = {uid for uid in list(self._unsaved)
+                   if uid in self._by_id and self._write(self._by_id[uid])}
+        self._unsaved -= written
+        if written:
+            print(f"  [Users] Persisted {len(written)} account(s) held in memory.")
+        return len(written)
+
+    @property
+    def pending(self) -> int:
+        """How many accounts exist only in this process."""
+        return len(self._unsaved)
 
     def create(self, email: str, *, name: str = "", password_hash: str = "",
                google_sub: str = "") -> User:
