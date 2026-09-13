@@ -233,6 +233,8 @@ border:1px solid var(--rule);border-radius:var(--r-xs);padding:8px 10px}
 .ok-txt{color:var(--ledger);font-weight:600;display:inline-flex;align-items:center;gap:6px}
 .ok-txt::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ledger)}
 .pd-txt{color:var(--faint);font-weight:400}
+.ro-txt{color:var(--flag);font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.ro-txt::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--flag)}
 a.btn-link{font:500 13px Inter,sans-serif;padding:8px 14px;border-radius:var(--r-xs);
 border:1px solid var(--ledger);background:var(--ledger);color:#fff;text-decoration:none;
 box-shadow:var(--sh-sm);transition:background .15s}
@@ -738,8 +740,12 @@ async function loadLedgers(){
     const rows=Object.entries(r.ledgers).map(([k,v])=>{
       let right;
       if(v.connected){
-        right = `<span class="ok-txt">connected${v.org_name?" — "+esc(v.org_name):""}</span>
-                 <button data-dis="${k}">Disconnect</button>`;
+        // A read-only connection looks identical to a full one until a post
+        // fails, so it says so here rather than at the worst moment.
+        const state = v.can_post===false
+          ? `<span class="ro-txt">read only${v.org_name?" — "+esc(v.org_name):""}</span>`
+          : `<span class="ok-txt">connected${v.org_name?" — "+esc(v.org_name):""}</span>`;
+        right = `${state}<button data-dis="${k}">Disconnect</button>`;
       }else if(v.configured){
         right = `<a class="btn-link" href="/oauth/${k}/connect">Connect ${esc(v.label)}</a>`;
       }else{
@@ -749,6 +755,15 @@ async function loadLedgers(){
       // it byte-for-byte and refuse the request on their own error page before
       // consent begins — so the failure looks like a broken link, and the user
       // never gets back here to read an explanation after the fact.
+      if(v.connected && v.can_post===false){
+        return `<div class="ledrow"><span>${esc(v.label)}</span>
+                <span class="ledright">${right}</span></div>
+                <div class="ledrow redir"><span>Fynn can read this ${esc(v.label)}
+                organisation — enough to import the chart of accounts and map every
+                account — but not write journals. Enable
+                <b>${esc(v.post_scope||"the posting scope")}</b> on the app, then
+                disconnect and connect again to post.</span></div>`;
+      }
       const uri = (v.connected || !v.configured) ? "" : `<div class="ledrow redir">
         <span>Add this redirect URI to your ${esc(v.label)} app first — it is matched
         exactly, and ${esc(v.label)} shows its own error page if it is missing.</span>

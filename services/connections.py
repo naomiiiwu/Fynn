@@ -33,13 +33,22 @@ class Connection:
     def connected_at(self) -> str:
         return self._row.get("connected_at", "")
 
+    @property
+    def scopes(self) -> str:
+        return self._row.get("scopes", "") or ""
+
+    @property
+    def can_post(self) -> bool:
+        """Whether this connection is allowed to write a journal."""
+        return oauth.can_post(oauth.get_provider(self.ledger), self.scopes)
+
     def access_token(self) -> str:
         """A token that is valid now, refreshing first if it is not."""
         if not oauth.is_expired(self._row.get("expires_at", "")):
             return self._row["access_token"]
 
         provider = oauth.get_provider(self.ledger)
-        fresh = oauth.refresh(provider, self._row["refresh_token"])
+        fresh = oauth.refresh(provider, self._row["refresh_token"], self.scopes)
         self._row.update(fresh)
         # Store immediately: the rotated refresh token is now the only one that
         # works, and losing it means the firm has to authorise again.
@@ -55,6 +64,8 @@ class Connection:
             "org_name": self.org_name,
             "connected_at": self.connected_at,
             "expires_at": self._row.get("expires_at", ""),
+            "scopes": self.scopes,
+            "can_post": self.can_post,
         }
 
 

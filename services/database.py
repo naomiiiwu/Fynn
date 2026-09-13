@@ -381,19 +381,36 @@ def save_connection(firm_id: str, ledger: str, tokens: dict) -> bool:
     client = _get_client()
     if not client:
         return False
+    row = {
+        "firm_id":       firm_id,
+        "ledger":        ledger,
+        "access_token":  tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "expires_at":    tokens["expires_at"],
+        "org_id":        tokens.get("org_id", ""),
+        "org_name":      tokens.get("org_name", ""),
+        "scopes":        tokens.get("scopes", ""),
+    }
     try:
-        client.table("ledger_connections").upsert({
-            "firm_id":       firm_id,
-            "ledger":        ledger,
-            "access_token":  tokens["access_token"],
-            "refresh_token": tokens["refresh_token"],
-            "expires_at":    tokens["expires_at"],
-            "org_id":        tokens.get("org_id", ""),
-            "org_name":      tokens.get("org_name", ""),
-        }, on_conflict="firm_id,ledger").execute()
+        client.table("ledger_connections").upsert(
+            row, on_conflict="firm_id,ledger").execute()
         print(f"  [DB] {ledger} connection stored for {firm_id}")
         return True
     except Exception as exc:
+        # `scopes` arrived after this table did. A database created from the
+        # original 009 has no such column, and losing the whole connection over
+        # a field that only affects a warning would be a poor trade — so drop
+        # it and keep the tokens, which are the part that cannot be recovered.
+        if "scopes" in str(exc):
+            try:
+                row.pop("scopes", None)
+                client.table("ledger_connections").upsert(
+                    row, on_conflict="firm_id,ledger").execute()
+                print(f"  [DB] {ledger} connection stored for {firm_id} "
+                      f"(without scopes — run migration 010)")
+                return True
+            except Exception as retry_exc:
+                exc = retry_exc
         print(f"  [DB] Failed to store {ledger} connection: {exc}")
         return False
 

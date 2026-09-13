@@ -1,9 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007 +
--- 008 + 009 already applied, so a new project does not have to replay a rename.
+-- 008 + 009 + 010 already applied, so a new project does not have to replay a
+-- rename.
 --
--- On a database that already has the 005 schema, run 007, 008 and 009 instead
+-- On a database that already has the 005 schema, run 007 through 010 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -117,6 +118,10 @@ create table if not exists ledger_connections (
     -- a realm. One column, because a connection only ever has one.
     org_id        text not null default '',
     org_name      text not null default '',
+    -- What the authorisation actually covers. A connection that may read but
+    -- not write is useful — it carries the chart of accounts — but must not
+    -- look identical to one that can post. Empty means "not recorded".
+    scopes        text not null default '',
     connected_at  timestamptz not null default now(),
     primary key (firm_id, ledger)
 );

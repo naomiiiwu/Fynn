@@ -61,6 +61,21 @@ class LedgerAdapter(ABC):
                 f"debits {entry.total_debit} vs credits {entry.total_credit}"
             )
 
+    def _check_scope(self) -> None:
+        """Refuse a post the connection was never authorised to make.
+
+        Without this the attempt reaches the provider and comes back a 403 with
+        the provider's own wording, after the entry has been built and the firm
+        has been told it is posting. Better to say so before anything is sent.
+        """
+        if self.connection is None or self.connection.can_post:
+            return
+        raise RuntimeError(
+            f"Fynn is connected to {self.name} for reading only — the "
+            f"authorisation does not include permission to write journals. "
+            f"Enable the posting scope on the app, then reconnect under Settings."
+        )
+
     def _resolve(self, entry: JournalEntry) -> dict[str, str]:
         """Account name → the destination ledger's code, or refuse.
 
@@ -139,6 +154,7 @@ class XeroAdapter(LedgerAdapter):
 
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
+        self._check_scope()
         codes = self._resolve(entry)
         token = self._token or (self.connection.access_token() if self.connection else None)
         tenant = self._tenant or (self.connection.org_id if self.connection else None)
@@ -219,6 +235,7 @@ class QuickBooksAdapter(LedgerAdapter):
 
     def post(self, entry: JournalEntry) -> dict:
         self._check(entry)
+        self._check_scope()
         codes = self._resolve(entry)
         token = self._token or (self.connection.access_token() if self.connection else None)
         realm = self._realm or (self.connection.org_id if self.connection else None)

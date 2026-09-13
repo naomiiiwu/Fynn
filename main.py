@@ -575,6 +575,7 @@ def api_save_accounts(req: AccountMapRequest):
 
 
 OAUTH_STATE_COOKIE = "fynn_oauth_state"
+OAUTH_SCOPE_COOKIE = "fynn_oauth_scopes"
 
 
 @app.get("/oauth/{ledger}/connect", include_in_schema=False)
@@ -593,6 +594,19 @@ def oauth_connect(ledger: str):
     # refusal renders on the provider's own error page with no way back — so
     # keep the accountant here and say what to fix.
     refusal = oauth.preflight(provider, url)
+    granted = provider.scopes
+
+    # A firm whose app may not request the posting scope can still connect for
+    # reading — enough to pull the chart of accounts and finish the mapping,
+    # which is the tedious half of setup. Better a connection that does most of
+    # the job than a dead stop with nothing to show.
+    if refusal and "scope" in refusal.lower():
+        reduced = oauth.reduced_scopes(provider)
+        if reduced:
+            alternative = oauth.authorize_url(provider, base_url(), state, scopes=reduced)
+            if oauth.preflight(provider, alternative) is None:
+                url, refusal, granted = alternative, None, reduced
+
     if refusal:
         # The remedy has to match the refusal. Telling someone to check the
         # redirect URI when the scope is what was rejected sends them to look
@@ -611,9 +625,16 @@ def oauth_connect(ledger: str):
         return RedirectResponse(f"/?ledger_error={quote(message, safe='')}", status_code=303)
 
     response = RedirectResponse(url, status_code=303)
+    secure = bool(os.getenv("RAILWAY_PUBLIC_DOMAIN"))
     response.set_cookie(
         OAUTH_STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax",
-        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")),
+        secure=secure,
+    )
+    # What we ended up asking for, so the callback records what the connection
+    # can actually do rather than what the full request would have granted.
+    response.set_cookie(
+        OAUTH_SCOPE_COOKIE, granted, max_age=600, httponly=True, samesite="lax",
+        secure=secure,
     )
     return response
 
@@ -643,7 +664,10 @@ def oauth_callback(
 
     try:
         provider = oauth.get_provider(ledger)
-        tokens = oauth.exchange_code(provider, code, base_url(), realm_id=realmId or None)
+        tokens = oauth.exchange_code(
+            provider, code, base_url(), realm_id=realmId or None,
+            requested_scopes=request.cookies.get(OAUTH_SCOPE_COOKIE, ""),
+        )
     except oauth.OAuthError as exc:
         return fail(str(exc))
 
@@ -658,8 +682,11 @@ def oauth_callback(
     profile.ledger = provider.name
     _profiles.save(profile)
 
-    response = RedirectResponse(f"/?connected={provider.name}", status_code=303)
+    readonly = "" if oauth.can_post(provider, tokens.get("scopes", "")) else "&readonly=1"
+    response = RedirectResponse(
+        f"/?connected={provider.name}{readonly}", status_code=303)
     response.delete_cookie(OAUTH_STATE_COOKIE)
+    response.delete_cookie(OAUTH_SCOPE_COOKIE)
     return response
 
 
@@ -682,7 +709,9 @@ def api_ledger_status():
     # back from the provider, after the redirect, where it is hard to read.
     status = connections.status(WORKSPACE_ID)
     for name, row in status.items():
-        row["redirect_uri"] = oauth.redirect_uri(base_url(), oauth.get_provider(name))
+        provider = oauth.get_provider(name)
+        row["redirect_uri"] = oauth.redirect_uri(base_url(), provider)
+        row["post_scope"] = provider.post_scope
     return {"base_url": base_url(), "ledgers": status}
 
 

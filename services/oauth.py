@@ -45,6 +45,13 @@ class Provider:
     scopes: str
     client_id_env: str
     client_secret_env: str
+    # The scope a journal needs. Everything else Fynn asks for is for reading —
+    # the chart of accounts above all — so a connection without this one is
+    # still worth having: the whole account mapping can be done through it.
+    post_scope: str = ""
+    # Scopes that may be dropped if the provider refuses them, leaving a
+    # connection that can read but not post.
+    optional_scopes: str = ""
 
     @property
     def client_id(self) -> str:
@@ -69,6 +76,8 @@ PROVIDERS: dict[str, Provider] = {
         scopes="offline_access openid profile email accounting.transactions accounting.settings",
         client_id_env="XERO_CLIENT_ID",
         client_secret_env="XERO_CLIENT_SECRET",
+        post_scope="accounting.transactions",
+        optional_scopes="accounting.transactions",
     ),
     "quickbooks": Provider(
         name="quickbooks",
@@ -78,8 +87,39 @@ PROVIDERS: dict[str, Provider] = {
         scopes="com.intuit.quickbooks.accounting",
         client_id_env="QBO_CLIENT_ID",
         client_secret_env="QBO_CLIENT_SECRET",
+        # QuickBooks has one accounting scope covering both reading and
+        # writing, so there is nothing to drop — a reduced connection would be
+        # no connection.
+        post_scope="com.intuit.quickbooks.accounting",
     ),
 }
+
+
+def reduced_scopes(provider: Provider) -> Optional[str]:
+    """The same request minus whatever may be dropped, or None if nothing may.
+
+    Used when a provider refuses the full set: a firm whose app is not allowed
+    to request the posting scope can still connect for reading, finish the
+    account mapping, and add posting later, rather than being blocked at the
+    first step with nothing to show.
+    """
+    if not provider.optional_scopes:
+        return None
+    drop = set(provider.optional_scopes.split())
+    kept = [s for s in provider.scopes.split() if s not in drop]
+    return " ".join(kept) if kept else None
+
+
+def can_post(provider: Provider, granted: str) -> bool:
+    """Whether a connection holding `granted` may write a journal.
+
+    An empty `granted` means the scopes were never recorded — connections made
+    before Fynn tracked them. Those were always full-scope, so they keep
+    working rather than being locked out by a missing field.
+    """
+    if not provider.post_scope or not granted:
+        return True
+    return provider.post_scope in granted.split()
 
 
 def get_provider(name: str) -> Provider:
@@ -94,7 +134,9 @@ def redirect_uri(base_url: str, provider: Provider) -> str:
     return f"{base_url.rstrip('/')}/oauth/{provider.name}/callback"
 
 
-def authorize_url(provider: Provider, base_url: str, state: str) -> str:
+def authorize_url(
+    provider: Provider, base_url: str, state: str, scopes: Optional[str] = None
+) -> str:
     if not provider.configured:
         raise OAuthError(
             f"{provider.label} is not configured. Set {provider.client_id_env} and "
@@ -104,7 +146,7 @@ def authorize_url(provider: Provider, base_url: str, state: str) -> str:
         "response_type": "code",
         "client_id": provider.client_id,
         "redirect_uri": redirect_uri(base_url, provider),
-        "scope": provider.scopes,
+        "scope": scopes or provider.scopes,
         "state": state,
     })
 
@@ -189,7 +231,11 @@ def _expiry(payload: dict) -> str:
 
 
 def exchange_code(
-    provider: Provider, code: str, base_url: str, realm_id: Optional[str] = None
+    provider: Provider,
+    code: str,
+    base_url: str,
+    realm_id: Optional[str] = None,
+    requested_scopes: Optional[str] = None,
 ) -> dict:
     """Swap the one-time code for tokens, and work out which organisation."""
     payload = _token_request(provider, {
@@ -203,6 +249,10 @@ def exchange_code(
         "expires_at": _expiry(payload),
         "org_id": "",
         "org_name": "",
+        # What the connection may actually do. The provider's own answer is
+        # authoritative — a user can decline part of a request — so prefer it,
+        # and fall back to what we asked for only if it says nothing.
+        "scopes": payload.get("scope") or requested_scopes or provider.scopes,
     }
 
     if provider.name == "xero":
@@ -240,7 +290,7 @@ def _xero_tenant(access_token: str) -> tuple[str, str]:
     return first.get("tenantId", ""), first.get("tenantName", "")
 
 
-def refresh(provider: Provider, refresh_token: str) -> dict:
+def refresh(provider: Provider, refresh_token: str, known_scopes: str = "") -> dict:
     """Trade a refresh token for a new pair.
 
     Both providers rotate the refresh token, so the new one has to be stored or
@@ -254,6 +304,9 @@ def refresh(provider: Provider, refresh_token: str) -> dict:
         "access_token": payload["access_token"],
         "refresh_token": payload.get("refresh_token", refresh_token),
         "expires_at": _expiry(payload),
+        # A refresh must not silently widen or narrow what the connection can
+        # do; carry the known scopes forward when the provider omits them.
+        "scopes": payload.get("scope") or known_scopes,
     }
 
 
