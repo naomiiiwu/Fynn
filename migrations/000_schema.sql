@@ -1,10 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
--- Paste this into the Supabase SQL editor and run it once. It is 005 + 007 +
--- 008 + 009 + 010 already applied, so a new project does not have to replay a
+-- Paste this into the Supabase SQL editor and run it once. It is 005 + 007
+-- through 011 already applied, so a new project does not have to replay a
 -- rename.
 --
--- On a database that already has the 005 schema, run 007 through 010 instead
+-- On a database that already has the 005 schema, run 007 through 011 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -15,9 +15,31 @@
 -- Migrations 001-004 belong to the earlier seller-facing P&L product and are
 -- kept only as history. Nothing here depends on them.
 
--- One row per accounting firm. A deployment is a single workspace for now, so
--- in practice this holds one row under the fixed id 'workspace'. Every other
--- table hangs off it, which is what makes deleting a firm a single statement.
+-- One row per person with an account. A user's id IS their workspace id, which
+-- is how every table below became per-account without learning about users:
+-- the firm_id they already key on is simply the signed-in person's id.
+create table if not exists users (
+    id            text primary key,
+    -- Unique however they sign in, so signing in with Google after registering
+    -- a password lands in the existing workspace rather than a second one.
+    email         text not null unique,
+    name          text not null default '',
+    -- scrypt, self-describing: algorithm, cost, salt and digest. Empty for an
+    -- account that only ever signs in with Google.
+    password_hash text not null default '',
+    -- Google's subject id, which survives the user changing their address.
+    google_sub    text not null default '',
+    created_at    timestamptz not null default now()
+);
+
+create unique index if not exists idx_users_google_sub
+    on users (google_sub) where google_sub <> '';
+
+-- One row per workspace, keyed by its owner's user id. Every other table hangs
+-- off it, which is what makes deleting a workspace a single statement.
+-- Deliberately not foreign-keyed to users: a deployment that predates accounts
+-- has a row here under the literal id 'workspace', and that history should stay
+-- readable rather than being deleted by a constraint.
 create table if not exists firm_profiles (
     workspace_id    text primary key,
     firm            text not null default 'Your firm',

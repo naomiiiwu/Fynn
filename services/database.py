@@ -292,9 +292,35 @@ def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
 # ── Diagnostics ───────────────────────────────────────────────────────────────
 
 EXPECTED_TABLES = (
-    "firm_profiles", "firm_rules", "settlement_files",
+    "users", "firm_profiles", "firm_rules", "settlement_files",
     "posted_entries", "account_mappings", "ledger_connections",
 )
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+def load_users() -> list[dict]:
+    """Every account. Small by nature — one row per person, not per document."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        return client.table("users").select("*").execute().data or []
+    except Exception as exc:
+        print(f"  [DB] Could not load users: {exc}")
+        return []
+
+
+def save_user(row: dict) -> bool:
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        client.table("users").upsert(row, on_conflict="id").execute()
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to store user: {exc}")
+        return False
 
 
 def diagnose() -> dict:

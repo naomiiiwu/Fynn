@@ -10,19 +10,17 @@ FastAPI entry point. One workspace, one web application:
 The engine is utils.formatter.Cycle. The page and the JSON are the same
 reconciliation rendered twice, never two code paths that can drift.
 
-A deployment is one firm's workspace behind one shared password — see the
-Access section below. There is no per-user state: every store already takes a
-firm id, so supporting several firms, or knowing which person approved
-something, is an authentication problem rather than an engine one.
+Each account owns one workspace and sees nothing outside it. Every store
+already took a firm id, so isolation is a matter of which id is passed: a
+user's id is their workspace id. See the Accounts and access section below.
 """
 
 import base64
-import hashlib
-import hmac
 import os
 import secrets
 import sys
 import time
+from contextvars import ContextVar
 from urllib.parse import quote
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -48,13 +46,14 @@ from models.account_map import AccountMap, suggest
 from models.firm_profile import (
     SUPPORTED_LEDGERS,
     SUPPORTED_PLATFORMS,
-    WORKSPACE_ID,
+    FirmProfile,
     FirmProfileStore,
 )
+from models.user import User, UserStore
 from models.transaction import Platform, Side
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
-from services import connections, oauth
+from services import connections, identity, oauth
 from services.database import diagnose, save_posted_entry, save_settlement_file
 from services.ledger import fetch_chart, get_adapter
 from utils.formatter import Cycle
@@ -67,98 +66,97 @@ app = FastAPI(
 
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
-# ── Access ────────────────────────────────────────────────────────────────────
-# A shared password over HTTP Basic. Not an accounts system: every visitor is
-# the same workspace, and the audit trail names whoever the firm put in
-# Settings, not whoever typed the password. It exists so that a public URL is
-# not an open door to approving and posting journals.
+# ── Accounts and access ───────────────────────────────────────────────────────
+# Every account owns one workspace and sees nothing outside it. A user's id is
+# their workspace id, so the scoping the schema already had — every table keyed
+# on firm_id — becomes per-account without the schema learning about users.
 #
-# With FYNN_PASSWORD unset, local requests are allowed and everything else is
-# refused. Deploying without setting it therefore produces a locked app with an
-# explanatory message, rather than an open one — the failure that matters here
-# is the silent one.
+# Two ways in, and an account may have both: an email address with a password,
+# or Google. Whichever is used, the session cookie names a user, and the
+# workspace follows from that rather than from anything the browser sends.
 
-AUTH_USER = os.getenv("FYNN_USER", "fynn").strip() or "fynn"
-AUTH_PASSWORD = os.getenv("FYNN_PASSWORD", "").strip()
-OPEN_PATHS = {"/health", "/login", "/logout"}
-LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+_users = UserStore()
 
 SESSION_COOKIE = "fynn_session"
-SESSION_DAYS = 14
+OPEN_PATHS = {"/health", "/login", "/signup", "/logout", "/auth/providers",
+              "/auth/google", "/auth/google/callback"}
+
+# Set by the middleware before the route runs, so the helpers below can resolve
+# the workspace without every endpoint having to accept and forward it. A
+# ContextVar rather than a global: concurrent requests belong to different
+# people, and a global would hand one of them the other's books.
+_current_user: ContextVar[Optional[str]] = ContextVar("fynn_user", default=None)
 
 
-def _sign(expires: int) -> str:
-    """A session token: when it lapses, and proof we issued it.
+def _user_from_request(request: Request) -> Optional[User]:
+    """Whoever this request is, by session cookie or by HTTP Basic.
 
-    Keyed on the password itself, so changing FYNN_PASSWORD invalidates every
-    session already handed out. That is the only revocation a shared password
-    can offer, and it should not need a second secret to work.
+    Basic is kept so scripts and curl keep working, but it now means a real
+    account's email and password rather than one shared secret.
     """
-    signature = hmac.new(
-        AUTH_PASSWORD.encode(), str(expires).encode(), hashlib.sha256
-    ).hexdigest()
-    return f"{expires}.{signature}"
+    user_id = identity.read_session(request.cookies.get(SESSION_COOKIE, ""))
+    if user_id:
+        return _users.get(user_id)
 
-
-def _valid_session(token: str) -> bool:
-    expires, _, signature = (token or "").partition(".")
-    if not expires.isdigit() or not signature:
-        return False
-    if int(expires) < int(time.time()):
-        return False
-    expected = hmac.new(
-        AUTH_PASSWORD.encode(), expires.encode(), hashlib.sha256
-    ).hexdigest()
-    return secrets.compare_digest(signature, expected)
-
-
-def _authorised(request: Request) -> bool:
     header = request.headers.get("authorization", "")
     scheme, _, encoded = header.partition(" ")
     if scheme.lower() != "basic" or not encoded:
-        return False
+        return None
     try:
-        user, _, password = base64.b64decode(encoded).decode("utf-8").partition(":")
+        email, _, password = base64.b64decode(encoded).decode("utf-8").partition(":")
     except Exception:
-        return False
-    # Compare both halves in constant time, and always both, so the response
-    # time does not reveal whether the username was right.
-    return secrets.compare_digest(user, AUTH_USER) & secrets.compare_digest(
-        password, AUTH_PASSWORD
-    )
+        return None
+    user = _users.by_email(email)
+    if user and user.password_hash and identity.verify_password(password, user.password_hash):
+        return user
+    # Spend the same work on a miss as on a hit, so response time does not
+    # separate "no such account" from "wrong password".
+    identity.verify_password(password, identity.hash_password("decoy"))
+    return None
 
 
 @app.middleware("http")
-async def require_password(request: Request, call_next):
+async def require_account(request: Request, call_next):
     if request.url.path in OPEN_PATHS:
         return await call_next(request)
 
-    if not AUTH_PASSWORD:
-        client = request.client.host if request.client else ""
-        if client in LOCAL_HOSTS:
-            return await call_next(request)
-        return PlainTextResponse(
-            "Fynn has no password set, so it will not serve anything beyond this "
-            "machine.\n\nSet FYNN_PASSWORD in the environment and restart.\n",
-            status_code=503,
+    user = _user_from_request(request)
+    if user is None:
+        # A browser gets the sign-in page; anything else gets the Basic
+        # challenge, so curl and scripts get something they can act on.
+        if "text/html" in request.headers.get("accept", ""):
+            wanted = request.url.path
+            if request.url.query:
+                wanted += "?" + request.url.query
+            return RedirectResponse(f"/login?next={quote(wanted, safe='')}",
+                                    status_code=303)
+        return Response(
+            status_code=401,
+            content="Sign in to Fynn first.",
+            headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
         )
 
-    if _valid_session(request.cookies.get(SESSION_COOKIE, "")) or _authorised(request):
+    token = _current_user.set(user.id)
+    try:
         return await call_next(request)
+    finally:
+        _current_user.reset(token)
 
-    # A browser gets the sign-in page; anything else gets the Basic challenge,
-    # so curl and scripts keep working with -u.
-    if "text/html" in request.headers.get("accept", ""):
-        wanted = request.url.path
-        if request.url.query:
-            wanted += "?" + request.url.query
-        return RedirectResponse(f"/login?next={quote(wanted, safe='')}", status_code=303)
 
-    return Response(
-        status_code=401,
-        content="Authentication required.",
-        headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
+def _session_cookie(response, user: User):
+    response.set_cookie(
+        SESSION_COOKIE, identity.issue_session(user.id),
+        max_age=identity.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+        # Railway terminates TLS, so the cookie travels over https there. Left
+        # off for local http, where it would simply never be sent back.
+        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")),
     )
+    return response
+
+
+def _safe_next(target: str) -> str:
+    """Only ever redirect within this site."""
+    return target if target.startswith("/") and not target.startswith("//") else "/"
 
 
 @app.get("/login", include_in_schema=False)
@@ -166,23 +164,47 @@ def login_page():
     return FileResponse(os.path.join(STATIC, "login.html"))
 
 
-@app.post("/login", include_in_schema=False)
-def login(password: str = Form(...), next: str = Form("/")):
-    if not AUTH_PASSWORD or not secrets.compare_digest(password, AUTH_PASSWORD):
-        return RedirectResponse("/login?error=1", status_code=303)
+@app.get("/signup", include_in_schema=False)
+def signup_page():
+    return FileResponse(os.path.join(STATIC, "signup.html"))
 
-    # Only ever redirect within this site.
-    target = next if next.startswith("/") and not next.startswith("//") else "/"
-    expires = int(time.time()) + SESSION_DAYS * 86400
-    response = RedirectResponse(target, status_code=303)
-    response.set_cookie(
-        SESSION_COOKIE, _sign(expires), max_age=SESSION_DAYS * 86400,
-        httponly=True, samesite="lax",
-        # Railway terminates TLS, so the cookie travels over https there. Left
-        # off for local http, where it would simply never be sent back.
-        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")),
-    )
-    return response
+
+@app.post("/signup", include_in_schema=False)
+def signup(email: str = Form(...), password: str = Form(...),
+           name: str = Form(""), next: str = Form("/")):
+    address = (email or "").strip().lower()
+    if "@" not in address or "." not in address.split("@")[-1]:
+        return RedirectResponse("/signup?error=email", status_code=303)
+    problem = identity.password_problem(password)
+    if problem:
+        return RedirectResponse(f"/signup?error={quote(problem, safe='')}",
+                                status_code=303)
+    if _users.by_email(address):
+        return RedirectResponse("/signup?error=taken", status_code=303)
+
+    user = _users.create(address, name=name.strip(),
+                         password_hash=identity.hash_password(password))
+    # Create the workspace row now, so the first rule or mapping written into it
+    # has its foreign-key parent and does not fail silently.
+    _profiles.get_or_create(user.workspace_id)
+    return _session_cookie(RedirectResponse(_safe_next(next), status_code=303), user)
+
+
+@app.post("/login", include_in_schema=False)
+def login(email: str = Form(...), password: str = Form(...), next: str = Form("/")):
+    user = _users.by_email(email)
+    if not user or not user.password_hash or \
+            not identity.verify_password(password, user.password_hash):
+        # One message for both cases: naming which half was wrong tells an
+        # attacker which addresses have accounts.
+        return RedirectResponse("/login?error=1", status_code=303)
+    return _session_cookie(RedirectResponse(_safe_next(next), status_code=303), user)
+
+
+@app.get("/auth/providers", include_in_schema=False)
+def auth_providers():
+    """Which sign-in routes this deployment can actually complete."""
+    return {"google": identity.google_configured()}
 
 
 @app.get("/logout", include_in_schema=False)
@@ -191,24 +213,116 @@ def logout():
     response.delete_cookie(SESSION_COOKIE)
     return response
 
+
+# ── Google sign-in ────────────────────────────────────────────────────────────
+
+GOOGLE_STATE_COOKIE = "fynn_google_state"
+
+
+@app.get("/auth/google", include_in_schema=False)
+def google_start(next: str = "/"):
+    if not identity.google_configured():
+        return RedirectResponse("/login?error=nogoogle", status_code=303)
+    state = identity.new_state()
+    url = identity.google_authorize_url(base_url(), state)
+    response = RedirectResponse(url, status_code=303)
+    response.set_cookie(GOOGLE_STATE_COOKIE, f"{state}|{_safe_next(next)}",
+                        max_age=600, httponly=True, samesite="lax",
+                        secure=bool(os.getenv("RAILWAY_PUBLIC_DOMAIN")))
+    return response
+
+
+@app.get("/auth/google/callback", include_in_schema=False)
+def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    def fail(message: str):
+        return RedirectResponse(f"/login?error={quote(message, safe='')}",
+                                status_code=303)
+
+    if error:
+        return fail(f"Google returned: {error}")
+    expected, _, wanted = request.cookies.get(GOOGLE_STATE_COOKIE, "").partition("|")
+    if not code or not state or not expected or \
+            not secrets.compare_digest(state, expected):
+        return fail("That sign-in did not come from here, or it expired. Try again.")
+
+    try:
+        person = identity.google_identity(code, base_url())
+    except identity.AuthError as exc:
+        return fail(str(exc))
+
+    # Match on the Google subject id first: it survives the person changing the
+    # address on their Google account, which the email does not.
+    user = _users.by_google(person["sub"]) or _users.by_email(person["email"])
+    if user is None:
+        user = _users.create(person["email"], name=person["name"],
+                             google_sub=person["sub"])
+        _profiles.get_or_create(user.workspace_id)
+    elif not user.google_sub:
+        # An existing password account signing in with Google for the first
+        # time: link the two rather than stranding them in a second workspace.
+        user.google_sub = person["sub"]
+        if not user.name:
+            user.name = person["name"]
+        _users.save(user)
+
+    response = RedirectResponse(_safe_next(wanted or "/"), status_code=303)
+    response.delete_cookie(GOOGLE_STATE_COOKIE)
+    return _session_cookie(response, user)
+
+
 # ── State ─────────────────────────────────────────────────────────────────────
-# One workspace. Rules are written through to Supabase as they are learned; the
-# open cycle is in-process, which is the documented limitation (see README).
+# One Workspace per account, holding everything that is not in the database:
+# the open cycle above all. Rules and mappings are written through to Supabase
+# as they are learned; the open cycle is in-process, which is the documented
+# limitation (see README).
 
 _profiles = FirmProfileStore()
-_cycle: Optional[Cycle] = None
-_store: Optional[RuleStore] = None
-# Keyed by ledger: a Xero code and a QuickBooks id are different things, so a
-# firm that switches ledgers maps again rather than inheriting the wrong codes.
-_account_maps: dict[str, AccountMap] = {}
 
 
-def _rules() -> RuleStore:
-    """The firm's rule set, loaded from storage on first use."""
-    global _store
-    if _store is None:
-        _store = RuleStore.for_firm(WORKSPACE_ID)
-    return _store
+class Workspace:
+    """Everything one account can see, and nothing another can."""
+
+    def __init__(self, workspace_id: str) -> None:
+        self.id = workspace_id
+        self.cycle: Optional[Cycle] = None
+        self._rules: Optional[RuleStore] = None
+        # Keyed by ledger: a Xero code and a QuickBooks id are different things,
+        # so a firm that switches ledgers maps again rather than inheriting the
+        # wrong codes.
+        self._account_maps: dict[str, AccountMap] = {}
+
+    def profile(self) -> FirmProfile:
+        profile, _ = _profiles.get_or_create(self.id)
+        return profile
+
+    def rules(self) -> RuleStore:
+        if self._rules is None:
+            self._rules = RuleStore.for_firm(self.id)
+        return self._rules
+
+    def accounts(self, ledger: Optional[str] = None) -> AccountMap:
+        ledger = (ledger or self.profile().ledger or "dry-run").lower()
+        if ledger not in self._account_maps:
+            self._account_maps[ledger] = AccountMap.for_firm(self.id, ledger)
+        return self._account_maps[ledger]
+
+
+_workspaces: dict[str, Workspace] = {}
+
+
+def ws() -> Workspace:
+    """The signed-in account's workspace."""
+    user_id = _current_user.get()
+    if user_id is None:
+        raise HTTPException(401, "Sign in to Fynn first.")
+    if user_id not in _workspaces:
+        _workspaces[user_id] = Workspace(user_id)
+    return _workspaces[user_id]
+
+
+def current_user() -> Optional[User]:
+    user_id = _current_user.get()
+    return _users.get(user_id) if user_id else None
 
 
 def base_url() -> str:
@@ -220,12 +334,16 @@ def base_url() -> str:
     return f"https://{domain}" if domain else "http://localhost:8000"
 
 
+def _rules() -> RuleStore:
+    return ws().rules()
+
+
 def _accounts(ledger: Optional[str] = None) -> AccountMap:
-    """The firm's chart-of-accounts mapping for a ledger, loaded on first use."""
-    ledger = (ledger or _profile().ledger or "dry-run").lower()
-    if ledger not in _account_maps:
-        _account_maps[ledger] = AccountMap.for_firm(WORKSPACE_ID, ledger)
-    return _account_maps[ledger]
+    return ws().accounts(ledger)
+
+
+def _profile() -> FirmProfile:
+    return ws().profile()
 
 
 def accounts_in_use() -> list[str]:
@@ -236,32 +354,29 @@ def accounts_in_use() -> list[str]:
     during one. Clearing accounts are generated per platform rather than named
     in any rule, so they are added from settings.
     """
-    names = {r.account for r in _rules().rules}
-    for platform in _profile().platforms:
+    space = ws()
+    names = {r.account for r in space.rules().rules}
+    for platform in space.profile().platforms:
         names.add(f"{platform} Clearing Account")
-    if _cycle is not None:
-        for result in _cycle.run().values():
+    if space.cycle is not None:
+        for result in space.cycle.run().values():
             if result.journal:
                 names.update(l.account for l in result.journal.lines)
     return sorted(names)
 
 
 def _require_cycle() -> Cycle:
-    if _cycle is None:
-        raise HTTPException(404, "No cycle open. Upload a settlement file first.")
-    return _cycle
-
-
-def _profile():
-    profile, _ = _profiles.get_or_create()
-    return profile
+    cycle = ws().cycle
+    if cycle is None:
+        raise HTTPException(404, "No cycle is open. Upload a settlement file first.")
+    return cycle
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": "0.4.0", "cycle_open": _cycle is not None}
+    return {"status": "ok", "version": "0.4.0"}
 
 
 @app.get("/debug")
@@ -269,11 +384,11 @@ async def debug() -> dict:
     """Live state snapshot."""
     return {
         "cycle": {
-            "period": _cycle.cycle,
-            "lines": len(_cycle.lines),
-            "open_exceptions": len(_cycle.open_exceptions()),
-            "platforms": sorted(p.value for p in _cycle._results),
-        } if _cycle else None,
+            "period": ws().cycle.cycle,
+            "lines": len(ws().cycle.lines),
+            "open_exceptions": len(ws().cycle.open_exceptions()),
+            "platforms": sorted(p.value for p in ws().cycle._results),
+        } if ws().cycle else None,
         "rules": len(_rules().rules),
         "firm": _profile().firm,
         "ledger_adapter": get_adapter().name,
@@ -288,15 +403,15 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     Raises SettlementParseError, which callers turn into a 400. A file that
     cannot be read must not half-load.
     """
-    global _cycle
-    profile = _profile()
+    space = ws()
+    profile = space.profile()
 
     # An adjustments file names no marketplace anywhere, but the orders it
     # refers to are already in the open cycle. Offering those lets it be
     # attributed instead of rejected.
     known_orders = {
-        l.order_id: l.platform for l in _cycle.lines if l.order_id
-    } if _cycle is not None else {}
+        l.order_id: l.platform for l in space.cycle.lines if l.order_id
+    } if space.cycle is not None else {}
 
     # A firm that settles on exactly one platform has already told us which.
     default_platform = (
@@ -310,17 +425,17 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     payouts = dict(parsed.reported_payouts)
     payouts.update(parse_reported(reported))
 
-    if _cycle is None or _cycle.cycle != parsed.cycle:
-        _cycle = Cycle(
+    if space.cycle is None or space.cycle.cycle != parsed.cycle:
+        space.cycle = Cycle(
             lines=parsed.lines, reported_payouts=payouts, store=_rules(),
-            cycle=parsed.cycle, firm=profile.firm, firm_id=WORKSPACE_ID,
+            cycle=parsed.cycle, firm=profile.firm, firm_id=space.id,
         )
-        _cycle.run()
+        space.cycle.run()
     else:
-        _cycle.add_lines(parsed.lines, payouts)
+        space.cycle.add_lines(parsed.lines, payouts)
 
-    save_settlement_file(WORKSPACE_ID, filename, parsed.cycle, raw, len(parsed.lines))
-    return _cycle
+    save_settlement_file(space.id, filename, parsed.cycle, raw, len(parsed.lines))
+    return space.cycle
 
 
 def _post_cycle() -> dict:
@@ -337,7 +452,7 @@ def _post_cycle() -> dict:
 
     adapter = get_adapter(
         profile.ledger, _accounts(profile.ledger),
-        connections.get(WORKSPACE_ID, profile.ledger),
+        connections.get(ws().id, profile.ledger),
     )
     actor = profile.approver()
     out = []
@@ -354,7 +469,7 @@ def _post_cycle() -> dict:
             raise HTTPException(409, str(exc))
         cycle.trail.add("post", f"{result.journal.reference} sent to {adapter.name}", actor=actor)
         save_posted_entry(
-            WORKSPACE_ID, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
+            ws().id, cycle.cycle, result.journal, adapter.name, actor, cycle.trail.to_csv()
         )
     return {"adapter": adapter.name, "entries": out}
 
@@ -397,7 +512,9 @@ def api_state():
     """Everything the app needs to render: settings, and the cycle if there is one."""
     profile = _profile()
     store = _rules()
+    user = current_user()
     return {
+        "user": user.to_dict() if user else None,
         "firm": profile.to_dict(),
         "ledger_adapter": get_adapter(profile.ledger).name,
         "rules": {
@@ -411,8 +528,8 @@ def api_state():
             "total": len(accounts_in_use()),
             "unmapped": len(_accounts().missing(accounts_in_use())),
         },
-        "ledgers": connections.status(WORKSPACE_ID),
-        "cycle": _cycle.digest() if _cycle else None,
+        "ledgers": connections.status(ws().id),
+        "cycle": ws().cycle.digest() if ws().cycle else None,
     }
 
 
@@ -433,22 +550,21 @@ async def api_upload(file: UploadFile = File(...), reported: str = Form("")):
 @app.post("/api/cycle/sample")
 def api_load_sample():
     """Load the built-in sample cycle covering the three known edge cases."""
-    global _cycle
-    profile = _profile()
-    _cycle = Cycle(
+    space = ws()
+    profile = space.profile()
+    space.cycle = Cycle(
         lines=sample_lines(), reported_payouts=dict(REPORTED_PAYOUTS),
         store=_rules(), prior_cycles=prior_cycle_lines(),
-        firm=profile.firm, firm_id=WORKSPACE_ID,
+        firm=profile.firm, firm_id=space.id,
     )
-    _cycle.run()
-    return _cycle.digest()
+    space.cycle.run()
+    return space.cycle.digest()
 
 
 @app.delete("/api/cycle")
 def api_clear_cycle():
     """Close the open cycle without posting. Rules already learned are kept."""
-    global _cycle
-    _cycle = None
+    ws().cycle = None
     return {"cycle": None}
 
 
@@ -546,7 +662,7 @@ def api_chart(ledger: Optional[str] = None):
     unambiguous. A suggestion is never saved on its own.
     """
     target = (ledger or _profile().ledger or "dry-run").lower()
-    connection = connections.get(WORKSPACE_ID, target)
+    connection = connections.get(ws().id, target)
     if connection is None:
         return {"ledger": target, "connected": False, "chart": [], "suggestions": {}}
     try:
@@ -672,7 +788,7 @@ def oauth_callback(
         return fail(str(exc))
 
     try:
-        connections.store(WORKSPACE_ID, provider.name, tokens)
+        connections.store(ws().id, provider.name, tokens)
     except Exception as exc:
         # Do not point the profile at a ledger we cannot reach tokens for.
         return fail(str(exc))
@@ -693,12 +809,12 @@ def oauth_callback(
 @app.post("/api/ledger/disconnect")
 def api_disconnect(ledger: str):
     """Forget a ledger's tokens. The account mapping is kept."""
-    connections.forget(WORKSPACE_ID, ledger)
+    connections.forget(ws().id, ledger)
     profile = _profile()
     if profile.ledger == ledger:
         profile.ledger = "dry-run"
         _profiles.save(profile)
-    return connections.status(WORKSPACE_ID)
+    return connections.status(ws().id)
 
 
 @app.get("/api/ledger/status")
@@ -707,7 +823,7 @@ def api_ledger_status():
     # to fill in. Both providers match it byte-for-byte, so a URI retyped from
     # a template is the likeliest way a connection fails — and the error comes
     # back from the provider, after the redirect, where it is hard to read.
-    status = connections.status(WORKSPACE_ID)
+    status = connections.status(ws().id)
     for name, row in status.items():
         provider = oauth.get_provider(name)
         row["redirect_uri"] = oauth.redirect_uri(base_url(), provider)
@@ -766,8 +882,8 @@ def api_save_settings(req: SettingsRequest):
     # it goes — so that leaving for a ledger's consent screen does not lose what
     # was typed — and finishing it is a separate, deliberate act.
     _profiles.save(profile)
-    if _cycle is not None:
-        _cycle.firm = profile.firm
+    if ws().cycle is not None:
+        ws().cycle.firm = profile.firm
     return profile.to_dict()
 
 

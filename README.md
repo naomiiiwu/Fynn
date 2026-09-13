@@ -181,21 +181,26 @@ uvicorn main:app --reload --port 8000
 
 Then open <http://localhost:8000>.
 
-Locally no password is needed. In production one is: set `FYNN_PASSWORD` and the
-whole app sits behind it. With it unset Fynn serves localhost only and refuses
-every other caller with an explanatory 503, so deploying without it produces a
-locked app rather than an open one. `/health` stays public so a platform health
-check still works.
+Sign in with an email and password, or with Google. **Each account owns one
+workspace and sees nothing outside it** — its own rules, account mapping, ledger
+connection and open cycle. A user's id is their workspace id, so the scoping
+every table already had, on `firm_id`, became per-account without the schema
+learning about users.
 
-A browser gets a sign-in page and a signed cookie lasting 14 days, so the
-password is typed once rather than on every visit. Scripts get an HTTP Basic
-challenge instead and keep working with `curl -u fynn:…`. Changing
-`FYNN_PASSWORD` invalidates every session already issued, which is the only
-revocation a shared password can offer.
+Passwords are hashed with scrypt, each with its own salt and cost recorded
+alongside it, so the cost can be raised later without invalidating what is
+stored. Sessions are a signed cookie lasting 14 days, keyed on `FYNN_SECRET`
+rather than on anyone's password — set it to a long random string, or every
+restart signs everyone out. `/health` stays public so a platform health check
+still works.
 
-This is a shared password, not an accounts system. Every visitor is the same
-workspace, and the audit trail names whoever the firm put in Settings — not
-whoever typed the password.
+Google sign-in needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; without
+them the button is not offered rather than offered and broken. An account is
+matched on Google's subject id in preference to the email, because the subject
+survives someone changing the address on their Google account.
+
+Scripts get an HTTP Basic challenge and keep working with
+`curl -u you@firm.com:…` — a real account now, not a shared secret.
 
 No API keys are needed. Without `ANTHROPIC_API_KEY` the investigator returns no
 suggestion and the exception reaches the accountant unannotated — a valid state,
@@ -356,13 +361,13 @@ web: uvicorn main:app --host 0.0.0.0 --port $PORT   # Procfile
 python-3.12                                          # runtime.txt
 ```
 
-Environment variables are listed in `.env.example`. `FYNN_PASSWORD` is the one
-that matters: without it a deployment refuses all non-local traffic.
+Environment variables are listed in `.env.example`. `FYNN_SECRET` is the one
+that matters: without it sessions do not survive a restart.
 
 Supabase schema lives in `migrations/`. On a fresh project, paste
-`000_schema.sql` into the Supabase SQL editor and run it once — it is 005, 007
-and 008 already applied. On a database that already has the 005 schema, run
-`007_workspace_identity.sql` and `008_account_mappings.sql` instead;
+`000_schema.sql` into the Supabase SQL editor and run it once — it is 005 and
+007 through 011 already applied. On a database that already has the 005 schema,
+run `007` through `011` instead;
 `000_schema.sql` uses `create table if not exists` and would skip the existing
 tables, leaving `firm_profiles` keyed by the old `phone` column.
 `006_drop_legacy.sql` documents removing the tables left behind by the earlier

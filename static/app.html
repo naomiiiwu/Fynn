@@ -63,6 +63,8 @@ letter-spacing:-.021em;color:var(--navy)}
 .firm{font-size:12.5px;color:var(--faint);padding-left:14px;border-left:1px solid var(--rule);
 white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px}
 .tabs{margin-left:auto;display:flex;gap:2px;align-items:center}
+.who{font-size:12.5px;color:var(--faint);padding-left:12px;border-left:1px solid var(--rule);
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
 .tab{background:transparent;border:1px solid transparent;color:var(--slate);
 padding:6px 12px;box-shadow:none;border-radius:var(--r-xs);font-weight:500}
 .tab:hover{background:var(--bubF);border-color:transparent;color:var(--ink)}
@@ -337,6 +339,7 @@ color:var(--ledger);display:grid;place-items:center;font-size:11px;margin-top:1p
     </svg>Fynn</div>
   <div class="firm" id="firmname"></div>
   <div class="tabs" id="tabs"></div>
+  <div class="who" id="whoami"></div>
 </div></div>
 
 <div class="flashwrap" id="flashwrap"></div>
@@ -403,6 +406,8 @@ function render(){
   TAB=route();
   if(TAB!=="upload") BACK_TO=TAB;
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
+  $("#whoami").textContent = S.user ? S.user.name || S.user.email : "";
+  $("#whoami").title = S.user ? S.user.email : "";
   $("#tabs").innerHTML = TABS.map(([k,l])=>
     `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("")
     + `<a class="tab out" href="/logout">Sign out</a>`;
