@@ -589,6 +589,18 @@ def oauth_connect(ledger: str):
     except oauth.OAuthError as exc:
         raise HTTPException(400, str(exc))
 
+    # Ask the provider before sending anyone there. If it will refuse, the
+    # refusal renders on the provider's own error page with no way back — so
+    # keep the accountant here and say what to fix.
+    refusal = oauth.preflight(provider, url)
+    if refusal:
+        uri = oauth.redirect_uri(base_url(), provider)
+        message = (
+            f"{provider.label} refused the request: {refusal}. "
+            f"Add exactly this redirect URI to your {provider.label} app, then try again: {uri}"
+        )
+        return RedirectResponse(f"/?ledger_error={quote(message, safe='')}", status_code=303)
+
     response = RedirectResponse(url, status_code=303)
     response.set_cookie(
         OAUTH_STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax",

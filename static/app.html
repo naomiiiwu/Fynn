@@ -99,6 +99,9 @@ border-radius:var(--r-sm);font-size:13.5px;border:1px solid;animation:drop .3s e
 .flash.ok{background:var(--ledgerBg);border-color:#BEDACB;color:var(--ledger)}
 .flash.bad{background:var(--dangerBg);border-color:var(--dangerRule);color:var(--danger)}
 .flash b{display:block;margin-bottom:2px}
+/* The message can carry a redirect URI, which must stay readable rather than
+   stretching the banner off the page. */
+.flash>span{min-width:0;overflow-wrap:anywhere}
 .flash .x{margin-left:auto;cursor:pointer;border:none;background:transparent;box-shadow:none;
 color:inherit;opacity:.6;padding:0 4px;font-size:16px;line-height:1}
 .flash .x:hover{opacity:1;background:transparent}

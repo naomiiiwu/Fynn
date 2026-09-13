@@ -109,6 +109,43 @@ def authorize_url(provider: Provider, base_url: str, state: str) -> str:
     })
 
 
+def preflight(provider: Provider, url: str) -> Optional[str]:
+    """Why the provider will refuse this authorize request, or None to proceed.
+
+    A provider validates the redirect URI *before* showing a consent screen, and
+    renders the refusal on its own error page. There is no redirect back, so the
+    accountant is left on a page belonging to someone else, with an opaque error
+    id and no way home. Asking first costs one request on a button press and
+    keeps the failure inside Fynn, where it can say what to do about it.
+
+    Fails open on purpose. A preflight that cannot reach the provider, or that
+    sees a page it does not recognise, returns None and lets the real attempt
+    happen: blocking a working connection because a check was inconclusive is
+    worse than the dead end this avoids.
+    """
+    if provider.name != "xero":
+        # Only Xero's refusal page has been observed and parsed. Guessing at
+        # another provider's error shape risks blocking a valid connection.
+        return None
+    try:
+        response = httpx.get(url, follow_redirects=True, timeout=10)
+    except Exception:
+        return None
+    if "/identity/error" not in str(response.url):
+        return None
+
+    # The page names the actual problem — "Invalid redirect_uri" — while the
+    # URL carries only an opaque error id.
+    import html as _html
+    import re
+    text = re.sub(r"<(script|style).*?</\1>", "", response.text, flags=re.S)
+    text = " ".join(_html.unescape(re.sub(r"<[^>]+>", " ", text)).split())
+    match = re.search(r"Error:\s*(\S+)\s+([A-Z][^.]{0,60}?)\s+Error code", text)
+    if match:
+        return f"{match.group(2)} ({match.group(1)})"
+    return "the request was refused"
+
+
 def _basic_auth(provider: Provider) -> str:
     raw = f"{provider.client_id}:{provider.client_secret}".encode()
     return "Basic " + base64.b64encode(raw).decode()
