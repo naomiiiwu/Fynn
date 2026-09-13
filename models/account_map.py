@@ -145,6 +145,32 @@ _CONTRA = ("return", "refund", "allowance", "credit note", "reversal", "discount
 _INCOME = ("revenue", "income")
 _EXPENSE = ("expense", "fee", "cost", "returns", "tax")
 
+# A clearing account holds money in transit: the platform has taken the sale and
+# not yet deposited it. That is a current asset, and A2X makes it a
+# prerequisite — "You must set up your clearing accounts as Current Asset
+# accounts in your accounting system."
+#
+# Getting it wrong is quiet and expensive. Point the clearing line at a revenue
+# account and every payout is counted as income twice; point it at an expense
+# account and the balance sheet never shows the money the platform owes you.
+# Xero calls the type CURRENT or BANK; QuickBooks "Other Current Asset" or
+# "Bank".
+def is_clearing(account: str) -> bool:
+    return account.strip().lower().endswith("clearing account")
+
+
+def clearing_type_ok(kind: str) -> bool:
+    """Whether a ledger account type can hold funds in transit.
+
+    An unknown or blank type passes: a chart Fynn could not read is not
+    evidence of a mistake, and crying wolf trains people to click past the one
+    warning that matters.
+    """
+    k = (kind or "").strip().lower()
+    if not k:
+        return True
+    return k in ("current", "bank") or "current asset" in k
+
 
 def _hints_for(account: str) -> tuple[str, ...]:
     key = account.strip().lower()
@@ -200,6 +226,13 @@ def suggest(account: str, chart: list[dict]) -> Optional[str]:
             score -= 0.6
         if any(w in wanted for w in _EXPENSE) and "income" in kind and "returns" not in wanted:
             score -= 0.4
+        # Money in transit belongs in a current asset. Never offer anything else
+        # for a clearing line, however well the names happen to read.
+        if is_clearing(wanted):
+            if clearing_type_ok(kind):
+                score += 0.3
+            else:
+                score -= 1.0
         # Only offer a match that rests on something: a shared keyword, or
         # names that genuinely look alike. Character overlap alone matched
         # "Platform Service Fees" to "Bank Fees", which is a guess wearing a

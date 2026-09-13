@@ -345,6 +345,20 @@ once a cycle, like Shopee's monthly income statement, is not split.
 QuickBooks still receives a single journal per cycle. Splitting it the same way
 is the obvious next step and is not done yet.
 
+**Clearing accounts must be current assets, one per marketplace.** The clearing
+account holds money the platform has taken and not yet deposited — funds in
+transit, which is a current asset. Fynn debits the payout there; when the
+deposit lands the accountant categorises it to the same account, crediting it
+back. Whatever remains is fees the platform netted off before paying, or money
+still in transit — not an error.
+
+Pointing that line somewhere else is quiet and expensive: at a revenue account
+every payout is counted as income twice; at an expense account the balance
+sheet never shows what the platform owes. So the mapping screen refuses to
+suggest anything but a current asset for a clearing line, and flags one chosen
+by hand. One account per marketplace, never shared, so funds do not commingle
+and each reconciles on its own.
+
 Every post carries an idempotency key — `Idempotency-Key` for Xero, `requestid`
 for QuickBooks — derived from the firm, cycle and entry reference rather than
 from the moment of sending. A retry after a timeout presents the same key and

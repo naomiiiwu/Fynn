@@ -227,6 +227,8 @@ color:var(--slate);font-weight:600;white-space:nowrap}
 .src.firm{background:var(--ledgerBg);color:var(--ledger)}
 .sug{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--flagBg);
 color:var(--flag);font-weight:600;border:1px solid var(--flagRule)}
+.warn{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--dangerBg);
+color:var(--danger);font-weight:600;border:1px solid var(--dangerRule);white-space:nowrap}
 
 .ledrow{display:flex;justify-content:space-between;align-items:center;gap:14px;
 padding:14px 16px;border-bottom:1px solid var(--rule);font-size:13.5px;font-weight:500}
@@ -707,6 +709,15 @@ async function viewRules(){
 }
 
 /* ── accounts ── */
+/* Kept in step with models/account_map.py — the same rule, applied where the
+   choice is actually made. */
+const isClearing = a => String(a||"").trim().toLowerCase().endsWith("clearing account");
+function clearingTypeOk(kind){
+  const k = String(kind||"").trim().toLowerCase();
+  if(!k) return true;                 // an unreadable type is not evidence of a mistake
+  return k === "current" || k === "bank" || k.includes("current asset");
+}
+
 async function viewAccounts(){
   $("#main").innerHTML=`<div class="head"><h1>Accounts</h1></div>
     <p class="sub">A journal line names an account — “Marketing Expense”. Xero needs
@@ -736,7 +747,13 @@ async function viewAccounts(){
       const opts = [`<option value=""${chosen?"":" selected"}>— not mapped —</option>`]
         .concat(c.chart.map(e=>`<option value="${esc(e.code)}"${e.code===chosen?" selected":""}>
            ${esc(e.name)} · ${esc(e.code)}</option>`)).join("");
-      const tag = (!x.code && chosen) ? `<span class="sug">suggested</span>` : "";
+      let tag = (!x.code && chosen) ? `<span class="sug">suggested</span>` : "";
+      // A clearing account holds money the platform has taken and not yet
+      // deposited. Pointed at revenue it counts every payout as income twice;
+      // pointed at an expense the balance sheet never shows what is owed.
+      const picked = byCode[chosen];
+      if(isClearing(x.account) && picked && !clearingTypeOk(picked.type))
+        tag += ` <span class="warn" title="A clearing account must be a current asset — this one is ${esc(picked.type)}">wrong type</span>`;
       return `<td colspan="2"><select data-acct="${esc(x.account)}" data-f="code">${opts}</select> ${tag}</td>`;
     };
     const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}${taxCell(x)}</tr>`).join("");
@@ -763,6 +780,11 @@ async function viewAccounts(){
          <span class="st" id="a-status"></span></div>
        <p class="note">Leave a code blank to unmap it. Switching ledger in Settings
        starts a separate mapping — a Xero code is not a QuickBooks Id.</p>
+       <p class="note"><b>Clearing accounts</b> must be <b>current asset</b>
+       accounts, one per marketplace so funds never commingle. Fynn debits the
+       payout there; when the deposit lands you categorise it to the same
+       account, which credits it back. Whatever is left is fees the platform
+       netted off, or money still in transit.</p>
        <p class="note"><b>Tax</b> is the rate to send with lines on that account —
        a Xero TaxType such as <code>OUTPUT2</code> or <code>NONE</code>, or a
        QuickBooks tax code. Left blank, Fynn says nothing and your ledger applies
