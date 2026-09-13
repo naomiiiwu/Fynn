@@ -921,6 +921,33 @@ async function loadSignin(){
   }catch(e){ $("#signin").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
 }
 
+/* What DATABASE_URL parses to, minus the password. A rejected password is the
+   least specific error Postgres has — showing the fields ends the guessing. */
+function connectionTable(c){
+  if(!c || !c.host) return "";
+  const yes = v => v ? `<span class="ok-txt">yes</span>` : `<span class="pd-txt">no</span>`;
+  const bad = (v,msg) => v ? `<span style="color:var(--danger);font-weight:600">${esc(msg)}</span>`
+                           : `<span class="pd-txt">no</span>`;
+  const rows = [
+    ["Username sent", `<code>${esc(c.user||"(none)")}</code>`],
+    ["Host", `<code>${esc(c.host)}</code>`],
+    ["Port", `<code>${esc(c.port||"(none)")}</code>`],
+    ["Database", `<code>${esc(c.database||"(none)")}</code>`],
+    ["Using the pooler", yes(c.is_pooler)],
+    ["Username has project ref", c.is_pooler && !c.username_has_project_ref
+      ? `<span style="color:var(--danger);font-weight:600">no — the pooler needs postgres.&lt;ref&gt;</span>`
+      : yes(c.username_has_project_ref)],
+    ["Password present", c.password_present ? yes(true)
+      : `<span style="color:var(--danger);font-weight:600">no</span>`],
+    ["Password still the placeholder", bad(c.password_is_placeholder,"yes — replace it")],
+    ["Password needs encoding", bad(c.password_needs_encoding,"yes — contains @ / ? # [ ] or a space")],
+  ];
+  return `<table class="rules-t" style="margin-top:12px"><thead><tr>
+      <th colspan="2">What DATABASE_URL parses to (password never shown)</th></tr></thead><tbody>`
+    + rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join("")
+    + `</tbody></table>`;
+}
+
 async function loadDiagnostics(){
   try{
     const d=await api("/api/diagnostics"), st=d.storage;
@@ -947,6 +974,7 @@ async function loadDiagnostics(){
          start, so a release that needs a new table just works.</p>`
       : sc.configured
         ? `<p class="note">Automatic schema failed: ${esc(sc.detail||"")}</p>`
+          + connectionTable(sc.connection||{})
         : `<p class="note">Set <b>DATABASE_URL</b> to your Supabase Postgres connection
            string and Fynn will apply the schema itself on every start. Until then the
            files in migrations/ have to be run by hand in the SQL editor.</p>`;

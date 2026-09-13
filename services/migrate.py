@@ -47,16 +47,71 @@ APPLY = (
 )
 
 
+def describe(url: str) -> dict:
+    """What the connection string actually says, minus the password.
+
+    A rejected password is the least specific error Postgres has: the wrong
+    password, the wrong username, and the right password on the wrong host all
+    produce it. Showing the parsed fields ends the guessing — every one of them
+    is either visible in the Supabase dashboard or obviously wrong, and none of
+    them is a secret.
+
+    The password itself is never returned. Whether it is present, and whether it
+    holds a character that has to be percent-encoded, are.
+    """
+    from urllib.parse import urlsplit, unquote
+
+    out = {"user": "", "host": "", "port": "", "database": "",
+           "password_present": False, "password_needs_encoding": False,
+           "password_is_placeholder": False, "is_pooler": False,
+           "username_has_project_ref": False}
+    if not url:
+        return out
+
+    # Checked against the raw string, before parsing: the square brackets in
+    # [YOUR-PASSWORD] read as an IPv6 literal, so a URL still carrying the
+    # placeholder does not parse at all and every field below would come back
+    # blank — hiding the one fault that explains it.
+    if "your-password" in url.lower() or "your_password" in url.lower():
+        out["password_is_placeholder"] = True
+
+    try:
+        parts = urlsplit(url)
+    except Exception:
+        # Unparseable, and the placeholder above is much the likeliest reason.
+        return out
+
+    out["user"] = unquote(parts.username or "")
+    out["host"] = parts.hostname or ""
+    out["port"] = str(parts.port or "")
+    out["database"] = (parts.path or "").lstrip("/")
+
+    raw = parts.password or ""
+    out["password_present"] = bool(raw)
+    decoded = unquote(raw)
+    out["password_is_placeholder"] = decoded.upper().strip() in (
+        "[YOUR-PASSWORD]", "YOUR-PASSWORD", "[YOUR_PASSWORD]")
+    # If these survive undecoded in the raw field, the string was assembled by
+    # hand and the URL will be misread — often silently, by truncating.
+    out["password_needs_encoding"] = any(c in raw for c in "@/?#[] ")
+
+    out["is_pooler"] = "pooler.supabase.com" in out["host"]
+    out["username_has_project_ref"] = "." in out["user"]
+    return out
+
+
 class Result:
     def __init__(self) -> None:
         self.configured = False
         self.ok = False
         self.applied: list[str] = []
         self.detail = ""
+        self.connection: dict = {}
 
     def to_dict(self) -> dict:
         return {"configured": self.configured, "ok": self.ok,
-                "applied": list(self.applied), "detail": self.detail}
+                "applied": list(self.applied), "detail": self.detail,
+                "connection": dict(self.connection)}
 
 
 _last = Result()
@@ -119,6 +174,7 @@ def apply() -> Result:
     result = Result()
     url = _url()
     result.configured = bool(url)
+    result.connection = describe(url)
 
     if not url:
         result.detail = ("DATABASE_URL is not set, so the schema is not managed "
