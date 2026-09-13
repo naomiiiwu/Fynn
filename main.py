@@ -17,6 +17,7 @@ user's id is their workspace id. See the Accounts and access section below.
 
 import base64
 import os
+import re
 import secrets
 import sys
 import time
@@ -51,6 +52,7 @@ from models.firm_profile import (
 )
 from models.user import User, UserStore
 from models.transaction import Platform, Side
+from services.audit import working_paper
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
 from services import connections, identity, migrate, oauth
@@ -923,9 +925,24 @@ def api_audit_json():
     return {"records": _require_cycle().trail.to_dicts()}
 
 
-@app.get("/api/audit", response_class=PlainTextResponse)
+@app.get("/api/audit")
 def api_audit_csv():
-    return _require_cycle().trail.to_csv()
+    """The working paper, as a file the browser saves rather than displays.
+
+    Without the Content-Disposition header the browser renders CSV as text in
+    the tab, which looks like the export failing — and leaves the app, since
+    the link is a navigation.
+    """
+    cycle = _require_cycle()
+    profile = _profile()
+    paper = working_paper(cycle, _accounts(profile.ledger))
+    stem = re.sub(r"[^A-Za-z0-9]+", "-", f"{profile.firm} {cycle.cycle}").strip("-").lower()
+    return Response(
+        content=paper,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="fynn-working-paper-{stem}.csv"'},
+    )
 
 
 @app.get("/api/settings")
