@@ -279,6 +279,40 @@ margin-top:10px;cursor:pointer;line-height:1.45}
 .err{background:var(--dangerBg);border:1px solid var(--dangerRule);color:var(--danger);
 border-radius:var(--r-sm);padding:12px 15px;font-size:13.5px;margin-bottom:16px}
 
+/* ── first-run setup ──
+   Four short steps, and every answer is an ordinary setting you can change
+   afterwards. Nothing here asks about your business for anyone's benefit but
+   yours — a question you cannot act on is a question worth not asking. */
+.ob-back{position:fixed;inset:0;background:rgba(20,23,27,.42);backdrop-filter:blur(3px);
+display:grid;place-items:center;padding:24px;z-index:60;animation:fade .22s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.ob{background:var(--panel);border-radius:14px;width:100%;max-width:470px;
+box-shadow:0 24px 60px -20px rgba(20,23,27,.4);overflow:hidden;
+animation:rise .26s cubic-bezier(.2,.8,.3,1)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.ob-top{padding:26px 30px 0;display:flex;align-items:center;gap:10px}
+.ob-top .mark{width:28px;height:28px;flex:0 0 28px}
+.ob-top .step{margin-left:auto;font-size:11.5px;color:var(--faint);font-weight:600;
+letter-spacing:.04em;text-transform:uppercase}
+.ob-body{padding:18px 30px 4px}
+.ob-body h2{font-size:19px;font-weight:650;letter-spacing:-.02em;margin-bottom:7px}
+.ob-body p.lead{font-size:13.5px;color:var(--slate);margin-bottom:6px}
+.ob-body .field:first-of-type{margin-top:16px}
+.ob-foot{padding:20px 30px 24px;display:flex;align-items:center;gap:10px}
+.ob-foot .grow{flex:1}
+.ob-skip{background:none;border:none;box-shadow:none;color:var(--faint);font-size:12.5px;
+padding:8px 4px}
+.ob-skip:hover{background:none;color:var(--slate);border-color:transparent}
+.dots{display:flex;gap:5px;align-items:center}
+.dots i{width:6px;height:6px;border-radius:50%;background:var(--ruleF)}
+.dots i.on{background:var(--ledger);width:16px;border-radius:3px}
+.ob-list{list-style:none;margin:14px 0 2px;display:flex;flex-direction:column;gap:9px}
+.ob-list li{display:flex;gap:10px;font-size:13.5px;color:var(--slate);line-height:1.5}
+.ob-list b{color:var(--ink);font-weight:600}
+.ob-tick{flex:0 0 18px;width:18px;height:18px;border-radius:50%;background:var(--ledgerBg);
+color:var(--ledger);display:grid;place-items:center;font-size:11px;margin-top:1px}
+.ob-note{font-size:12px;color:var(--faint);margin-top:14px;line-height:1.5}
+
 @media(max-width:920px){
   .stage{flex-direction:column;align-items:stretch;padding:18px 14px 48px}
   .main,.main.wide{width:auto;flex:1 1 auto;padding:22px 20px 26px}
@@ -312,6 +346,8 @@ border-radius:var(--r-sm);padding:12px 15px;font-size:13.5px;margin-bottom:16px}
   <div class="drawer" id="drawer"></div>
 </div>
 
+<div id="onboard"></div>
+
 <script>
 const $=s=>document.querySelector(s);
 const fmt=n=>(n<0?"−":"")+Math.abs(n).toFixed(2);
@@ -330,7 +366,13 @@ async function api(path,opts={}){
 }
 
 async function load(){
-  try{ S=await api("/api/state"); render(); }
+  try{
+    S=await api("/api/state"); render();
+    // Resume where setup left off: connecting a ledger navigates away from the
+    // page entirely, and restarting from step one would be a poor welcome.
+    if(obNeeded() && !$(".ob-back"))
+      obOpen(Number(sessionStorage.getItem(OB_KEY)) || 0);
+  }
   catch(e){ $("#main").innerHTML=`<p class="loading">${esc(e.message)}</p>`; }
 }
 
@@ -757,6 +799,7 @@ function viewSettings(){
     <div id="ledgers"></div>
     <div class="acts" style="margin-top:24px">
       <button class="go" id="s-save">Save settings</button>
+      <button id="s-setup">Run setup again</button>
       <span class="st" id="s-status"></span></div>
     <p class="sect" style="margin-top:32px;margin-bottom:12px">Storage
       <span id="d-head">checking…</span></p>
@@ -765,6 +808,10 @@ function viewSettings(){
     i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
   });
   loadDiagnostics(); loadLedgers();
+  $("#s-setup").onclick=async()=>{
+    await api("/api/onboarding/restart",{method:"POST"});
+    S=await api("/api/state"); obOpen(0);
+  };
   $("#s-save").onclick=async()=>{
     const platforms=[...document.querySelectorAll("#s-plat input:checked")].map(i=>i.value);
     try{
@@ -861,6 +908,183 @@ async function loadDiagnostics(){
       settings and account mappings live only in memory and a redeploy clears them.</p>`;
     $("#diag").innerHTML = h;
   }catch(e){ $("#diag").innerHTML = `<p class="note">${esc(e.message)}</p>`; }
+}
+
+/* ── first-run setup ──────────────────────────────────────────────────────────
+   Modelled on how A2X opens: authenticate, then connect a channel. Short, and
+   every step is a decision that changes what the software does next.
+
+   Two rules follow from that. Nothing is asked that Fynn will not act on — no
+   firm size, no how-did-you-hear — and everything asked is an ordinary setting,
+   reachable in Settings forever afterwards. So the flow can be skipped at any
+   point without leaving the workspace half-configured: every answer has a
+   working default already. */
+const OB_STEPS=["welcome","firm","markets","ledger","done"];
+const OB_KEY="fynn_setup_step";
+let OB=0, OBD=null;
+
+function obNeeded(){ return !!(S && S.firm && S.firm.complete===false); }
+
+function obOpen(at){
+  OBD={firm:S.firm.firm, actor:S.firm.actor, platforms:[...S.firm.platforms],
+       ledger:S.firm.ledger};
+  OB = Number.isInteger(at) ? at : 0;
+  obRender();
+}
+
+function obClose(){ $("#onboard").innerHTML=""; sessionStorage.removeItem(OB_KEY); }
+
+/* Written through on every step, because connecting a ledger leaves the page
+   entirely and coming back to a blank form would be its own small betrayal. */
+async function obSave(){
+  try{
+    await api("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(OBD)});
+  }catch(e){ /* setup continues; Settings can correct it */ }
+}
+
+async function obFinish(skipped){
+  if(!skipped) await obSave();
+  try{ await api("/api/onboarding/complete",{method:"POST"}); }catch(e){}
+  obClose();
+  S=await api("/api/state");
+  render();
+}
+
+async function obGo(i){
+  if(OB>=1 && OB<=3) await obSave();      // the steps that hold answers
+  OB=i; sessionStorage.setItem(OB_KEY,String(OB)); obRender();
+}
+
+function obRender(){
+  const step=OB_STEPS[OB];
+  const dots=OB_STEPS.slice(1,4).map((_,i)=>
+    `<i class="${OB>=i+1?"on":""}"></i>`).join("");
+  const counter = (OB>=1&&OB<=3) ? `<span class="step">Step ${OB} of 3</span>` : "";
+  let body="", next="Continue", secondary="";
+
+  if(step==="welcome"){
+    body=`<h2>Set up Fynn</h2>
+      <p class="lead">Three short steps. Everything you choose is a setting you can
+      change later.</p>
+      <ul class="ob-list">
+        <li><span class="ob-tick">1</span><span><b>Your firm</b> — the name on the
+          working paper, and who signs off approvals.</span></li>
+        <li><span class="ob-tick">2</span><span><b>Marketplaces</b> — which of
+          Shopee, Lazada and TikTok Shop you reconcile.</span></li>
+        <li><span class="ob-tick">3</span><span><b>Your ledger</b> — Xero,
+          QuickBooks, or a dry run that posts nothing.</span></li>
+      </ul>`;
+    next="Get started";
+  }
+
+  if(step==="firm"){
+    body=`<h2>Your firm</h2>
+      <p class="lead">Both appear on every working paper Fynn produces.</p>
+      <div class="field"><label for="ob-firm">Firm name</label>
+        <input id="ob-firm" value="${esc(OBD.firm)}" placeholder="e.g. Tan &amp; Partners"></div>
+      <div class="field"><label for="ob-actor">Approvals signed by</label>
+        <input id="ob-actor" value="${esc(OBD.actor)}" placeholder="e.g. D. Tan">
+        <p class="hint">Written to the audit trail with every approval, and a
+        timestamp.</p></div>`;
+  }
+
+  if(step==="markets"){
+    body=`<h2>Which marketplaces?</h2>
+      <p class="lead">Fynn reads each platform's own settlement export. Pick the ones
+      your clients sell on.</p>
+      <div class="field"><div id="ob-plat">
+        ${["Shopee","Lazada","TikTok Shop"].map(p=>
+          `<label class="pill${OBD.platforms.includes(p)?" on":""}">
+           <input type="checkbox" value="${p}" ${OBD.platforms.includes(p)?"checked":""}>${p}</label>`
+        ).join("")}
+      </div></div>`;
+  }
+
+  if(step==="ledger"){
+    const L=(S.ledgers||{});
+    const row=k=>{
+      const v=L[k]; if(!v) return "";
+      if(v.connected) return `<span class="${v.can_post===false?"ro-txt":"ok-txt"}">${
+        v.can_post===false?"read only":"connected"}</span>`;
+      if(!v.configured) return `<span class="pd-txt">not configured</span>`;
+      return `<a class="btn-link" href="/oauth/${k}/connect">Connect</a>`;
+    };
+    body=`<h2>Where do the journals go?</h2>
+      <p class="lead">A dry run prepares the exact entry and posts nothing — a fine
+      place to start.</p>
+      <div class="field"><label for="ob-ledger">Ledger</label>
+        <select id="ob-ledger">
+          <option value="dry-run"${OBD.ledger==="dry-run"?" selected":""}>Dry run — post nothing</option>
+          <option value="xero"${OBD.ledger==="xero"?" selected":""}>Xero — DRAFT manual journal</option>
+          <option value="quickbooks"${OBD.ledger==="quickbooks"?" selected":""}>QuickBooks Online — journal entry</option>
+        </select></div>
+      <div class="je" style="margin-top:14px">
+        <div class="ledrow"><span>Xero</span><span class="ledright">${row("xero")}</span></div>
+        <div class="ledrow"><span>QuickBooks Online</span><span class="ledright">${row("quickbooks")}</span></div>
+      </div>
+      <p class="ob-note">Connecting is optional now. Fynn will not post anything
+      until you press Post on a cycle you have reviewed.</p>`;
+  }
+
+  if(step==="done"){
+    body=`<h2>Ready</h2>
+      <p class="lead">Upload a settlement export to start a close, or load a sample
+      cycle to see how it works first.</p>
+      <p class="ob-note">Everything you just set lives under Settings, and the
+      account mapping under Accounts.</p>`;
+    next="Upload a file"; secondary="Load sample cycle";
+  }
+
+  $("#onboard").innerHTML=`<div class="ob-back" id="ob-back"><div class="ob" role="dialog"
+      aria-modal="true" aria-label="Set up Fynn">
+    <div class="ob-top">
+      <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+        <rect width="100" height="100" rx="22" fill="var(--logoBg)"/>
+        <path d="M61 50H41V72" fill="none" stroke="var(--logoGreen)" stroke-width="17"
+              stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M41 54V39Q41 25 55 25H67" fill="none" stroke="var(--navy)" stroke-width="17"
+              stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>${counter}
+    </div>
+    <div class="ob-body">${body}</div>
+    <div class="ob-foot">
+      ${OB>0&&OB<4?`<div class="dots">${dots}</div>`:""}
+      <span class="grow"></span>
+      ${OB>0&&OB<4?`<button id="ob-prev">Back</button>`:""}
+      ${secondary?`<button id="ob-second">${esc(secondary)}</button>`:""}
+      ${OB===0?`<button class="ob-skip" id="ob-skip">Skip setup</button>`:""}
+      <button class="go" id="ob-next">${esc(next)}</button>
+    </div>
+  </div></div>`;
+
+  if($("#ob-plat")) document.querySelectorAll("#ob-plat .pill input").forEach(i=>{
+    i.onchange=()=>{
+      i.parentElement.classList.toggle("on", i.checked);
+      OBD.platforms=[...document.querySelectorAll("#ob-plat input:checked")].map(x=>x.value);
+    };
+  });
+  if($("#ob-ledger")) $("#ob-ledger").onchange=()=>{ OBD.ledger=$("#ob-ledger").value; };
+  if($("#ob-prev")) $("#ob-prev").onclick=()=>{ obCollect(); obGo(OB-1); };
+  if($("#ob-skip")) $("#ob-skip").onclick=()=>obFinish(true);
+  if($("#ob-second")) $("#ob-second").onclick=async()=>{
+    await obFinish(false);
+    await api("/api/cycle/sample",{method:"POST"});
+    await load(); go("cycle");
+  };
+  $("#ob-next").onclick=async()=>{
+    obCollect();
+    if(OB===OB_STEPS.length-1){ await obFinish(false); go("upload"); return; }
+    obGo(OB+1);
+  };
+  const first=$("#ob-firm")||$("#ob-ledger");
+  if(first) first.focus();
+}
+
+function obCollect(){
+  if($("#ob-firm")) OBD.firm=$("#ob-firm").value;
+  if($("#ob-actor")) OBD.actor=$("#ob-actor").value;
+  if($("#ob-ledger")) OBD.ledger=$("#ob-ledger").value;
 }
 
 /* A connection result is news about the page you are looking at, so it belongs

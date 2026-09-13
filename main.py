@@ -762,10 +762,30 @@ def api_save_settings(req: SettingsRequest):
     profile.platforms = [p for p in req.platforms if p in SUPPORTED_PLATFORMS] \
         or list(SUPPORTED_PLATFORMS)
     profile.ledger = req.ledger if req.ledger in SUPPORTED_LEDGERS else "dry-run"
-    profile.onboarding_step = None
+    # Saving settings no longer ends setup. Setup writes through this endpoint as
+    # it goes — so that leaving for a ledger's consent screen does not lose what
+    # was typed — and finishing it is a separate, deliberate act.
     _profiles.save(profile)
     if _cycle is not None:
         _cycle.firm = profile.firm
+    return profile.to_dict()
+
+
+@app.post("/api/onboarding/complete")
+def api_onboarding_complete():
+    """Setup is done, or was skipped. Either way, stop asking."""
+    profile = _profile()
+    profile.onboarding_step = None
+    _profiles.save(profile)
+    return profile.to_dict()
+
+
+@app.post("/api/onboarding/restart")
+def api_onboarding_restart():
+    """Walk through setup again. Nothing is cleared — it opens on what is set."""
+    profile = _profile()
+    profile.onboarding_step = "ask_firm"
+    _profiles.save(profile)
     return profile.to_dict()
 
 
