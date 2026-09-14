@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 from agents.explainer import opening_message, reply
 from agents.investigator import investigate
+from agents.triage import triage
 from data.sample_settlements import REPORTED_PAYOUTS, prior_cycle_lines, sample_lines
 from models.account_map import AccountMap, suggest
 from models.firm_profile import (
@@ -769,6 +770,59 @@ def api_chat(req: ChatRequest):
     return {"message": reply(exc, req.history, cycle.lines, cycle.prior,
                              rules=space.rules().rules,
                              accounts=POSTING_ACCOUNTS)}
+
+
+@app.post("/api/exceptions/triage")
+def api_triage():
+    """Ask Fynn to propose a treatment for every open exception at once.
+
+    Proposes only. Each one still has to be approved, and approving goes
+    through the same path as deciding an exception by hand — so the same
+    checks apply and the same rules get written.
+    """
+    space = ws()
+    cycle = _require_cycle()
+    open_exceptions = [e for r in cycle.run().values()
+                       for e in r.exceptions if not e.resolved]
+    return triage(open_exceptions, cycle.lines,
+                  rules=space.rules().rules, accounts=POSTING_ACCOUNTS)
+
+
+class BatchApproveRequest(BaseModel):
+    # [{"key": ..., "account": ...}, ...]
+    approvals: list[dict]
+    actor: Optional[str] = None
+
+
+@app.post("/api/approve/batch")
+def api_approve_batch(req: BatchApproveRequest):
+    """Approve several exceptions in one action.
+
+    Each goes through the same approval as one decided by hand: the side comes
+    from the amount's sign, a rule is written, and the decision is recorded
+    against this cycle. Anything that cannot be applied is reported rather than
+    skipped quietly — a batch that silently drops one is worse than a batch
+    that fails.
+    """
+    space = ws()
+    cycle = _require_cycle()
+    actor = (req.actor or "").strip() or space.profile().approver()
+    applied, failed = [], []
+    for item in req.approvals:
+        key, account = str(item.get("key", "")), str(item.get("account", ""))
+        if account not in POSTING_ACCOUNTS:
+            failed.append({"key": key, "why": f"{account!r} is not an account Fynn posts to."})
+            continue
+        try:
+            exc = _find_exception(cycle, key)
+        except HTTPException:
+            failed.append({"key": key, "why": "No open exception with that key."})
+            continue
+        side = Side.CREDIT if exc.amount > 0 else Side.DEBIT
+        cycle.approve(key, account, side, actor, True, "label")
+        save_resolution(space.id, cycle.cycle, key, account, side.value, actor)
+        applied.append({"key": key, "account": account})
+    return {"applied": applied, "failed": failed, "digest": cycle.digest()}
 
 
 @app.post("/api/approve")

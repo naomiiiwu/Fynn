@@ -144,6 +144,15 @@ transition:background .16s,border-color .16s;border-radius:0;box-shadow:none}
 .row .t{font-size:14px;font-weight:600;margin-bottom:3px;letter-spacing:-.01em}
 .row .m{font-size:12.5px;color:var(--slate);line-height:1.45}
 .row .a{font-size:14px;font-weight:500;white-space:nowrap}
+.prop{border-bottom:1px solid var(--rule);padding:11px 13px 13px 30px;background:var(--panel2)}
+.prop label{display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer}
+.prop label input{width:auto;accent-color:var(--ledger);flex:0 0 auto}
+.prop b{font-weight:600}
+.prop p{font-size:12.5px;color:var(--slate);margin:5px 0 0 27px;line-height:1.5}
+.prop .conf{font-size:10.5px;padding:2px 8px;border-radius:99px;background:var(--ledgerBg);
+color:var(--ledger);font-weight:600;white-space:nowrap}
+.prop.unsure{background:var(--flagBg)}
+.prop.unsure .conf{background:#F6E5C4;color:var(--flag)}
 .tag{font-size:10.5px;padding:3px 8px;border-radius:99px;background:var(--flagBg);
 color:var(--flag);white-space:nowrap;font-weight:600;text-transform:uppercase;
 letter-spacing:.04em;border:1px solid var(--flagRule)}
@@ -465,6 +474,8 @@ function viewCycle(){
         <button id="sample">Load sample cycle</button>
       </div>`;
     $("#toupload").onclick=()=>go("upload");
+  if($("#triage")) $("#triage").onclick=proposeAll;
+  if($("#accept")) $("#accept").onclick=approveProposed;
     $("#sample").onclick=async()=>{ await api("/api/cycle/sample",{method:"POST"}); await load(); };
     return;
   }
@@ -520,7 +531,13 @@ function viewCycle(){
         <span class="b"><span class="t">${esc(e.platform)} — ${esc(label(e))}</span>
         <span class="m">${esc(e.why)}</span></span>
         <span class="a num">${fmt(e.amount)}</span><span class="tag">Open</span></button>`;
+      h+=proposalRow(e);
     });
+    const proposed = D.exceptions.filter(e=>PROPOSALS[e.key]).length;
+    if(proposed) h+=`<div class="acts" style="margin:14px 0 0">
+      <button class="go" id="accept">Approve the ticked ones</button>
+      <span class="st" id="accept-status">${proposed} proposed. Untick anything you
+      would rather decide yourself, or open it to ask.</span></div>`;
     // Without this the only button on the page is "Close this cycle without
     // posting", which reads as though posting were never on offer. It is — it
     // is gated, and the gate should say so rather than being inferred from an
@@ -531,8 +548,13 @@ function viewCycle(){
     // to write the whole deposit off to an account.
     h+=`<div class="gate"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
       <p>Each one changes the payout, so a journal posted now would be one Fynn
-      already knows is wrong. Open any above and say where it belongs — most
-      become a rule, and will not be asked again next cycle.</p></div>`;
+      already knows is wrong. Decide them below — most become a rule, and will
+      not be asked again next cycle.</p>
+      <div class="acts" style="margin-top:13px">
+        <button class="go" id="triage">Propose all ${n}</button>
+        <span class="st" id="triage-status">Fynn reads them together, against the
+        rules you have already written. Nothing is approved until you say so.</span>
+      </div></div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
       <p>${D.lines_total} lines classified across ${D.platforms.length} platforms,
@@ -558,6 +580,8 @@ function viewCycle(){
 
   $("#main").innerHTML=h;
   $("#toupload").onclick=()=>go("upload");
+  if($("#triage")) $("#triage").onclick=proposeAll;
+  if($("#accept")) $("#accept").onclick=approveProposed;
   if($("#fix-save")){
     const save=async()=>{
       const v=$("#fix-reported").value.trim();
@@ -636,6 +660,59 @@ async function toggleJE(platform){
       `<p class="note">${j.balanced?"Balanced.":"Not balanced — unresolved exceptions are excluded."}</p>`;
     el.classList.add("on");
   }catch(e){ el.innerHTML=`<p class="note">${esc(e.message)}</p>`; el.classList.add("on"); }
+}
+
+/* ── proposing every exception at once ──────────────────────────────────────
+   The drawer answers "what is this fee?" one at a time. This answers "what
+   should this close do?", which is the question an accountant arrives with.
+   Proposals only: each still has to be accepted, and accepting runs the same
+   approval as deciding by hand. */
+let PROPOSALS = {};
+
+async function proposeAll(){
+  const btn=$("#triage"), st=$("#triage-status");
+  btn.disabled=true; st.textContent="Reading the settlement…";
+  try{
+    const r=await api("/api/exceptions/triage",{method:"POST"});
+    if(r.error){ btn.disabled=false; st.textContent=r.error; return; }
+    PROPOSALS={};
+    r.proposals.forEach(p=>PROPOSALS[p.key]=p);
+    if(!r.proposals.length){
+      btn.disabled=false; st.textContent="Fynn had no proposal to make.";
+      return;
+    }
+    viewCycle();
+  }catch(e){ btn.disabled=false; st.textContent=e.message; }
+}
+
+/* Rendered under each exception once a proposal exists for it. Anything Fynn
+   is unsure of is shown unsure and left unticked — a list of confident-looking
+   suggestions skimmed quickly is how a wrong one gets posted. */
+function proposalRow(e){
+  const p=PROPOSALS[e.key];
+  if(!p) return "";
+  return `<div class="prop${p.trusted?"":" unsure"}">
+    <label><input type="checkbox" data-prop="${encodeURIComponent(e.key)}"
+      ${p.trusted?"checked":""}>
+      <b>${esc(p.account)}</b>
+      <span class="conf">${p.confidence}% confident</span></label>
+    <p>${esc(p.reason)}</p></div>`;
+}
+
+async function approveProposed(){
+  const picked=[...document.querySelectorAll("[data-prop]:checked")]
+    .map(i=>({key:decodeURIComponent(i.dataset.prop),
+              account:PROPOSALS[decodeURIComponent(i.dataset.prop)].account}));
+  if(!picked.length) return;
+  const st=$("#accept-status");
+  $("#accept").disabled=true; st.textContent=`Approving ${picked.length}…`;
+  try{
+    const r=await api("/api/approve/batch",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({approvals:picked})});
+    PROPOSALS={};
+    if(r.failed.length) alert(r.failed.map(f=>f.key+": "+f.why).join("\n"));
+    await load();
+  }catch(e){ $("#accept").disabled=false; st.textContent=e.message; }
 }
 
 /* ── exception drawer ── */

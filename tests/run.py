@@ -413,6 +413,25 @@ def a_refusal_on_our_own_redirect_is_not_mistaken_for_success():
     ok(reason and "access_denied" in reason, f"a denial was read as success: {reason!r}")
 
 
+@check("posting")
+def a_confidence_survives_whichever_scale_it_arrives_in():
+    """A model asked for 0-100 sometimes answers 0.85. int(0.85) is 0, so every
+    proposal came back untrusted and nothing was ever pre-selected."""
+    from agents.triage import _confidence, _parse
+    eq(_confidence(85), 85, "an integer confidence")
+    eq(_confidence(0.85), 85, "a fractional confidence collapsed to nothing")
+    eq(_confidence("0.85"), 85, "a fractional confidence as a string")
+    eq(_confidence(1), 100, "1 read as one percent")
+    for junk in (None, "high", "", [], 150, -5):
+        ok(0 <= _confidence(junk) <= 100, f"{junk!r} escaped the range")
+
+    # A reply cut off mid-object is still the proposals before it.
+    eq(len(_parse('{"proposals": [{"key":"a","account":"X","confidence":9,"reason":"r"},'
+                  '{"key":"b","account":"Y","confidence":8,"reason":"s"},'
+                  '{"key":"c","acc')["proposals"]), 2, "a truncated reply lost everything")
+    eq(_parse("I think you should..."), None, "prose was read as proposals")
+
+
 @check("surface")
 def no_route_returns_a_server_error():
     from fastapi.routing import APIRoute
