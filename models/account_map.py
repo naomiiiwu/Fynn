@@ -155,12 +155,26 @@ _EXPENSE = ("expense", "fee", "cost", "returns", "tax")
 # account and the balance sheet never shows the money the platform owes you.
 # Xero calls the type CURRENT or BANK; QuickBooks "Other Current Asset" or
 # "Bank".
+# Fynn accounts that can only be assets. Money the platform is holding, and tax
+# withheld that the authority will return, are both amounts owed *to* the firm —
+# they sit on the balance sheet, never in profit and loss and never in equity.
+_MUST_BE_ASSET = ("clearing account", "receivable")
+
+
 def is_clearing(account: str) -> bool:
-    return account.strip().lower().endswith("clearing account")
+    # Contains, not ends with: the account offered in the approval dropdown is
+    # "Clearing Account (hold)", which ends with neither word and so slipped
+    # past this entirely — and was mapped to Retained Earnings.
+    return "clearing account" in account.strip().lower()
+
+
+def expects_asset(account: str) -> bool:
+    name = account.strip().lower()
+    return any(word in name for word in _MUST_BE_ASSET)
 
 
 def clearing_type_ok(kind: str) -> bool:
-    """Whether a ledger account type can hold funds in transit.
+    """Whether a ledger account type can hold an amount owed to the firm.
 
     An unknown or blank type passes: a chart Fynn could not read is not
     evidence of a mistake, and crying wolf trains people to click past the one
@@ -169,7 +183,8 @@ def clearing_type_ok(kind: str) -> bool:
     k = (kind or "").strip().lower()
     if not k:
         return True
-    return k in ("current", "bank") or "current asset" in k
+    return (k in ("current", "bank", "prepayment")
+            or "current asset" in k or "receivable" in k)
 
 
 def _hints_for(account: str) -> tuple[str, ...]:
@@ -246,9 +261,9 @@ def suggest(account: str, chart: list[dict]) -> Optional[str]:
         if any(w in wanted for w in _EXPENSE) and any(w in kind for w in earns) \
                 and "returns" not in wanted:
             score -= 1.2
-        # Money in transit belongs in a current asset. Never offer anything else
-        # for a clearing line, however well the names happen to read.
-        if is_clearing(wanted):
+        # Money in transit, and tax withheld awaiting refund, belong in an
+        # asset. Never offer anything else, however well the names read.
+        if expects_asset(wanted):
             if clearing_type_ok(kind):
                 score += 0.3
             else:

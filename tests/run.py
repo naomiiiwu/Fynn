@@ -306,14 +306,27 @@ def an_entry_is_dated_in_the_period_it_belongs_to():
 
 
 @check("posting")
-def a_clearing_line_is_only_ever_offered_a_current_asset():
-    from models.account_map import suggest, clearing_type_ok
+def money_owed_to_the_firm_is_only_ever_offered_an_asset():
+    """Clearing Account (hold) reached Retained Earnings, and Withholding Tax
+    Receivable reached General Expenses. Neither was checked."""
+    from models.account_map import clearing_type_ok, expects_asset, suggest
     chart = [{"code": "090", "name": "Shopee Clearing", "type": "CURRENT"},
-             {"code": "200", "name": "Shopee Clearing Revenue", "type": "REVENUE"}]
+             {"code": "200", "name": "Shopee Clearing Revenue", "type": "REVENUE"},
+             {"code": "960", "name": "Retained Earnings", "type": "EQUITY"},
+             {"code": "429", "name": "General Expenses", "type": "EXPENSE"}]
     eq(suggest("Shopee Clearing Account", chart), "090", "suggested a non-asset")
-    for kind in ("CURRENT", "BANK", "Other Current Asset", ""):
+    eq(suggest("Clearing Account (hold)", chart), None, "offered equity or expense")
+    eq(suggest("Withholding Tax Receivable", chart), None, "a receivable offered an expense")
+
+    for name in ("Shopee Clearing Account", "Clearing Account (hold)",
+                 "Withholding Tax Receivable"):
+        ok(expects_asset(name), f"{name} is not held to being an asset")
+    for name in ("Commission Expense", "Sales Revenue"):
+        ok(not expects_asset(name), f"{name} should not be held to being an asset")
+
+    for kind in ("CURRENT", "BANK", "Other Current Asset", "Accounts Receivable", ""):
         ok(clearing_type_ok(kind), f"{kind} rejected")
-    for kind in ("REVENUE", "EXPENSE", "CURRLIAB", "FIXED"):
+    for kind in ("REVENUE", "EXPENSE", "CURRLIAB", "FIXED", "EQUITY"):
         ok(not clearing_type_ok(kind), f"{kind} accepted")
 
 

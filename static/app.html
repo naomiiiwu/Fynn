@@ -807,11 +807,15 @@ async function viewRules(){
 /* ── accounts ── */
 /* Kept in step with models/account_map.py — the same rule, applied where the
    choice is actually made. */
-const isClearing = a => String(a||"").trim().toLowerCase().endsWith("clearing account");
-function clearingTypeOk(kind){
+const expectsAsset = a => {
+  const n = String(a||"").trim().toLowerCase();
+  return n.includes("clearing account") || n.includes("receivable");
+};
+function assetTypeOk(kind){
   const k = String(kind||"").trim().toLowerCase();
   if(!k) return true;                 // an unreadable type is not evidence of a mistake
-  return k === "current" || k === "bank" || k.includes("current asset");
+  return k === "current" || k === "bank" || k === "prepayment"
+      || k.includes("current asset") || k.includes("receivable");
 }
 
 async function viewAccounts(){
@@ -848,8 +852,8 @@ async function viewAccounts(){
       // deposited. Pointed at revenue it counts every payout as income twice;
       // pointed at an expense the balance sheet never shows what is owed.
       const picked = byCode[chosen];
-      if(isClearing(x.account) && picked && !clearingTypeOk(picked.type))
-        tag += ` <span class="warn" title="A clearing account must be a current asset — this one is ${esc(picked.type)}">wrong type</span>`;
+      if(expectsAsset(x.account) && picked && !assetTypeOk(picked.type))
+        tag += ` <span class="warn" title="${esc(x.account)} is money owed to the firm and must be an asset — ${esc(picked.name)} is ${esc(picked.type)}">wrong type</span>`;
       return `<td colspan="2"><select data-acct="${esc(x.account)}" data-f="code">${opts}</select> ${tag}</td>`;
     };
     const rows=a.accounts.map(x=>`<tr><td>${esc(x.account)}</td>${cell(x)}${taxCell(x)}</tr>`).join("");
