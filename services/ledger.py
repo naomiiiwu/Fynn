@@ -50,6 +50,25 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+def _cycle_end(cycle: str) -> str:
+    """The last day of a YYYY-MM cycle.
+
+    Used when the settlement period cannot be read as dates — a monthly
+    statement that names no payout date of its own. Dating that entry today
+    would file a January close in whatever month it happened to be posted,
+    which is wrong all year and materially wrong at a year end.
+    """
+    import calendar
+    import re as _re
+    match = _re.fullmatch(r"(\d{4})-(\d{2})", (cycle or "").strip())
+    if not match:
+        return ""
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        return ""
+    return f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+
+
 def _payout_date(payout: str) -> str:
     """The day a settlement period closed, from the platform's own wording.
 
@@ -296,7 +315,10 @@ class XeroAdapter(LedgerAdapter):
                 # Xero creates the contact if this name is new, so a firm does
                 # not have to set one up before the first post.
                 "Contact": {"Name": entry.platform.value},
-                "Date": _payout_date(entry.payout) or _today(),
+                # The settlement's own date where the platform states one, the
+                # end of the cycle otherwise, and only then today.
+                "Date": (_payout_date(entry.payout) or _cycle_end(entry.cycle)
+                         or _today()),
                 "LineAmountTypes": "Exclusive",
                 "InvoiceNumber": entry.reference,
                 "Reference": f"Fynn — {entry.platform.value} {entry.cycle}",

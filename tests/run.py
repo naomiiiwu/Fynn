@@ -246,6 +246,32 @@ def a_catch_all_is_only_ever_offered_another_catch_all():
 
 
 @check("posting")
+def an_entry_is_dated_in_the_period_it_belongs_to():
+    """A January close was posted dated today, landing it in September."""
+    from models.account_map import AccountMap, LedgerAccount
+    from models.transaction import JournalEntry, JournalLine, Platform, Side
+    from services.ledger import XeroAdapter, _cycle_end
+
+    accounts = AccountMap("w", "xero", {"shopee clearing account": LedgerAccount("090"),
+                                        "sales revenue": LedgerAccount("200")})
+
+    def dated(cycle, payout):
+        entry = JournalEntry(reference="R", cycle=cycle, platform=Platform.SHOPEE,
+                             payout=payout,
+                             lines=[JournalLine(account="Shopee Clearing Account",
+                                                side=Side.DEBIT, amount=100.0),
+                                    JournalLine(account="Sales Revenue",
+                                                side=Side.CREDIT, amount=100.0)])
+        return XeroAdapter(accounts).build_payload(entry)["Invoices"][0]["Date"]
+
+    eq(dated("2026-01", "05 Jan 2026 - 11 Jan 2026"), "2026-01-11", "stated payout date")
+    eq(dated("2026-01", "26 Jan 2026 - 01 Feb 2026"), "2026-02-01", "period crossing a month")
+    eq(dated("2026-01", "2026-01"), "2026-01-31", "monthly statement dated outside its cycle")
+    eq(_cycle_end("2024-02"), "2024-02-29", "leap year")
+    eq(_cycle_end("2026-13"), "", "an impossible month should not be invented")
+
+
+@check("posting")
 def a_clearing_line_is_only_ever_offered_a_current_asset():
     from models.account_map import suggest, clearing_type_ok
     chart = [{"code": "090", "name": "Shopee Clearing", "type": "CURRENT"},
