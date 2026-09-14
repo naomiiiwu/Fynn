@@ -396,10 +396,28 @@ async function load(){
    Back control rather than sitting in the tab bar beside the standing views. */
 const VIEWS={cycle:viewCycle, upload:viewUpload, rules:viewRules,
              accounts:viewAccounts, settings:viewSettings};
-const TABS=[["cycle","Cycle"],["rules","Rules"],["accounts","Accounts"],
-            ["settings","Settings"]];
+// Upload and Rules are not places you live: one is a step you take and come
+// back from, the other a reference you consult. Both keep a route and a Back
+// control, and neither takes a seat in the tab bar beside the standing views.
+const TABS=[["cycle","Cycle"],["accounts","Accounts"],["settings","Settings"]];
 // Where Upload's Back returns to: wherever you opened it from.
 let BACK_TO="cycle";
+const BACK_LABEL={cycle:"Cycle",accounts:"Accounts",settings:"Settings"};
+
+/* The control that returns from a view reached by a button rather than a tab. */
+function backControl(){
+  return `<button class="back" id="back">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6"/></svg>${esc(BACK_LABEL[BACK_TO]||"Cycle")}</button>`;
+}
+
+function wireBack(){
+  const b=$("#back"); if(!b) return;
+  // history.back() so this and the browser's own agree, rather than pushing a
+  // second entry the user then has to walk out of twice.
+  b.onclick=()=>{ if(history.length>1) history.back(); else go(BACK_TO); };
+}
 
 function route(){
   const name=(location.hash||"").replace(/^#\/?/,"").split("?")[0];
@@ -415,7 +433,7 @@ function go(name){
 
 function render(){
   TAB=route();
-  if(TAB!=="upload") BACK_TO=TAB;
+  if(TAB!=="upload" && TAB!=="rules") BACK_TO=TAB;
   $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
   $("#whoami").textContent = S.user ? S.user.name || S.user.email : "";
   $("#whoami").title = S.user ? S.user.email : "";
@@ -696,13 +714,7 @@ async function approve(){
 
 /* ── upload ── */
 function viewUpload(){
-  const backLabel={cycle:"Cycle",rules:"Rules",accounts:"Accounts",settings:"Settings"}[BACK_TO]
-                  || "Cycle";
-  $("#main").innerHTML=`
-    <button class="back" id="back">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M15 18l-6-6 6-6"/></svg>${esc(backLabel)}</button>
+  $("#main").innerHTML=backControl()+`
     <div class="head"><h1>Upload settlement files</h1></div>
     <p class="sub">Shopee, Lazada or TikTok Shop. Fynn reads each platform's own export —
     wide order statements and long transaction statements alike — and folds them into
@@ -719,9 +731,7 @@ function viewUpload(){
       <p class="hint">Only needed when the file does not state the payout on a row of its own.</p>
     </div>
     <div class="files" id="files"></div>`;
-  // history.back() so Back and the browser's own back agree, rather than
-  // pushing a second entry that the user then has to walk out of twice.
-  $("#back").onclick=()=>{ if(history.length>1) history.back(); else go(BACK_TO); };
+  wireBack();
   const drop=$("#drop"), file=$("#file");
   drop.onclick=()=>file.click();
   drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
@@ -771,12 +781,13 @@ async function send(files){
 
 /* ── rules ── */
 async function viewRules(){
-  $("#main").innerHTML=`<div class="head"><h1>Rules</h1>
+  $("#main").innerHTML=backControl()+`<div class="head"><h1>Rules</h1>
     <span class="count"><b class="num">${S.rules.total}</b> rules</span></div>
     <p class="sub">Every approval becomes a rule, applied across every client from then on.
     Fynn ships ${S.rules.starter} for fee names that have only one defensible treatment;
     your firm has decided ${S.rules.firm}.</p>
     <p class="loading">Loading…</p>`;
+  wireBack();
   try{
     const r=await api("/api/rules");
     const rows=r.rules.map(x=>{
@@ -931,6 +942,11 @@ function viewSettings(){
       live ledger needs it connected below, and every account mapped.</p></div>
     <div id="ledgers"></div>
     <div id="signin"></div>
+    <p class="sect" style="margin-top:30px;margin-bottom:10px">Rules</p>
+    <div class="je"><div class="ledrow">
+      <span>${S.rules.firm} decided by your firm, ${S.rules.starter} shipped with Fynn</span>
+      <span class="ledright"><button id="s-rules">Open rules</button></span>
+    </div></div>
     <div class="acts" style="margin-top:24px">
       <button class="go" id="s-save">Save settings</button>
       <button id="s-setup">Run setup again</button>
@@ -942,6 +958,7 @@ function viewSettings(){
     i.onchange=()=>i.parentElement.classList.toggle("on", i.checked);
   });
   loadDiagnostics(); loadLedgers(); loadSignin();
+  $("#s-rules").onclick=()=>go("rules");
   $("#s-setup").onclick=async()=>{
     await api("/api/onboarding/restart",{method:"POST"});
     S=await api("/api/state"); obOpen(0);

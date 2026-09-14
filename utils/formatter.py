@@ -72,7 +72,8 @@ class Cycle:
             "classify",
             f"{len(covered)} lines classified by Fynn's starter rules, not by this firm "
             f"({len(labels)} labels: {', '.join(labels[:6])}"
-            f"{'…' if len(labels) > 6 else ''}). Override any of them in /rules.",
+            f"{'…' if len(labels) > 6 else ''}). "
+            f"Override any of them under Settings → Rules.",
         )
 
     def run(self) -> dict[Platform, CycleResult]:
