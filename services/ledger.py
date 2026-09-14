@@ -304,10 +304,11 @@ class XeroAdapter(LedgerAdapter):
                 "UnitAmount": round(amount * flip, 2),
                 "AccountCode": self._code(line.account),
             }
-            tax = self._tax(line.account)
-            if tax:
-                item["TaxType"] = tax
+            item["TaxType"] = self._tax(line.account) or "NONE"
             lines.append(item)
+
+        # Whether the firm has mapped a rate for any account this entry touches.
+        taxed = any(l.get("TaxType") not in (None, "", "NONE") for l in lines)
 
         return {
             "Invoices": [{
@@ -319,7 +320,14 @@ class XeroAdapter(LedgerAdapter):
                 # end of the cycle otherwise, and only then today.
                 "Date": (_payout_date(entry.payout) or _cycle_end(entry.cycle)
                          or _today()),
-                "LineAmountTypes": "Exclusive",
+                # NoTax unless the firm has actually mapped a rate. Left on
+                # Exclusive with no TaxType, Xero applies each account's own
+                # default and adds it on top — inventing GST out of a settlement
+                # summary whose amounts are already net, and whose tax the
+                # platform itemises as lines of its own. One invoice came back
+                # with a subtotal of 0.00 and a total of 369.95, every penny of
+                # it tax nobody asked for.
+                "LineAmountTypes": "Exclusive" if taxed else "NoTax",
                 "InvoiceNumber": entry.reference,
                 "Reference": f"Fynn — {entry.platform.value} {entry.cycle}",
                 "Status": "DRAFT",

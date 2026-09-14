@@ -246,6 +246,40 @@ def a_catch_all_is_only_ever_offered_another_catch_all():
 
 
 @check("posting")
+def xero_is_never_left_to_invent_the_tax():
+    """An invoice came back with a subtotal of 0.00 and a total of 369.95 —
+    every penny of it GST Xero applied from account defaults."""
+    from models.account_map import AccountMap, LedgerAccount
+    from models.transaction import JournalEntry, JournalLine, Platform, Side
+    from services.ledger import XeroAdapter
+
+    def build(rate):
+        accounts = AccountMap("w", "xero", {
+            "shopee clearing account": LedgerAccount("090"),
+            "sales revenue": LedgerAccount("200", tax=rate),
+            "commission expense": LedgerAccount("310")})
+        entry = JournalEntry(reference="R", cycle="2026-01", platform=Platform.SHOPEE,
+                             lines=[JournalLine(account="Shopee Clearing Account",
+                                                side=Side.DEBIT, amount=900.0),
+                                    JournalLine(account="Sales Revenue",
+                                                side=Side.CREDIT, amount=1000.0),
+                                    JournalLine(account="Commission Expense",
+                                                side=Side.DEBIT, amount=100.0)])
+        return XeroAdapter(accounts).build_payload(entry)["Invoices"][0]
+
+    bare = build("")
+    eq(bare["LineAmountTypes"], "NoTax", "Xero was left free to add tax")
+    ok(all(l["TaxType"] == "NONE" for l in bare["LineItems"]),
+       "a line without a mapped rate would fall back to the account default")
+
+    mapped = build("OUTPUT2")
+    eq(mapped["LineAmountTypes"], "Exclusive", "a mapped rate was not applied")
+    rates = {l["AccountCode"]: l["TaxType"] for l in mapped["LineItems"]}
+    eq(rates["200"], "OUTPUT2", "the mapped rate was not sent")
+    eq(rates["310"], "NONE", "an unmapped account was left to its default")
+
+
+@check("posting")
 def an_entry_is_dated_in_the_period_it_belongs_to():
     """A January close was posted dated today, landing it in September."""
     from models.account_map import AccountMap, LedgerAccount
