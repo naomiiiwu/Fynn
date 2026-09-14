@@ -985,6 +985,18 @@ async function loadLedgers(){
       // it byte-for-byte and refuse the request on their own error page before
       // consent begins — so the failure looks like a broken link, and the user
       // never gets back here to read an explanation after the fact.
+      // Fynn records what a connection was granted so it can refuse a post it
+      // knows will fail. When that could not be stored, it cannot, and the
+      // failure arrives from the ledger instead — worth saying where the
+      // connection is shown rather than leaving it to be discovered.
+      if(v.connected && !v.scopes){
+        return `<div class="ledrow"><span>${esc(v.label)}</span>
+                <span class="ledright">${right}</span></div>
+                <div class="ledrow redir"><span>Permissions were not recorded for
+                this connection, so Fynn cannot tell in advance whether it may post
+                — a ledger that refuses will say so only when you press Post. Run
+                the migrations, then disconnect and reconnect to fix it.</span></div>`;
+      }
       if(v.connected && v.can_post===false){
         return `<div class="ledrow"><span>${esc(v.label)}</span>
                 <span class="ledright">${right}</span></div>

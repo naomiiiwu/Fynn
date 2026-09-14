@@ -335,6 +335,20 @@ class XeroAdapter(LedgerAdapter):
             },
             timeout=45,
         )
+        if response.status_code in (401, 403):
+            # Xero answers a scope it did not grant with a bare
+            # "AuthorizationUnsuccessful", which reads as a broken login. The
+            # token is fine — it was never given permission to write. This is
+            # the likeliest reason a connection that can read the chart of
+            # accounts cannot post to it.
+            raise RuntimeError(
+                f"Xero would not accept {entry.reference}: the connection is not "
+                f"authorised to create invoices. This is almost always the "
+                f"accounting.transactions scope missing from your Xero app — "
+                f"enable it at developer.xero.com, then disconnect and reconnect "
+                f"Xero in Settings. (Xero said: {response.status_code} "
+                f"{response.text[:120]})"
+            )
         if response.status_code >= 400:
             raise RuntimeError(
                 f"Xero refused {entry.reference} ({response.status_code}): "

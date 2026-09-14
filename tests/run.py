@@ -259,6 +259,44 @@ def a_clearing_line_is_only_ever_offered_a_current_asset():
 
 # ── the whole surface ─────────────────────────────────────────────────────────
 
+@check("posting")
+def a_ledger_refusing_on_scope_is_explained_not_pasted():
+    """Xero answers a missing scope with a bare 401 that reads as a broken login."""
+    import httpx
+    import services.ledger as ledger
+    from models.account_map import AccountMap, LedgerAccount
+    from models.transaction import JournalEntry, JournalLine, Platform, Side
+
+    accounts = AccountMap("w", "xero", {"shopee clearing account": LedgerAccount("090"),
+                                        "sales revenue": LedgerAccount("200")})
+    entry = JournalEntry(reference="JE-SHO-2026-01", cycle="2026-01", platform=Platform.SHOPEE,
+                         lines=[JournalLine(account="Shopee Clearing Account",
+                                            side=Side.DEBIT, amount=100.0),
+                                JournalLine(account="Sales Revenue",
+                                            side=Side.CREDIT, amount=100.0)])
+
+    class Connection:
+        org_id, scopes, can_post = "t", "", True
+
+        def access_token(self):
+            return "tok"
+
+    original = ledger.httpx.post
+    ledger.httpx.post = lambda *a, **k: httpx.Response(
+        401, json={"Title": "Unauthorized", "Detail": "AuthorizationUnsuccessful"},
+        request=httpx.Request("POST", "https://api.xero.com"))
+    try:
+        ledger.XeroAdapter(accounts, Connection()).post(entry)
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("a 401 was not raised as an error")
+    finally:
+        ledger.httpx.post = original
+    ok("accounting.transactions" in message, "the message does not name the scope")
+    ok("reconnect" in message.lower(), "the message does not say what to do")
+
+
 @check("surface")
 def no_route_returns_a_server_error():
     from fastapi.routing import APIRoute
