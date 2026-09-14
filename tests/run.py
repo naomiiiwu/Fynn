@@ -314,6 +314,30 @@ def the_best_scope_set_the_app_allows_is_the_one_requested():
         ok("offline_access" in tier, f"no refresh token would come back for: {tier}")
         ok("accounting.settings" in tier,
            f"the chart of accounts could not be read with: {tier}")
+        # Listed in the developer portal, answered access_denied when asked for,
+        # and not needed. Including it denies the whole request.
+        ok("app.connections" not in tier, f"app.connections is back in: {tier}")
+
+
+@check("posting")
+def a_refusal_on_our_own_redirect_is_not_mistaken_for_success():
+    """access_denied comes back to Fynn's callback, not Xero's error page.
+    Following redirects blindly swallowed it and the scope set looked fine."""
+    import httpx
+    from services import oauth
+    provider = oauth.PROVIDERS["xero"]
+    original = oauth.httpx.get
+    hops = iter([
+        httpx.Response(302, headers={"location":
+            "https://example.test/oauth/xero/callback?error=access_denied&state=x"},
+            request=httpx.Request("GET", "https://login.xero.com/x")),
+    ])
+    oauth.httpx.get = lambda *a, **k: next(hops)
+    try:
+        reason = oauth.preflight(provider, "https://login.xero.com/identity/connect/authorize?x=1")
+    finally:
+        oauth.httpx.get = original
+    ok(reason and "access_denied" in reason, f"a denial was read as success: {reason!r}")
 
 
 @check("surface")

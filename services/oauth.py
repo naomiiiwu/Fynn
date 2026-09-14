@@ -83,15 +83,18 @@ PROVIDERS: dict[str, Provider] = {
         scope_tiers=(
             # Granular, and able to post. What a Xero app created from March
             # 2026 onwards can request.
-            "offline_access openid profile email app.connections "
+            #
+            # Deliberately without app.connections: it is listed in the
+            # developer portal but asking for it is answered access_denied, and
+            # the connections endpoint works without it.
+            "offline_access openid profile email "
             "accounting.settings accounting.invoices",
             # Broad, and able to post. What an older app still has.
             "offline_access openid profile email "
             "accounting.settings accounting.transactions",
             # Read only, either vocabulary: enough to import the chart of
             # accounts and finish the mapping, which is most of setup.
-            "offline_access openid profile email app.connections "
-            "accounting.settings.read",
+            "offline_access openid profile email accounting.settings.read",
             "offline_access openid profile email accounting.settings",
         ),
         post_scopes=("accounting.invoices", "accounting.transactions"),
@@ -172,18 +175,48 @@ def preflight(provider: Provider, url: str) -> Optional[str]:
     worse than the dead end this avoids.
     """
     if provider.name != "xero":
-        # Only Xero's refusal page has been observed and parsed. Guessing at
-        # another provider's error shape risks blocking a valid connection.
-        return None
-    try:
-        response = httpx.get(url, follow_redirects=True, timeout=10)
-    except Exception:
-        return None
-    if "/identity/error" not in str(response.url):
+        # Only Xero's refusals have been observed. Guessing at another
+        # provider's shapes risks blocking a valid connection.
         return None
 
-    # The page names the actual problem — "Invalid redirect_uri" — while the
-    # URL carries only an opaque error id.
+    # Walked by hand rather than followed, because a refusal arrives in two
+    # different places. An invalid redirect URI or scope lands on Xero's own
+    # error page; a denied one comes back to *our* redirect URI carrying
+    # ?error=access_denied, which following redirects blindly would swallow —
+    # it did, and a scope set that Xero refuses outright looked acceptable.
+    from urllib.parse import parse_qs, urlparse
+
+    seen = url
+    try:
+        for _ in range(8):
+            response = httpx.get(seen, follow_redirects=False, timeout=10)
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return None            # a login or consent page: nothing refused
+            seen = str(httpx.URL(seen).join(response.headers.get("location", "")))
+
+            if "/identity/error" in seen:
+                return _error_page(httpx.get(seen, follow_redirects=True, timeout=10))
+
+            query = parse_qs(urlparse(seen).query)
+            if query.get("error"):
+                return _denial(query["error"][0])
+            if query.get("code"):
+                return None            # Xero would grant this
+    except Exception:
+        return None
+    return None
+
+
+def _denial(error: str) -> str:
+    """Xero's ?error= values, in words that name the thing to change."""
+    if error == "access_denied":
+        return ("access_denied — Xero refused one of the permissions asked for. "
+                "This is the app's scope list, not your sign-in")
+    return error
+
+
+def _error_page(response) -> Optional[str]:
+    """The reason off Xero's error page; its URL carries only an opaque id."""
     import html as _html
     import re
     text = re.sub(r"<(script|style).*?</\1>", "", response.text, flags=re.S)
