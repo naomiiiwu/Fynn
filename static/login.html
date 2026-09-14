@@ -91,9 +91,15 @@ if (err) {
   const box = document.getElementById("err");
   // "1" is the deliberately vague answer to a bad email or a bad password:
   // saying which was wrong tells an attacker which addresses have accounts.
-  box.textContent = err === "1" ? "That email and password do not match an account."
+  // Said on every failure, never only when the account exists: naming the
+  // difference would confirm which addresses have accounts. It still answers
+  // the common case — an account created with Google has no password to match,
+  // and the button is directly below.
+  box.innerHTML = err === "1"
+    ? "That email and password do not match an account.<br>If you signed up with "
+      + "Google, use <b>Continue with Google</b> below."
     : err === "nogoogle" ? "Google sign-in is not set up on this deployment."
-    : err;
+    : String(err).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
   box.style.display = "block";
 }
 // Carry the page the visitor was trying to reach, but only ever a path on this
