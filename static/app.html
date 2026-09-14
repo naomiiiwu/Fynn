@@ -468,6 +468,10 @@ function viewCycle(){
   // otherwise ready, because writing the difference off does not fix it — it
   // only hides it behind a balanced entry.
   const noPayout = D.platforms.filter(p=>Math.abs(p.reported_payout) < 0.005);
+  // The classified total is provisional until every exception but the residual
+  // is decided, so a figure suggested before then would be wrong and would
+  // quietly become the reconciled payout.
+  const settled = D.exceptions.every(e=>e.kind==="residual");
   if(noPayout.length){
     const names = noPayout.map(p=>p.platform);
     h+=`<div class="gate" style="margin:0 0 22px"><h2>No payout stated for
@@ -476,11 +480,18 @@ function viewCycle(){
       as 0.00 and no bank deposit could ever match it. If the export did not
       carry the payout on a row of its own, enter what was actually deposited.</p>
       <div class="field" style="margin-top:12px">
-        <div class="ask"><input id="fix-reported"
+        <div class="ask"><input id="fix-reported" value="${settled?
+          noPayout.map(p=>esc(p.platform)+"="+p.classified_total.toFixed(2)).join(";") : ""}"
           placeholder="${esc(names[0])}=0.00" autocomplete="off">
           <button id="fix-save">Set payout</button></div>
-        <p class="hint" id="fix-status">One per platform, separated by
-        semicolons — <span class="num">${names.map(n=>esc(n)+"=0.00").join(";")}</span></p>
+        <p class="hint" id="fix-status">${settled
+          ? `Filled in with what Fynn classified. That is the platform's own
+             arithmetic, not the bank's — accepting it says the cycle adds up,
+             not that the money arrived. Replace it with the figure on the bank
+             statement if you have it.`
+          : `Fynn cannot suggest a figure yet: the classified total still moves
+             as the exceptions above are decided. Enter what was deposited, or
+             resolve those first.`}</p>
       </div></div>`;
   }
 
