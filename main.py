@@ -895,19 +895,19 @@ def oauth_connect(ledger: str):
     # Ask the provider before sending anyone there. If it will refuse, the
     # refusal renders on the provider's own error page with no way back — so
     # keep the accountant here and say what to fix.
-    refusal = oauth.preflight(provider, url)
+    # Ask for the best set of permissions the app will actually grant, working
+    # down. Xero is mid-way through replacing broad scopes with granular ones,
+    # so the right names depend on when the firm's app was created — and a firm
+    # whose app cannot request writing at all can still connect for reading,
+    # which is enough to import the chart of accounts and finish the mapping.
     granted = provider.scopes
-
-    # A firm whose app may not request the posting scope can still connect for
-    # reading — enough to pull the chart of accounts and finish the mapping,
-    # which is the tedious half of setup. Better a connection that does most of
-    # the job than a dead stop with nothing to show.
+    refusal = oauth.preflight(provider, url)
     if refusal and "scope" in refusal.lower():
-        reduced = oauth.reduced_scopes(provider)
-        if reduced:
-            alternative = oauth.authorize_url(provider, base_url(), state, scopes=reduced)
-            if oauth.preflight(provider, alternative) is None:
-                url, refusal, granted = alternative, None, reduced
+        for tier in provider.scope_tiers[1:]:
+            attempt = oauth.authorize_url(provider, base_url(), state, scopes=tier)
+            if oauth.preflight(provider, attempt) is None:
+                url, refusal, granted = attempt, None, tier
+                break
 
     if refusal:
         # The remedy has to match the refusal. Telling someone to check the
@@ -918,9 +918,10 @@ def oauth_connect(ledger: str):
             fix = (f"Add exactly this redirect URI to your {provider.label} app, then "
                    f"try again: {oauth.redirect_uri(base_url(), provider)}")
         elif "scope" in lower:
-            fix = (f"Your {provider.label} app is not allowed to request one of the "
-                   f"permissions Fynn needs. Enable these scopes on the app, then try "
-                   f"again: {provider.scopes}")
+            fix = (f"Your {provider.label} app is not allowed to request any of the "
+                   f"permission sets Fynn knows about. Enable one of these on the app, "
+                   f"then try again: {' / '.join(provider.post_scopes)}, "
+                   f"alongside accounting.settings.")
         else:
             fix = f"Check the app's configuration in {provider.label}, then try again."
         message = f"{provider.label} refused the request: {refusal}. {fix}"
@@ -1012,7 +1013,7 @@ def api_ledger_status():
     for name, row in status.items():
         provider = oauth.get_provider(name)
         row["redirect_uri"] = oauth.redirect_uri(base_url(), provider)
-        row["post_scope"] = provider.post_scope
+        row["post_scopes"] = list(provider.post_scopes)
     return {"base_url": base_url(), "ledgers": status}
 
 

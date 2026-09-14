@@ -343,10 +343,10 @@ class XeroAdapter(LedgerAdapter):
             # accounts cannot post to it.
             raise RuntimeError(
                 f"Xero would not accept {entry.reference}: the connection is not "
-                f"authorised to create invoices. This is almost always the "
-                f"accounting.transactions scope missing from your Xero app — "
-                f"enable it at developer.xero.com, then disconnect and reconnect "
-                f"Xero in Settings. (Xero said: {response.status_code} "
+                f"authorised to create invoices. Enable accounting.invoices on "
+                f"your Xero app — or accounting.transactions if it is an older "
+                f"app that still uses the broad scopes — then disconnect and "
+                f"reconnect Xero in Settings. (Xero said: {response.status_code} "
                 f"{response.text[:120]})"
             )
         if response.status_code >= 400:

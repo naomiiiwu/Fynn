@@ -1003,7 +1003,8 @@ async function loadLedgers(){
                 <div class="ledrow redir"><span>Fynn can read this ${esc(v.label)}
                 organisation — enough to import the chart of accounts and map every
                 account — but not write journals. Enable
-                <b>${esc(v.post_scope||"the posting scope")}</b> on the app, then
+                <b>${esc((v.post_scopes||[]).join(" or ") || "the posting scope")}</b>
+                on the app, then
                 disconnect and connect again to post.</span></div>`;
       }
       const uri = (v.connected || !v.configured) ? "" : `<div class="ledrow redir">

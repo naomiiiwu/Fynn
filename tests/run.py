@@ -297,6 +297,25 @@ def a_ledger_refusing_on_scope_is_explained_not_pasted():
     ok("reconnect" in message.lower(), "the message does not say what to do")
 
 
+@check("posting")
+def the_best_scope_set_the_app_allows_is_the_one_requested():
+    """Xero retired accounting.transactions for apps made after March 2026."""
+    from services import oauth
+    xero = oauth.PROVIDERS["xero"]
+    ok(len(xero.scope_tiers) >= 2, "no fallback scope sets")
+    ok("accounting.invoices" in xero.scope_tiers[0], "granular scopes are not preferred")
+    ok(any("accounting.transactions" in t for t in xero.scope_tiers),
+       "older apps using the broad scopes have no tier")
+    ok(oauth.can_post(xero, xero.scope_tiers[0]), "granular tier cannot post")
+    ok(oauth.can_post(xero, xero.scope_tiers[1]), "broad tier cannot post")
+    read_only = [t for t in xero.scope_tiers if not oauth.can_post(xero, t)]
+    ok(read_only, "no read-only tier to fall back to")
+    for tier in xero.scope_tiers:
+        ok("offline_access" in tier, f"no refresh token would come back for: {tier}")
+        ok("accounting.settings" in tier,
+           f"the chart of accounts could not be read with: {tier}")
+
+
 @check("surface")
 def no_route_returns_a_server_error():
     from fastapi.routing import APIRoute

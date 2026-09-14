@@ -42,16 +42,23 @@ class Provider:
     label: str
     authorize_url: str
     token_url: str
-    scopes: str
     client_id_env: str
     client_secret_env: str
-    # The scope a journal needs. Everything else Fynn asks for is for reading —
-    # the chart of accounts above all — so a connection without this one is
-    # still worth having: the whole account mapping can be done through it.
-    post_scope: str = ""
-    # Scopes that may be dropped if the provider refuses them, leaving a
-    # connection that can read but not post.
-    optional_scopes: str = ""
+    # Scope sets to try, best first. A provider may not accept the first: Xero
+    # replaced its broad scopes with granular ones, and an app created after
+    # 2 March 2026 can only request the new names while an older app keeps the
+    # old ones until September 2027. Neither set works everywhere, so the right
+    # answer is to ask and find out rather than to pick one and be wrong for
+    # half the accounts.
+    scope_tiers: tuple = ()
+    # Holding any one of these means the connection may write. More than one
+    # because the same permission has two names during the changeover.
+    post_scopes: tuple = ()
+
+    @property
+    def scopes(self) -> str:
+        """The preferred set. Used where one has to be named."""
+        return self.scope_tiers[0] if self.scope_tiers else ""
 
     @property
     def client_id(self) -> str:
@@ -73,53 +80,52 @@ PROVIDERS: dict[str, Provider] = {
         authorize_url="https://login.xero.com/identity/connect/authorize",
         token_url="https://identity.xero.com/connect/token",
         # offline_access is what makes a refresh token come back at all.
-        scopes="offline_access openid profile email accounting.transactions accounting.settings",
+        scope_tiers=(
+            # Granular, and able to post. What a Xero app created from March
+            # 2026 onwards can request.
+            "offline_access openid profile email app.connections "
+            "accounting.settings accounting.invoices",
+            # Broad, and able to post. What an older app still has.
+            "offline_access openid profile email "
+            "accounting.settings accounting.transactions",
+            # Read only, either vocabulary: enough to import the chart of
+            # accounts and finish the mapping, which is most of setup.
+            "offline_access openid profile email app.connections "
+            "accounting.settings.read",
+            "offline_access openid profile email accounting.settings",
+        ),
+        post_scopes=("accounting.invoices", "accounting.transactions"),
         client_id_env="XERO_CLIENT_ID",
         client_secret_env="XERO_CLIENT_SECRET",
-        post_scope="accounting.transactions",
-        optional_scopes="accounting.transactions",
     ),
     "quickbooks": Provider(
         name="quickbooks",
         label="QuickBooks Online",
         authorize_url="https://appcenter.intuit.com/connect/oauth2",
         token_url="https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-        scopes="com.intuit.quickbooks.accounting",
+        # QuickBooks has one accounting scope covering both reading and
+        # writing, so there is nothing to fall back to — a reduced connection
+        # would be no connection.
+        scope_tiers=("com.intuit.quickbooks.accounting",),
+        post_scopes=("com.intuit.quickbooks.accounting",),
         client_id_env="QBO_CLIENT_ID",
         client_secret_env="QBO_CLIENT_SECRET",
-        # QuickBooks has one accounting scope covering both reading and
-        # writing, so there is nothing to drop — a reduced connection would be
-        # no connection.
-        post_scope="com.intuit.quickbooks.accounting",
     ),
 }
 
 
-def reduced_scopes(provider: Provider) -> Optional[str]:
-    """The same request minus whatever may be dropped, or None if nothing may.
-
-    Used when a provider refuses the full set: a firm whose app is not allowed
-    to request the posting scope can still connect for reading, finish the
-    account mapping, and add posting later, rather than being blocked at the
-    first step with nothing to show.
-    """
-    if not provider.optional_scopes:
-        return None
-    drop = set(provider.optional_scopes.split())
-    kept = [s for s in provider.scopes.split() if s not in drop]
-    return " ".join(kept) if kept else None
-
-
 def can_post(provider: Provider, granted: str) -> bool:
-    """Whether a connection holding `granted` may write a journal.
+    """Whether a connection holding `granted` may write.
 
-    An empty `granted` means the scopes were never recorded — connections made
-    before Fynn tracked them. Those were always full-scope, so they keep
-    working rather than being locked out by a missing field.
+    An empty `granted` means the scopes were never recorded — a connection made
+    before Fynn tracked them, or one whose scopes the database would not store.
+    Those are assumed capable rather than locked out; the ledger refuses them
+    at the point of posting and the adapter explains why.
     """
-    if not provider.post_scope or not granted:
+    if not provider.post_scopes or not granted:
         return True
-    return provider.post_scope in granted.split()
+    held = set(granted.split())
+    return any(scope in held for scope in provider.post_scopes)
 
 
 def get_provider(name: str) -> Provider:
