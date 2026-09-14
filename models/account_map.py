@@ -217,15 +217,35 @@ def suggest(account: str, chart: list[dict]) -> Optional[str]:
         # A catch-all account is rarely what a specific line means. Without
         # this, "Sales Revenue" matches "Other Revenue" more closely than it
         # matches "Sales", and revenue quietly lands in the wrong account.
-        if any(w in name for w in ("other", "sundry", "miscellaneous")) and \
-                not any(w in wanted for w in ("other", "sundry", "miscellaneous")):
+        catch_all = ("other", "sundry", "miscellaneous", "general")
+        name_is_catch_all = any(w in name for w in catch_all)
+        wanted_is_catch_all = any(w in wanted for w in catch_all)
+        if name_is_catch_all and not wanted_is_catch_all:
             score -= 0.45
-        # Do not offer an expense account for a revenue line, or the reverse.
+        # And the reverse, which is worse. "Other Expense" and "Shipping
+        # Expense" read alike enough to score 0.63 on characters, so the
+        # catch-all was offered a named account — quietly filing everything a
+        # firm could not classify into one that has a specific meaning. A
+        # catch-all may only match another catch-all.
+        if wanted_is_catch_all and not name_is_catch_all:
+            score -= 1.0
+        # Never offer an expense account for a revenue line, or the reverse.
+        # Decisive rather than a nudge: "Shipping Income" and "Shipping Expense"
+        # share a keyword and most of their characters, so a mild penalty still
+        # left income pointed at an expense account — an error that balances,
+        # and so never announces itself.
+        #
+        # Contra accounts are the exception. "Sales Returns & Allowances" reads
+        # as an expense and correctly lives against revenue, so a line naming a
+        # return is exempt from the second test.
         kind = (entry.get("type") or "").lower()
-        if any(w in wanted for w in _INCOME) and any(w in kind for w in ("expense", "cost")):
-            score -= 0.6
-        if any(w in wanted for w in _EXPENSE) and "income" in kind and "returns" not in wanted:
-            score -= 0.4
+        earns = ("income", "revenue", "sales")
+        spends = ("expense", "cost", "overhead", "directcosts")
+        if any(w in wanted for w in _INCOME) and any(w in kind for w in spends):
+            score -= 1.2
+        if any(w in wanted for w in _EXPENSE) and any(w in kind for w in earns) \
+                and "returns" not in wanted:
+            score -= 1.2
         # Money in transit belongs in a current asset. Never offer anything else
         # for a clearing line, however well the names happen to read.
         if is_clearing(wanted):

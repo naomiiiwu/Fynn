@@ -584,7 +584,13 @@ async function post(){
       ? `Prepared via dry run — ${refs}. Nothing was sent to a ledger.`
       : `Sent to ${r.adapter} as DRAFT — ${refs}.`;
     loadTrail();
-  }catch(e){ btn.disabled=false; st.textContent=e.message; }
+  }catch(e){
+    btn.disabled=false;
+    // Naming a screen without a way to reach it is most of the distance to
+    // not having said it.
+    st.innerHTML = esc(e.message) + (/not mapped/i.test(e.message)
+      ? ` <a href="#/accounts" class="jview">Open Accounts →</a>` : "");
+  }
 }
 
 async function toggleJE(platform){
@@ -834,7 +840,8 @@ async function viewAccounts(){
         <span>${a.unmapped.length? a.unmapped.length+" still to map" : "all mapped"}</span></p>
        ${c.connected? `<p class="note" style="margin:0 0 12px">Read from your ${esc(a.ledger)}
          chart of accounts — ${c.chart.length} accounts.${prefilled? " "+prefilled+
-         " pre-selected where the match was unambiguous; check them, then save." : ""}</p>`
+         " already matched to your chart — check them and press Save mapping." :
+         " No confident matches, so nothing is pre-selected: choosing wrongly is worse than leaving it blank."}</p>`
          : `<p class="note" style="margin:0 0 12px">Connect ${named} in Settings and this
          becomes a list from your own chart of accounts instead of codes typed by hand.
          ${dry? "A dry run needs no mapping — it reports which accounts are still blank." : ""}</p>`}
@@ -845,6 +852,7 @@ async function viewAccounts(){
        </tr></thead><tbody>${rows}</tbody></table>
        <div class="acts" style="margin-top:20px">
          <button class="go" id="a-save">Save mapping</button>
+         ${prefilled? `<button id="a-accept">Use all ${prefilled} suggestions</button>`:""}
          <span class="st" id="a-status"></span></div>
        <p class="note">Leave a code blank to unmap it. Switching ledger in Settings
        starts a separate mapping — a Xero code is not a QuickBooks Id.</p>
@@ -857,6 +865,13 @@ async function viewAccounts(){
        a Xero TaxType such as <code>OUTPUT2</code> or <code>NONE</code>, or a
        QuickBooks tax code. Left blank, Fynn says nothing and your ledger applies
        the account's own default, which is safer than a rate Fynn guessed.</p>`;
+    // The suggestions are already selected in each dropdown; this only says so
+    // out loud and saves, so a firm connected to its ledger maps in one action
+    // rather than confirming a dozen identical choices.
+    if($("#a-accept")) $("#a-accept").onclick=()=>{
+      $("#a-status").textContent="Suggestions selected — check them, then save.";
+      $("#a-save").focus();
+    };
     $("#a-save").onclick=async()=>{
       const mapping={};
       document.querySelectorAll("[data-acct]").forEach(i=>{

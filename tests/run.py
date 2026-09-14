@@ -218,6 +218,34 @@ def payout_documents_sum_to_the_reported_payout():
 
 
 @check("posting")
+def a_suggestion_never_crosses_revenue_and_expense():
+    """Shipping Income was offered Shipping Expense: an error that balances."""
+    from models.account_map import suggest
+    chart = [{"code": "425", "name": "Shipping Expense", "type": "EXPENSE"},
+             {"code": "430", "name": "Shipping Income", "type": "OTHERINCOME"},
+             {"code": "200", "name": "Sales Revenue", "type": "REVENUE"},
+             {"code": "210", "name": "Sales Returns & Allowances", "type": "REVENUE"}]
+    eq(suggest("Shipping Income", chart), "430", "income offered an expense account")
+    eq(suggest("Shipping Expense", chart), "425", "expense offered an income account")
+    eq(suggest("Sales Returns & Allowances", chart), "210", "contra account refused")
+    without = [c for c in chart if c["code"] != "430"]
+    eq(suggest("Shipping Income", without), None,
+       "with no income account, it fell back to the expense one")
+
+
+@check("posting")
+def a_catch_all_is_only_ever_offered_another_catch_all():
+    """Other Expense was offered Shipping Expense, quietly misfiling everything
+    the firm could not classify."""
+    from models.account_map import suggest
+    named = [{"code": "425", "name": "Shipping Expense", "type": "EXPENSE"},
+             {"code": "310", "name": "Commission Expense", "type": "EXPENSE"}]
+    eq(suggest("Other Expense", named), None, "catch-all offered a named account")
+    eq(suggest("Other Expense", named + [{"code": "800", "name": "Other Expenses",
+                                          "type": "EXPENSE"}]), "800", "catch-all not matched")
+
+
+@check("posting")
 def a_clearing_line_is_only_ever_offered_a_current_asset():
     from models.account_map import suggest, clearing_type_ok
     chart = [{"code": "090", "name": "Shopee Clearing", "type": "CURRENT"},
