@@ -1055,26 +1055,25 @@ async function loadLedgers(){
   }catch(e){ $("#ledgers").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
 }
 
+/* Shown only while there is something to do about it.
+   Once Google sign-in works, this said "always on" and "enabled" — two rows
+   reporting that nothing is wrong, which is not worth a section. The redirect
+   URI still has to appear somewhere, so the block survives for exactly the
+   case that needs it: setting Google up. */
 async function loadSignin(){
   try{
-    const a=await api("/api/auth/status"), g=a.google;
+    const g = (await api("/api/auth/status")).google;
+    if(g.configured){ $("#signin").innerHTML=""; return; }
     $("#signin").innerHTML=`<p class="sect" style="margin-top:30px;margin-bottom:10px">
-      Sign-in</p>
-      <div class="je">
-        <div class="ledrow"><span>Email and password</span>
-          <span class="ledright"><span class="ok-txt">always on</span></span></div>
-        <div class="ledrow"><span>Google</span><span class="ledright">${
-          g.configured ? `<span class="ok-txt">enabled</span>`
-                       : `<span class="pd-txt">no client credentials set</span>`}</span></div>
-        ${g.configured ? "" : `<div class="ledrow redir">
-          <span>To turn on Google sign-in, create an OAuth client ID (type: Web
-          application) in the Google Cloud console, set GOOGLE_CLIENT_ID and
-          GOOGLE_CLIENT_SECRET, and register this as an authorised redirect URI —
-          it is matched exactly.</span>
-          <code id="uri-google">${esc(g.redirect_uri||"")}</code>
-          <button class="ghost" data-copy="google" style="margin-top:7px">Copy</button>
-        </div>`}
-      </div>`;
+      Sign-in <span>email and password only</span></p>
+      <div class="je"><div class="ledrow redir" style="padding-top:14px">
+        <span>To add Google sign-in, create an OAuth client ID (type: Web
+        application) in the Google Cloud console, set GOOGLE_CLIENT_ID and
+        GOOGLE_CLIENT_SECRET, and register this as an authorised redirect URI —
+        it is matched exactly.</span>
+        <code id="uri-google">${esc(g.redirect_uri||"")}</code>
+        <button class="ghost" data-copy="google" style="margin-top:7px">Copy</button>
+      </div></div>`;
     wireCopy();
   }catch(e){ $("#signin").innerHTML=`<p class="note">${esc(e.message)}</p>`; }
 }
