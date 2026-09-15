@@ -822,7 +822,30 @@ function viewCycle(){
   }
 
   if(!done){
-    h+=`<p class="sect">Needs your review <span>${D.open_exceptions} open</span></p>`;
+    PROPOSALS = D.proposals || {};
+    const n = D.open_exceptions;
+    const proposed = D.exceptions.filter(e=>PROPOSALS[e.key]).length;
+    // What Fynn is doing about these, said above the list rather than under
+    // thirty rows of it. Proposals arrive on their own after an upload; the
+    // accountant's part is ticking and approving.
+    let status;
+    if(D.proposing) status=`<span class="typing" style="display:inline-flex;vertical-align:middle;margin-right:8px"><i></i><i></i><i></i></span>
+      Fynn is reading the settlement and proposing a treatment for ${D.unproposed||n}…`;
+    else if(D.proposal_error) status=esc(D.proposal_error);
+    else if(proposed) status=`Fynn proposed ${proposed} of ${n}. Confident ones are ticked —
+      untick anything you would rather decide yourself, or open it to ask.`;
+    else status=`Fynn had no proposal for these. Open each one to decide it.`;
+
+    h+=`<div class="gate" style="margin:0 0 18px"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
+      <p>Each one changes the payout, so a journal posted now would be one Fynn
+      already knows is wrong. Most become a rule, and will not be asked again next cycle.</p>
+      <div class="acts" style="margin-top:13px">
+        ${proposed?`<button class="go" id="accept">Approve the ticked ones</button>`:""}
+        ${D.proposing?"":`<button id="triage">${proposed||D.proposal_error?"Ask Fynn again":"Propose all "+n}</button>`}
+        <span class="st" id="triage-status">${status}</span>
+      </div></div>`;
+
+    h+=`<p class="sect">Needs your review <span>${n} open</span></p>`;
     D.exceptions.forEach(e=>{
       h+=`<button class="row${ACTIVE===e.key?" active":""}" data-k="${encodeURIComponent(e.key)}">
         <span class="b"><span class="t">${esc(e.platform)} — ${esc(label(e))}</span>
@@ -830,28 +853,6 @@ function viewCycle(){
         <span class="a num">${fmt(e.amount)}</span><span class="tag">Open</span></button>`;
       h+=proposalRow(e);
     });
-    const proposed = D.exceptions.filter(e=>PROPOSALS[e.key]).length;
-    if(proposed) h+=`<div class="acts" style="margin:14px 0 0">
-      <button class="go" id="accept">Approve the ticked ones</button>
-      <span class="st" id="accept-status">${proposed} proposed. Untick anything you
-      would rather decide yourself, or open it to ask.</span></div>`;
-    // Without this the only button on the page is "Close this cycle without
-    // posting", which reads as though posting were never on offer. It is — it
-    // is gated, and the gate should say so rather than being inferred from an
-    // absence.
-    const n = D.open_exceptions;
-    // A residual is the one exception an approval cannot always answer: if the
-    // file simply never stated the payout, the honest fix is to supply it, not
-    // to write the whole deposit off to an account.
-    h+=`<div class="gate"><h2>Posting is held until ${n} ${n===1?"exception is":"exceptions are"} resolved</h2>
-      <p>Each one changes the payout, so a journal posted now would be one Fynn
-      already knows is wrong. Decide them below — most become a rule, and will
-      not be asked again next cycle.</p>
-      <div class="acts" style="margin-top:13px">
-        <button class="go" id="triage">Propose all ${n}</button>
-        <span class="st" id="triage-status">Fynn reads them together, against the
-        rules you have already written. Nothing is approved until you say so.</span>
-      </div></div>`;
   }else if((D.posted||[]).length){
     const when = D.posted[0].at ? String(D.posted[0].at).slice(0,10) : "";
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} posted</h2>
@@ -893,8 +894,12 @@ function viewCycle(){
   $("#main").innerHTML=h;
   wireBack();
   $("#toupload").onclick=()=>go("upload");
-  if($("#triage")) $("#triage").onclick=proposeAll;
+  if($("#triage")) $("#triage").onclick=()=>proposeAll(true);
   if($("#accept")) $("#accept").onclick=approveProposed;
+  if(!done){
+    if(D.proposing) watchProposals();
+    else if(D.unproposed && !D.proposal_error) proposeAll();
+  }
   if($("#fix-save")){
     const save=async()=>{
       const v=$("#fix-reported").value.trim();
@@ -980,22 +985,31 @@ async function toggleJE(platform){
    should this close do?", which is the question an accountant arrives with.
    Proposals only: each still has to be accepted, and accepting runs the same
    approval as deciding by hand. */
-let PROPOSALS = {};
+let PROPOSALS = {}, WATCHING = null;
 
-async function proposeAll(){
-  const btn=$("#triage"), st=$("#triage-status");
-  btn.disabled=true; st.textContent="Reading the settlement…";
+/* Proposals start on their own after an upload. This covers the rest: a month
+   opened after a restart, or one whose exceptions were never put to Fynn. */
+async function proposeAll(again){
+  const btn=$("#triage"); if(btn) btn.disabled=true;
   try{
-    const r=await api("/api/exceptions/triage",{method:"POST"});
-    if(r.error){ btn.disabled=false; st.textContent=r.error; return; }
-    PROPOSALS={};
-    r.proposals.forEach(p=>PROPOSALS[p.key]=p);
-    if(!r.proposals.length){
-      btn.disabled=false; st.textContent="Fynn had no proposal to make.";
-      return;
-    }
-    viewCycle();
-  }catch(e){ btn.disabled=false; st.textContent=e.message; }
+    await api("/api/exceptions/triage"+(again===true?"?again=true":""),{method:"POST"});
+    S=await api("/api/state"); if(TAB==="cycle") viewCycle();
+  }catch(e){ if(btn) btn.disabled=false; if($("#triage-status")) $("#triage-status").textContent=e.message; }
+  watchProposals();
+}
+
+/* While Fynn is proposing, check back until it is done. Only then redraw, so a
+   box the accountant has already unticked is not ticked again under them. */
+function watchProposals(){
+  if(WATCHING || !S.cycle || !S.cycle.proposing) return;
+  WATCHING=setInterval(async()=>{
+    try{
+      const next=await api("/api/state");
+      if(next.cycle && next.cycle.proposing) return;
+      clearInterval(WATCHING); WATCHING=null;
+      S=next; if(TAB==="cycle") viewCycle();
+    }catch(e){ clearInterval(WATCHING); WATCHING=null; }
+  }, 2500);
 }
 
 /* Rendered under each exception once a proposal exists for it. Anything Fynn

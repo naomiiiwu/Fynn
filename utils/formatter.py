@@ -52,6 +52,14 @@ class Cycle:
         # the ledger.
         self.posted: list[dict] = []
         self.resolutions: dict[str, tuple[str, Side]] = {}
+        # Fynn's proposed treatment for each exception, made on its own once the
+        # month is reconciled. Proposals only: each is still approved by hand.
+        self.proposals: dict[str, dict] = {}
+        # Exceptions already put to the model, whether or not it proposed
+        # anything, so a page reload does not ask again about the same ones.
+        self.proposed: set[str] = set()
+        self.proposing = False
+        self.proposal_error = ""
         self._results: dict[Platform, CycleResult] = {}
         # Exception key → the number the accountant sees. Assigned once and
         # never reused: see _assign_numbers.
@@ -295,4 +303,9 @@ class Cycle:
                 for e in open_exceptions
             ],
             "retention": self.trail.retention_note(),
+            "proposals": {e.key: self.proposals[e.key] for e in open_exceptions
+                          if e.key in self.proposals},
+            "proposing": self.proposing,
+            "proposal_error": self.proposal_error,
+            "unproposed": len([e for e in open_exceptions if e.key not in self.proposed]),
         }

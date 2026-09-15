@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 import re
 import secrets
 import sys
+import threading
 import time
 from contextvars import ContextVar
 from urllib.parse import quote
@@ -819,6 +820,7 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
         _profiles.save(profile)
     space.record(target)
     space.auto_posted = _auto_post(target)
+    _start_proposing(target)
     return target
 
 
@@ -1168,20 +1170,74 @@ def api_chat(req: ChatRequest):
                              accounts=POSTING_ACCOUNTS)}
 
 
+# Off in tests, so a proposal lands before the assertion that looks for it.
+PROPOSE_IN_BACKGROUND = True
+
+
+def _propose(cycle: Cycle, pending: list, rules: list) -> None:
+    """Ask the model about exceptions it has not seen, and keep what it says.
+
+    Takes everything it needs as arguments. It runs on its own thread after the
+    upload has answered, where there is no signed-in request to ask for the
+    workspace — and reconciling the month from here would race the requests
+    still reading it.
+    """
+    try:
+        out = triage(pending, cycle.lines, rules=rules, accounts=POSTING_ACCOUNTS)
+        if out.get("error"):
+            # Not marked as proposed: a model that was unreachable is asked
+            # again next time, rather than never.
+            cycle.proposal_error = out["error"]
+            return
+        cycle.proposal_error = ""
+        for proposal in out.get("proposals", []):
+            cycle.proposals[proposal["key"]] = proposal
+        cycle.proposed.update(e.key for e in pending)
+    finally:
+        cycle.proposing = False
+
+
+def _start_proposing(cycle: Optional[Cycle]) -> bool:
+    """Propose treatments for a month's new exceptions, unless already under way.
+
+    Nobody has to ask. The upload answers straight away and the proposals follow
+    within seconds; the review screen shows them arriving. Nothing is approved:
+    a proposal waits for the accountant exactly as it did behind the button.
+    """
+    if cycle is None or cycle.proposing:
+        return False
+    pending = [e for r in cycle.run().values() for e in r.exceptions
+               if not e.resolved and e.key not in cycle.proposed]
+    if not pending:
+        return False
+    cycle.proposing = True
+    args = (cycle, pending, list(ws().rules().rules))
+    if PROPOSE_IN_BACKGROUND:
+        threading.Thread(target=_propose, args=args, daemon=True).start()
+    else:
+        _propose(*args)
+    return True
+
+
 @app.post("/api/exceptions/triage")
-def api_triage():
-    """Ask Fynn to propose a treatment for every open exception at once.
+def api_triage(again: bool = False):
+    """Fynn's proposals for every open exception, starting them if need be.
 
     Proposes only. Each one still has to be approved, and approving goes
     through the same path as deciding an exception by hand — so the same
     checks apply and the same rules get written.
+
+    `again` asks afresh about exceptions already proposed, for when the
+    accountant wants a second opinion rather than the cached one.
     """
-    space = ws()
     cycle = _require_cycle()
-    open_exceptions = [e for r in cycle.run().values()
-                       for e in r.exceptions if not e.resolved]
-    return triage(open_exceptions, cycle.lines,
-                  rules=space.rules().rules, accounts=POSTING_ACCOUNTS)
+    if again and not cycle.proposing:
+        cycle.proposed.clear()
+        cycle.proposals.clear()
+    _start_proposing(cycle)
+    d = cycle.digest()
+    return {"proposals": list(d["proposals"].values()), "proposing": d["proposing"],
+            "error": d["proposal_error"]}
 
 
 class BatchApproveRequest(BaseModel):
@@ -1655,6 +1711,8 @@ def api_open_month(month: str):
     cycle = ws().open_month(month)
     if cycle is None:
         raise HTTPException(404, f"No retained files for {month}.")
+    # A month rebuilt after a restart has lost its proposals with the process.
+    _start_proposing(cycle)
     return cycle.digest()
 
 

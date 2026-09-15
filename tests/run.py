@@ -1016,11 +1016,64 @@ def a_resolved_month_posts_itself_only_when_the_firm_asked():
         ledger.XeroAdapter.post, app.connections.get = real
 
 
+
+@check("settlements")
+def proposals_arrive_after_an_upload_without_asking():
+    """Suggestions waited behind a Propose button, after the accountant had
+    already waited for the reconciliation."""
+    import main as app
+    from tests.fakedb import FakeDB
+    asked = []
+
+    def fake_triage(exceptions, lines, rules=None, accounts=None):
+        asked.append(len(exceptions))
+        if fake_triage.down:
+            return {"proposals": [], "error": "Could not reach the model (Timeout)."}
+        return {"error": "", "proposals": [
+            {"key": e.key, "account": "Other Expense", "confidence": 90,
+             "reason": "r", "trusted": True} for e in exceptions]}
+    fake_triage.down = False
+
+    real = app.triage
+    try:
+        app.triage = fake_triage
+        c = signup(client_for(FakeDB()), "proposals@firm.com")
+        c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+        cycle = c.get("/api/state").json()["cycle"]
+        eq(len(asked), 1, "the model was not asked after the upload")
+        eq(len(cycle["proposals"]), cycle["open_exceptions"], "proposals on the review screen")
+        eq(cycle["unproposed"], 0, "exceptions left unproposed")
+
+        c.post("/api/exceptions/triage")
+        c.post("/api/cycles/2026-01/open")
+        eq(len(asked), 1, "the same exceptions were put to the model again")
+
+        c.post("/api/upload", files={"file": ("lazada-extra.csv", LAZADA_EXTRA, "text/csv")})
+        eq(asked[-1], 1, "a follow-up file should ask only about its new exception")
+
+        # An unreachable model is asked again next time, not never.
+        fake_triage.down = True
+        eq(c.post("/api/exceptions/triage?again=true").json()["error"] != "", True,
+           "the failure was not reported")
+        ok(c.get("/api/state").json()["cycle"]["unproposed"] > 0,
+           "a failed attempt marked the exceptions as proposed")
+        fake_triage.down = False
+        c.post("/api/exceptions/triage")
+        eq(c.get("/api/state").json()["cycle"]["unproposed"], 0, "no retry after a failure")
+    finally:
+        app.triage = real
+
+
 # ── runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
     import os
     os.environ.setdefault("FYNN_SECRET", "test-secret")
+    # Proposals now start on every upload. A developer's .env holds a real key,
+    # and without this every run of the suite would call the live model.
+    os.environ["ANTHROPIC_API_KEY"] = ""
+    import main as app
+    app.PROPOSE_IN_BACKGROUND = False
     passed = failed = 0
     group = None
     for name, title, fn in CHECKS:
