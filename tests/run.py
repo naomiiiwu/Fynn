@@ -280,6 +280,54 @@ def xero_is_never_left_to_invent_the_tax():
 
 
 @check("posting")
+def the_payout_comes_from_the_file_without_being_typed():
+    """Fynn read each row's stated total to check it, then threw the sum away
+    and asked the accountant for the number it had just computed."""
+    from services.csv_parser import parse_settlement_csv
+    for name, expected in (("shopee-income-statement-2026-01.csv", 3733.38),
+                           ("lazada-account-statement-2026-01.csv", 3194.59)):
+        parsed = parse_settlement_csv(sample_file(name), name)
+        total = round(sum(parsed.stated_totals.values()), 2)
+        eq(total, expected, f"{name} did not state its own total")
+
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "autopay@firm.com")
+    c.post("/api/upload", files={"file": ("shopee-income-statement-2026-01.csv",
+            sample_file("shopee-income-statement-2026-01.csv"), "text/csv")},
+           data={"reported": ""})           # nothing typed
+    eq(c.get("/api/state").json()["cycle"]["platforms"][0]["reported_payout"], 3733.38,
+       "the payout was not taken from the file")
+
+    # and a figure the firm supplies still wins, because only that one can come
+    # from a bank statement
+    c2 = signup(client_for(FakeDB()), "typed@firm.com")
+    c2.post("/api/upload", files={"file": ("shopee-income-statement-2026-01.csv",
+             sample_file("shopee-income-statement-2026-01.csv"), "text/csv")},
+            data={"reported": "Shopee=3000.00"})
+    eq(c2.get("/api/state").json()["cycle"]["platforms"][0]["reported_payout"], 3000.00,
+       "a typed payout was overridden by the file")
+
+
+@check("posting")
+def a_posted_cycle_says_so():
+    """After posting, the screen offered Post again with nothing to say it had
+    already happened — so the only way to find out was to look in the ledger."""
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "posted@firm.com")
+    c.post("/api/upload", files={"file": ("shopee-income-statement-2026-01.csv",
+            sample_file("shopee-income-statement-2026-01.csv"), "text/csv")},
+           data={"reported": "Shopee=3733.38"})
+    resolve_all(c)
+    map_all(c)
+    eq(c.get("/api/state").json()["cycle"]["posted"], [], "posted before posting")
+    eq(c.post("/api/post").status_code, 200, "post")
+    posted = c.get("/api/state").json()["cycle"]["posted"]
+    eq(len(posted), 1, "the post was not recorded")
+    eq(posted[0]["reference"], "JE-SHO-2026-01", "the wrong reference was recorded")
+    ok(posted[0]["at"], "no time recorded against the post")
+
+
+@check("posting")
 def an_entry_is_dated_in_the_period_it_belongs_to():
     """A January close was posted dated today, landing it in September."""
     from models.account_map import AccountMap, LedgerAccount

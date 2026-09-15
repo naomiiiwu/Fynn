@@ -38,6 +38,11 @@ class Cycle:
         self.firm = firm
         self.firm_id = firm_id
         self.trail = AuditTrail()
+        # What has already been sent to a ledger from this cycle. Without it the
+        # screen offers Post again after a successful post, with nothing to say
+        # it already happened — so the only way to find out is to go and look in
+        # the ledger.
+        self.posted: list[dict] = []
         self.resolutions: dict[str, tuple[str, Side]] = {}
         self._results: dict[Platform, CycleResult] = {}
         # Exception key → the number the accountant sees. Assigned once and
@@ -234,6 +239,7 @@ class Cycle:
         return {
             "cycle": self.cycle,
             "firm": self.firm,
+            "posted": list(self.posted),
             "lines_total": total_lines,
             "lines_classified": total_lines - len(open_exceptions),
             "open_exceptions": len(open_exceptions),

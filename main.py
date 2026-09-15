@@ -17,6 +17,7 @@ user's id is their workspace id. See the Accounts and access section below.
 
 import base64
 import os
+from datetime import datetime, timezone
 import re
 import secrets
 import sys
@@ -380,6 +381,19 @@ class Workspace:
                 rebuilt.add_lines(parsed.lines, payouts)
 
         if rebuilt is not None:
+            try:
+                from services.database import load_posted_entries
+                for row in load_posted_entries(self.id, profile.open_cycle):
+                    rebuilt.posted.append({
+                        "reference": row.get("reference", ""),
+                        "platform": row.get("platform", ""),
+                        "payout": "",
+                        "adapter": row.get("adapter", ""),
+                        "at": row.get("posted_at", ""),
+                        "actor": row.get("actor", ""),
+                    })
+            except Exception as exc:
+                print(f"  [Cycle] Could not read what was already posted: {exc}")
             # Decisions that never became rules, re-applied before the first
             # reconciliation so the close comes back as it was left.
             try:
@@ -525,7 +539,13 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
         raw, filename=filename, default_platform=default_platform,
         known_orders=known_orders,
     )
-    payouts = dict(parsed.reported_payouts)
+    # Three sources, weakest first, so a stronger one always wins:
+    #   what the file's own rows add up to — always available, and the figure an
+    #     accountant would otherwise copy out of the same file by hand;
+    #   a payout the platform states on a row of its own — Lazada does this;
+    #   what the firm typed, which is the only one that can come from a bank.
+    payouts = dict(parsed.stated_totals)
+    payouts.update(parsed.reported_payouts)
     payouts.update(parse_reported(reported))
 
     if space.cycle is None or space.cycle.cycle != parsed.cycle:
@@ -594,6 +614,14 @@ def _post_cycle() -> dict:
             save_posted_entry(
                 ws().id, cycle.cycle, entry, adapter.name, actor, cycle.trail.to_csv()
             )
+            cycle.posted.append({
+                "reference": entry.reference,
+                "platform": entry.platform.value,
+                "payout": entry.payout,
+                "adapter": adapter.name,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "actor": actor,
+            })
     return {"adapter": adapter.name, "entries": out}
 
 

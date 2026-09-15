@@ -126,6 +126,15 @@ class ParsedSettlement:
 
     lines: list[SettlementLine] = field(default_factory=list)
     reported_payouts: dict[Platform, float] = field(default_factory=dict)
+    # What the file itself says was released, per platform: the sum of each
+    # row's own stated total, plus any section that carries no total of its own.
+    #
+    # Weaker evidence than a payout the platform states on a row of its own, and
+    # far weaker than a bank statement — it is the file's arithmetic checked
+    # against itself. But it is the figure an accountant would otherwise type in
+    # by hand from the same file, and a residual measured against it still says
+    # something useful: how much of the settlement is not yet classified.
+    stated_totals: dict[Platform, float] = field(default_factory=dict)
     cycles: set[str] = field(default_factory=set)
     skipped: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -583,6 +592,9 @@ def _melt_wide(
         parsed.cycles.add(cycle)
 
         stated = _parse_amount(row.get(total_col, ""), decimal)
+        if stated is not None:
+            parsed.stated_totals[platform] = round(
+                parsed.stated_totals.get(platform, 0.0) + stated, 2)
         if stated is not None and abs(round(components - stated, 2)) >= 0.005:
             mismatches.append(
                 f"{order_id or f'row {row_number}'}: components {components:.2f} "
@@ -673,6 +685,10 @@ def _melt_long(
                 category=category or None, note=note or None, payout=payout,
             )
         )
+        # A long row carries no total of its own; its amount is the whole of it.
+        # This is how an adjustments section appended to a wide file is counted.
+        parsed.stated_totals[platform] = round(
+            parsed.stated_totals.get(platform, 0.0) + amount, 2)
         parsed.cycles.add(cycle)
 
 

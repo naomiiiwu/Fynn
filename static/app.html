@@ -509,8 +509,8 @@ function viewCycle(){
       as 0.00 and no bank deposit could ever match it. If the export did not
       carry the payout on a row of its own, enter what was actually deposited.</p>
       <div class="field" style="margin-top:12px">
-        <div class="ask"><input id="fix-reported" value="${settled?
-          noPayout.map(p=>esc(p.platform)+"="+p.classified_total.toFixed(2)).join(";") : ""}"
+        <div class="ask"><input id="fix-reported" value="${
+          noPayout.map(p=>esc(p.platform)+"="+p.classified_total.toFixed(2)).join(";")}"
           placeholder="${esc(names[0])}=0.00" autocomplete="off">
           <button id="fix-save">Set payout</button></div>
         <p class="hint" id="fix-status">${settled
@@ -554,6 +554,20 @@ function viewCycle(){
         <button class="go" id="triage">Propose all ${n}</button>
         <span class="st" id="triage-status">Fynn reads them together, against the
         rules you have already written. Nothing is approved until you say so.</span>
+      </div></div>`;
+  }else if((D.posted||[]).length){
+    const when = D.posted[0].at ? String(D.posted[0].at).slice(0,10) : "";
+    h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} posted</h2>
+      <p>${D.posted.length} ${D.posted.length===1?"document":"documents"} sent to
+      ${esc(D.posted[0].adapter)}${when?` on ${esc(when)}`:""}, as DRAFT for approval
+      in the ledger.</p>
+      <div class="je" style="margin-top:12px;background:var(--panel)">
+        ${D.posted.map(p=>`<div class="ledrow"><span class="num">${esc(p.reference)}</span>
+          <span class="ledright pd-txt">${esc(p.payout||p.platform)}</span></div>`).join("")}
+      </div>
+      <div class="act"><button id="post">Post again</button>
+      <span class="st" id="poststatus">Only if the ledger rejected these, or you
+      deleted them there. The same reference will not create a second document.</span>
       </div></div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>
