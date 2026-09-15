@@ -1,10 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007
--- through 014 already applied, so a new project does not have to replay a
+-- through 015 already applied, so a new project does not have to replay a
 -- rename.
 --
--- On a database that already has the 005 schema, run 007 through 014 instead
+-- On a database that already has the 005 schema, run 007 through 015 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -172,3 +172,33 @@ create table if not exists ledger_connections (
     connected_at  timestamptz not null default now(),
     primary key (firm_id, ledger)
 );
+
+-- One row per settlement — one payout, one document in the ledger — kept for
+-- every month. See 015_settlements.sql for why a row has two halves: what Fynn
+-- computes, rewritten on every reconciliation, and what was sent, never
+-- recomputed.
+create table if not exists settlements (
+    firm_id           text not null references firm_profiles(workspace_id) on delete cascade,
+    reference         text not null,                 -- the document number, e.g. JE-LAZ-2026-01-05JAN2026…
+    cycle             text not null,                 -- the month it closes in
+    platform          text not null,
+    period            text not null default '',      -- the platform's own wording
+    period_end        text not null default '',      -- ISO date, for sorting and dating
+    total             numeric(14, 2) not null default 0,
+    lines             jsonb not null default '[]'::jsonb,
+    open_exceptions   integer not null default 0,
+    ledger            text not null default '',      -- where it was sent: 'xero' | 'dry-run'
+    ledger_id         text not null default '',      -- Xero's InvoiceID
+    ledger_status     text not null default '',      -- DRAFT | AUTHORISED | PAID | VOIDED | DELETED
+    document          text not null default '',      -- ACCREC | ACCPAY
+    posted_total      numeric(14, 2),
+    posted_lines      jsonb,
+    posted_at         timestamptz,
+    posted_by         text not null default '',
+    status_checked_at timestamptz,
+    updated_at        timestamptz not null default now(),
+    primary key (firm_id, reference)
+);
+
+create index if not exists idx_settlements_firm_cycle
+    on settlements (firm_id, cycle);

@@ -21,11 +21,26 @@ class AuditTrail:
     def __init__(self) -> None:
         self._records: list[AuditRecord] = []
 
-    def add(self, kind: str, message: str, actor: str = "Fynn") -> None:
+    def add(self, kind: str, message: str, actor: str = "Fynn",
+            at: datetime | None = None) -> None:
         self._records.append(
-            AuditRecord(at=datetime.now(timezone.utc), kind=kind,
+            AuditRecord(at=at or datetime.now(timezone.utc), kind=kind,
                         message=message, actor=actor)
         )
+
+    def restore(self, since: datetime, events: list[tuple]) -> None:
+        """Put a rebuilt month's history back in the order it happened.
+
+        A month rebuilt after a restart re-reads its files now, so its trail
+        would open with today's time and lose every decision made before. What
+        is stored says when each thing happened: the files when they arrived,
+        then each decision and post at its own time.
+        """
+        for record in self._records:
+            record.at = since
+        for at, kind, message, actor in events:
+            self.add(kind, message, actor=actor, at=at)
+        self._records.sort(key=lambda r: r.at)
 
     @property
     def records(self) -> list[AuditRecord]:

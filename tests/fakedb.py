@@ -56,6 +56,10 @@ class _Query:
         self._limit = n
         return self
 
+    def order(self, column, desc=False):
+        self._order = (column, desc)
+        return self
+
     # -- execution -----------------------------------------------------------
     def _matches(self, row) -> bool:
         return all(row.get(c) == v for c, v in self._filters)
@@ -66,6 +70,9 @@ class _Query:
 
         if self._op == "select":
             hit = [r for r in rows if self._matches(r)]
+            order = getattr(self, "_order", None)
+            if order:
+                hit.sort(key=lambda r: str(r.get(order[0]) or ""), reverse=order[1])
             return _Result(hit[: self._limit] if self._limit else hit, count=len(hit))
 
         if self._op == "delete":
@@ -91,9 +98,9 @@ class _Query:
                         r.update(payload)
                         break
                 else:
-                    rows.append(dict(payload))
+                    rows.append(self.db.stamp(self.table, payload))
             else:
-                rows.append(dict(payload))
+                rows.append(self.db.stamp(self.table, payload))
         return _Result([dict(p) for p in payloads])
 
 
@@ -109,11 +116,17 @@ class FakeDB:
         "account_mappings": ("firm_id", "ledger", "fynn_account"),
         "ledger_connections": ("firm_id", "ledger"),
         "cycle_resolutions": ("firm_id", "cycle", "key"),
+        "settlements": ("firm_id", "reference"),
     }
+    # Columns Postgres fills from a default. Code that reads them back — when a
+    # file arrived, when a decision was made — must see them here too.
+    STAMPED = {"settlement_files": "ingested_at", "cycle_resolutions": "decided_at",
+               "posted_entries": "posted_at"}
     # Every scoped table hangs off the workspace row. This is the constraint
     # that turned a dropped firm_profiles write into "Xero will not connect".
     CHILDREN = ("firm_rules", "settlement_files", "account_mappings",
-                "ledger_connections", "cycle_resolutions", "posted_entries")
+                "ledger_connections", "cycle_resolutions", "posted_entries",
+                "settlements")
 
     def __init__(self, missing_columns=None, missing_tables=()):
         self.rows: dict[str, list[dict]] = {}
@@ -144,6 +157,14 @@ class FakeDB:
             raise Exception(
                 f'insert or update on table "{table}" violates foreign key '
                 f'constraint "{table}_firm_id_fkey"')
+
+    def stamp(self, table, payload):
+        row = dict(payload)
+        column = self.STAMPED.get(table)
+        if column and not row.get(column):
+            from datetime import datetime, timezone
+            row[column] = datetime.now(timezone.utc).isoformat()
+        return row
 
     def key_for(self, table, row):
         cols = self.KEYS.get(table)

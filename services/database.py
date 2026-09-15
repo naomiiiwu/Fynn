@@ -323,6 +323,71 @@ def load_posted_entries(firm_id: str, cycle: Optional[str] = None) -> list[dict]
         return []
 
 
+# ── Settlements ───────────────────────────────────────────────────────────────
+
+def save_settlement(firm_id: str, row: dict) -> bool:
+    """Upsert one settlement: a payout, and the document it becomes.
+
+    Callers write either half of the row — what Fynn computed, or what was sent
+    — never both at once, so a reconciliation run cannot overwrite the record of
+    a post, and a post cannot overwrite a newer reconciliation.
+    """
+    return _upsert("settlements", {"firm_id": firm_id, **row},
+                   on_conflict="firm_id,reference")
+
+
+def load_settlements(firm_id: str, cycle: Optional[str] = None) -> list[dict]:
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        query = client.table("settlements").select("*").eq("firm_id", firm_id)
+        if cycle:
+            query = query.eq("cycle", cycle)
+        rows = query.execute().data or []
+        for row in rows:
+            for field in ("lines", "posted_lines"):
+                if isinstance(row.get(field), str):
+                    row[field] = json.loads(row[field])
+        return rows
+    except Exception as exc:
+        print(f"  [DB] Failed to load settlements: {exc}")
+        return []
+
+
+def delete_settlement(firm_id: str, reference: str) -> bool:
+    """Forget a settlement that no longer exists and was never sent.
+
+    A month with one payout posts as one document; a second file can split it
+    into several. The single one then describes nothing, and left in the list it
+    would offer to post a document that double-counts the others.
+    """
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("settlements").delete()
+         .eq("firm_id", firm_id).eq("reference", reference).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to remove settlement {reference}: {exc}")
+        return False
+
+
+def load_settlement_months(firm_id: str) -> list[str]:
+    """Every month with a retained file, without reading the files."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (client.table("settlement_files").select("cycle")
+                .eq("firm_id", firm_id).execute().data or [])
+        return sorted({r["cycle"] for r in rows if r.get("cycle")})
+    except Exception as exc:
+        print(f"  [DB] Failed to list months: {exc}")
+        return []
+
+
 # ── Account mappings ──────────────────────────────────────────────────────────
 
 def save_account_mapping(firm_id: str, ledger: str, account: str, entry) -> bool:
@@ -391,7 +456,7 @@ def load_account_mappings(firm_id: str, ledger: str) -> list[dict]:
 EXPECTED_TABLES = (
     "users", "firm_profiles", "firm_rules", "settlement_files",
     "posted_entries", "account_mappings", "ledger_connections",
-    "cycle_resolutions",
+    "cycle_resolutions", "settlements",
 )
 
 

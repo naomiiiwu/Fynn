@@ -565,7 +565,8 @@ def no_route_returns_a_server_error():
     c = signup(client_for(FakeDB()), "sweep@firm.com")
     c.post("/api/cycle/sample")
     skip = {"/logout", "/auth/google", "/auth/google/callback", "/login", "/signup"}
-    stand_in = {"ledger": "xero", "platform": "Shopee", "key": "nope"}
+    stand_in = {"ledger": "xero", "platform": "Shopee", "key": "nope",
+                "reference": "JE-NOPE", "month": "2026-01"}
     broken = []
     for route in main.app.routes:
         if not isinstance(route, APIRoute) or route.path in skip:
@@ -627,6 +628,183 @@ def expected_tables_match_the_schema_file():
     created = set(re.findall(r"create table if not exists (\w+)", schema))
     missing = set(EXPECTED_TABLES) - created
     ok(not missing, f"000_schema.sql does not create: {sorted(missing)}")
+
+
+# ── settlements: every payout, every month ────────────────────────────────────
+
+LAZADA_FEB = (LAZADA_EXTRA.replace(b"2026-01-10", b"2026-02-10")
+              .replace(b"05 Jan 2026 - 11 Jan 2026", b"02 Feb 2026 - 08 Feb 2026"))
+
+
+def listed(c, **filters):
+    query = "&".join(f"{k}={v}" for k, v in filters.items())
+    return c.get("/api/settlements" + (f"?{query}" if query else "")).json()["settlements"]
+
+
+@check("settlements")
+def a_new_month_does_not_push_the_last_one_aside():
+    """Uploading February replaced January on screen, and nothing listed it
+    again — its files were kept, but there was no way back to them."""
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "months@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    c.post("/api/upload", files={"file": ("lazada-feb.csv", LAZADA_FEB, "text/csv")})
+    rows = listed(c)
+    eq(sorted({r["cycle"] for r in rows}), ["2026-01", "2026-02"], "months listed")
+    eq(len(listed(c, cycle="2026-01")), 4, "January's four weekly payouts")
+    ok(all(r["status"] == "needs_review" for r in listed(c, cycle="2026-01")),
+       "January's open exceptions were forgotten when February arrived")
+    eq(listed(c, cycle="2026-02")[0]["period"], "02 Feb 2026 - 08 Feb 2026",
+       "a month of one payout should still name the platform's period")
+
+    # And January can be picked up again exactly where it was left.
+    eq(c.post("/api/cycles/2026-01/open").status_code, 200, "reopen January")
+    resolve_all(c)
+    ok(all(r["status"] == "ready" for r in listed(c, cycle="2026-01")), "January resolved")
+    ok(all(r["status"] == "needs_review" for r in listed(c, cycle="2026-02")),
+       "resolving January touched February")
+
+
+@check("settlements")
+def one_settlement_posts_on_its_own_and_the_rest_wait():
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "one@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    first = listed(c)[-1]["reference"]
+    eq(c.post(f"/api/settlements/{first}/post").status_code, 409,
+       "a settlement posted while its month had open exceptions")
+    resolve_all(c)
+    map_all(c)
+    eq(c.post(f"/api/settlements/{first}/post").status_code, 200, "post one")
+    statuses = {r["reference"]: r["status"] for r in listed(c)}
+    eq(statuses.pop(first), "prepared", "the posted one")
+    ok(set(statuses.values()) == {"ready"}, f"the others moved too: {statuses}")
+
+
+@check("settlements")
+def the_list_survives_a_redeploy_including_what_was_posted():
+    import main as app
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "keeps@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    map_all(c)
+    c.post("/api/post")
+    before = {r["reference"]: (r["status"], r["total"]) for r in listed(c)}
+    app._workspaces.clear()
+    app._posted_now.clear()
+    eq({r["reference"]: (r["status"], r["total"]) for r in listed(c)}, before,
+       "settlements after a redeploy")
+    detail = c.get(f"/api/settlements/{next(iter(before))}").json()
+    ok(any(t["kind"] == "decision" for t in detail["trail"]),
+       "the decisions behind a settlement vanished from its trail after a redeploy")
+
+
+@check("settlements")
+def posts_made_before_settlements_existed_are_not_offered_again():
+    """January went to Xero before settlements were recorded. Listed as Ready
+    to post, it would invite a second copy into the client's books."""
+    import main as app
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "legacy@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    map_all(c)
+    c.post("/api/post")
+    db.rows["settlements"] = []           # as a database from before migration 015
+    app._workspaces.clear()
+    app._posted_now.clear()
+    rows = listed(c)
+    eq(len(rows), 4, "history did not appear")
+    ok(all(r["posted_at"] for r in rows), "a posted document is offered as unposted")
+
+
+@check("settlements")
+def a_document_approved_in_xero_is_left_alone():
+    from services.settlements import can_send, status_of
+    sent = [{"account": "Lazada Clearing Account", "side": "debit", "amount": 90.0},
+            {"account": "Sales Revenue", "side": "credit", "amount": 90.0}]
+    row = {"reference": "R", "posted_at": "2026-02-01", "ledger": "xero",
+           "lines": sent, "posted_lines": sent, "open_exceptions": 0}
+    eq(status_of({**row, "ledger_status": "DRAFT"}), "draft", "draft")
+    eq(status_of({**row, "ledger_status": "AUTHORISED"}), "approved", "approved")
+    eq(status_of({**row, "ledger_status": "PAID"}), "reconciled", "matched to the deposit")
+    eq(status_of({**row, "ledger_status": "VOIDED"}), "voided", "voided")
+    changed = [dict(sent[0], amount=80.0), dict(sent[1], amount=80.0)]
+    eq(status_of({**row, "ledger_status": "DRAFT", "lines": changed}), "changed",
+       "a draft that no longer matches what Fynn would send")
+    ok(can_send({**row, "ledger_status": "DRAFT", "lines": changed})[0], "a draft re-sends")
+    for final in ("AUTHORISED", "PAID"):
+        ok(not can_send({**row, "ledger_status": final, "lines": changed})[0],
+           f"Fynn offered to overwrite a document {final} in Xero")
+    ok(can_send({**row, "ledger_status": "VOIDED"})[0], "a voided document can go again")
+
+
+@check("settlements")
+def xero_status_comes_back_into_the_list():
+    import main as app
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "status@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    map_all(c)
+    c.post("/api/post")
+    refs = [r["reference"] for r in listed(c)]
+    for row in db.rows["settlements"]:     # as if they had gone to Xero
+        row.update({"ledger": "xero", "ledger_status": "DRAFT", "ledger_id": ""})
+    app._posted_now.clear()
+
+    asked = {}
+    real_fetch, real_get = app.fetch_invoice_statuses, app.connections.get
+    try:
+        app.connections.get = lambda firm, ledger: object()
+        def fake(connection, ids=(), numbers=()):
+            asked["numbers"] = list(numbers)
+            return {refs[0]: {"id": "inv-1", "status": "PAID", "document": "ACCREC"}}
+        app.fetch_invoice_statuses = fake
+        r = c.post("/api/settlements/refresh").json()
+    finally:
+        app.fetch_invoice_statuses, app.connections.get = real_fetch, real_get
+    eq(sorted(asked["numbers"]), sorted(refs), "documents without an id looked up by number")
+    eq(r["changed"], 1, "changed count")
+    row = next(r for r in listed(c) if r["reference"] == refs[0])
+    eq(row["status"], "reconciled", "a paid invoice")
+    ok("inv-1" in row["ledger_url"], "no link into Xero once the id is known")
+    eq(c.post(f"/api/settlements/{refs[0]}/post").status_code, 409,
+       "a reconciled document was sent again")
+
+
+@check("settlements")
+def the_sample_never_enters_a_firms_settlements():
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "sample-list@firm.com")
+    c.post("/api/cycle/sample")
+    eq(listed(c), [], "the sample was listed as a real settlement")
+    eq(db.count("settlements"), 0, "the sample was stored")
+
+
+@check("settlements")
+def a_refund_is_traced_to_a_sale_in_an_earlier_month():
+    """A February refund for a January order said only "no matching sale" —
+    January was never looked in, though its file was retained."""
+    from tests.fakedb import FakeDB
+    header = (b"Transaction Date,Transaction Type,Transaction Number,Order Number,"
+              b"Order Item ID,Item Name,Comment,Amount,Statement Period\n")
+    jan = header + (b"2026-01-10,Item Price Credit,T1,900001,900001-1,Tote,,50.00,"
+                    b"05 Jan 2026 - 11 Jan 2026\n")
+    feb = header + (b"2026-02-03,Reversal Item Price,T2,900001,900001-1,Tote,,-50.00,"
+                    b"02 Feb 2026 - 08 Feb 2026\n")
+    c = signup(client_for(FakeDB()), "refund@firm.com")
+    c.post("/api/upload", files={"file": ("lazada-jan.csv", jan, "text/csv")})
+    c.post("/api/upload", files={"file": ("lazada-feb.csv", feb, "text/csv")})
+    refund = next(e for e in c.get("/api/state").json()["cycle"]["exceptions"]
+                  if e["kind"] in ("orphan_refund", "partial_refund"))
+    ok(refund["evidence"] and "2026-01" in refund["evidence"]["summary"],
+       f"January's sale was not found: {refund['evidence']}")
 
 
 # ── runner ────────────────────────────────────────────────────────────────────

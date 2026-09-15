@@ -58,15 +58,16 @@ from models.transaction import Platform, Side
 from services.audit import working_paper
 from services.classification import RuleStore
 from services.csv_parser import SettlementParseError, parse_reported, parse_settlement_csv
-from services import connections, identity, migrate, oauth
+from services import connections, identity, migrate, oauth, settlements
 from services.database import (
     diagnose,
     save_posted_entry,
     save_resolution,
+    save_settlement,
     save_settlement_file,
     update_settlement_reported,
 )
-from services.ledger import fetch_chart, get_adapter
+from services.ledger import fetch_chart, fetch_invoice_statuses, get_adapter
 from utils.formatter import Cycle
 
 app = FastAPI(
@@ -299,11 +300,24 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
 
 # ── State ─────────────────────────────────────────────────────────────────────
 # One Workspace per account, holding everything that is not in the database:
-# the open cycle above all. Rules and mappings are written through to Supabase
-# as they are learned; the open cycle is in-process, which is the documented
-# limitation (see README).
+# the reconciled months above all. Rules and mappings are written through to
+# Supabase as they are learned; a month is rebuilt from its retained files when a
+# process first needs it, and every settlement it produces is recorded so the
+# list of them survives without rebuilding anything.
 
 _profiles = FirmProfileStore()
+
+# How many earlier months a refund is traced back through. A marketplace refund
+# lands weeks after the sale, rarely more than a quarter.
+PRIOR_MONTHS = 3
+
+
+def _when(value) -> Optional[datetime]:
+    try:
+        at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 class Workspace:
@@ -311,10 +325,16 @@ class Workspace:
 
     def __init__(self, workspace_id: str) -> None:
         self.id = workspace_id
-        self._cycle: Optional[Cycle] = None
-        # Restoring is attempted once per process, not once per request: a
-        # workspace with nothing to restore must not re-query storage on every
-        # call, and a cycle deliberately closed must not come back.
+        # Every month this process has reconciled, by month. Several at once:
+        # February arriving must not push an unfinished January aside.
+        self._cycles: dict[str, Cycle] = {}
+        # Months already looked for and not found, so a month with nothing
+        # retained does not re-query storage on every request.
+        self._absent: set[str] = set()
+        # The month the review screen is on. Restored from the profile once per
+        # process; a cycle deliberately closed must not come back.
+        self._current: Optional[str] = None
+        self._sample: Optional[Cycle] = None
         self._restored = False
         self._rules: Optional[RuleStore] = None
         # Keyed by ledger: a Xero code and a QuickBooks id are different things,
@@ -322,9 +342,11 @@ class Workspace:
         # wrong codes.
         self._account_maps: dict[str, AccountMap] = {}
 
+    SAMPLE = "sample"
+
     @property
     def cycle(self) -> Optional[Cycle]:
-        """The open cycle, rebuilt from the retained files if this is a new process.
+        """The month under review, rebuilt from the retained files if need be.
 
         Source files are kept for the statutory period anyway, so the data to
         rebuild was always there — nothing read it back, and a redeploy looked
@@ -332,26 +354,98 @@ class Workspace:
         are loaded from storage too, so the same decisions re-apply and the same
         exceptions resolve.
         """
-        if self._cycle is None and not self._restored:
+        if not self._restored:
             self._restored = True
-            self._cycle = self._rebuild()
-        return self._cycle
+            self._current = self.profile().open_cycle
+        if self._current == self.SAMPLE:
+            return self._sample
+        return self.month(self._current) if self._current else None
 
     @cycle.setter
     def cycle(self, value: Optional[Cycle]) -> None:
-        self._cycle = value
         self._restored = True
+        if value is None:
+            self._current = None
+            return
+        if getattr(value, "sample", False):
+            # Held apart from the real months. It is named 2026-01 like a real
+            # January, and must never stand in for one.
+            self._sample, self._current = value, self.SAMPLE
+            return
+        self._cycles[value.cycle] = value
+        self._absent.discard(value.cycle)
+        self._current = value.cycle
 
-    def _rebuild(self) -> Optional[Cycle]:
-        profile = self.profile()
-        if not profile.open_cycle:
+    def month(self, month: str) -> Optional[Cycle]:
+        """One month's reconciliation, from memory or from its retained files."""
+        if not month:
             return None
+        if month not in self._cycles and month not in self._absent:
+            rebuilt = self._rebuild(month)
+            if rebuilt is None:
+                self._absent.add(month)
+                return None
+            self._cycles[month] = rebuilt
+        return self._cycles.get(month)
+
+    def loaded(self) -> list[Cycle]:
+        return list(self._cycles.values())
+
+    def open_month(self, month: str) -> Optional[Cycle]:
+        """Make a month the one under review, and remember it across a restart."""
+        cycle = self.month(month)
+        if cycle is None:
+            return None
+        self.cycle = cycle
+        profile = self.profile()
+        if profile.open_cycle != month:
+            profile.open_cycle = month
+            _profiles.save(profile)
+        return cycle
+
+    def prior_lines(self, month: str, files: Optional[list[dict]] = None) -> list:
+        """Settlement lines from the few months before this one.
+
+        A refund in February for a January sale has no sale in February, and
+        without January to look in it is raised as an orphan with nothing to
+        say about it. Only lines are wanted, so the months are parsed, not
+        reconciled.
+        """
+        if files is None:
+            try:
+                from services.database import load_settlement_files
+                files = load_settlement_files(self.id)
+            except Exception:
+                return []
+        earlier = sorted({r.get("cycle") for r in files
+                          if r.get("cycle") and r["cycle"] < month})[-PRIOR_MONTHS:]
+        lines = []
+        for row in files:
+            if row.get("cycle") not in earlier:
+                continue
+            if row["cycle"] in self._cycles:
+                continue            # taken from memory below, with its later files
+            try:
+                parsed = parse_settlement_csv(
+                    (row.get("csv_data") or "").encode("utf-8"),
+                    row.get("filename") or "", default_cycle=row["cycle"])
+                lines.extend(parsed.lines)
+            except SettlementParseError:
+                continue
+        for m in earlier:
+            if m in self._cycles:
+                lines.extend(self._cycles[m].lines)
+        return lines
+
+    def _rebuild(self, month: str) -> Optional[Cycle]:
+        profile = self.profile()
         try:
             from services.database import load_settlement_files
-            rows = load_settlement_files(self.id, profile.open_cycle)
+            everything = load_settlement_files(self.id)
         except Exception as exc:
             print(f"  [Cycle] Could not read retained files: {exc}")
             return None
+        rows = [r for r in everything if r.get("cycle") == month]
         if not rows:
             return None
 
@@ -363,7 +457,7 @@ class Workspace:
             try:
                 parsed = parse_settlement_csv(
                     raw, row.get("filename") or "",
-                    default_cycle=profile.open_cycle,
+                    default_cycle=month,
                     known_orders={l.order_id: l.platform
                                   for l in (rebuilt.lines if rebuilt else []) if l.order_id},
                 )
@@ -378,16 +472,18 @@ class Workspace:
             if rebuilt is None:
                 rebuilt = Cycle(
                     lines=parsed.lines, reported_payouts=payouts, store=self.rules(),
-                    cycle=profile.open_cycle, firm=profile.firm, firm_id=self.id,
+                    prior_cycles=self.prior_lines(month, everything),
+                    cycle=month, firm=profile.firm, firm_id=self.id,
                     stated_totals=parsed.stated_totals,
                 )
             else:
                 rebuilt.add_lines(parsed.lines, payouts, parsed.stated_totals)
 
         if rebuilt is not None:
+            history = []
             try:
                 from services.database import load_posted_entries
-                for row in load_posted_entries(self.id, profile.open_cycle):
+                for row in load_posted_entries(self.id, month):
                     rebuilt.posted.append({
                         "reference": row.get("reference", ""),
                         "platform": row.get("platform", ""),
@@ -396,21 +492,136 @@ class Workspace:
                         "at": row.get("posted_at", ""),
                         "actor": row.get("actor", ""),
                     })
+                    history.append((_when(row.get("posted_at")), "post",
+                                    f"{row.get('reference', '')} sent to {row.get('adapter', '')}",
+                                    row.get("actor") or "Fynn"))
             except Exception as exc:
                 print(f"  [Cycle] Could not read what was already posted: {exc}")
             # Decisions that never became rules, re-applied before the first
             # reconciliation so the close comes back as it was left.
             try:
                 from services.database import load_resolutions
-                for row in load_resolutions(self.id, profile.open_cycle):
+                for row in load_resolutions(self.id, month):
                     rebuilt.resolutions[row["key"]] = (
                         row["account"], Side(row["side"]))
+                    history.append((_when(row.get("decided_at")), "decision",
+                                    f"Approved — {row['key']} posts to {row['account']}",
+                                    row.get("actor") or "Fynn"))
             except Exception as exc:
                 print(f"  [Cycle] Could not re-apply decisions: {exc}")
+            first = min((t for t in (_when(r.get("ingested_at")) for r in rows) if t),
+                        default=None)
+            now = datetime.now(timezone.utc)
+            rebuilt.trail.restore(first or now,
+                                  [(at or now, *rest) for at, *rest in history])
             rebuilt.run()
-            print(f"  [Cycle] Resumed {profile.open_cycle} for {self.id} "
+            print(f"  [Cycle] Resumed {month} for {self.id} "
                   f"from {len(rows)} retained file(s).")
+            self.record(rebuilt)
+            self._adopt_posts(rebuilt)
         return rebuilt
+
+    # ── settlements ──────────────────────────────────────────────────────────
+
+    def per_payout(self) -> bool:
+        """Whether this firm's ledger takes one document per payout."""
+        return get_adapter(self.profile().ledger, preview_for="xero").per_payout
+
+    def record(self, cycle: Cycle) -> list[dict]:
+        """Write every settlement in a month as it now reconciles.
+
+        Only the computed half of each row. What was sent is written by the post
+        and never here, so reconciling again cannot erase the record of a post.
+        """
+        live = [settlements.computed_row(entry, result, cycle)
+                for entry, result in settlements.documents(cycle, self.per_payout())]
+        if getattr(cycle, "sample", False):
+            return live            # the sample is a demonstration, not a close
+        try:
+            from services.database import delete_settlement, load_settlements, save_settlement
+            current = {r["reference"] for r in live}
+            for row in load_settlements(self.id, cycle.cycle):
+                # A document the month no longer produces — one payout split into
+                # several by a later file. Kept if it was sent: it is in the
+                # ledger whatever Fynn now thinks.
+                if row["reference"] not in current and not row.get("posted_at"):
+                    delete_settlement(self.id, row["reference"])
+            for row in live:
+                save_settlement(self.id, {
+                    **row, "updated_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as exc:
+            print(f"  [Settlements] Could not record {cycle.cycle}: {exc}")
+        return live
+
+    def settlement_rows(self) -> list[dict]:
+        """Every settlement this firm has, stored and live, newest first.
+
+        A month with retained files but no settlement rows was uploaded before
+        settlements were recorded; it is rebuilt once here, so a firm's history
+        appears in the list without anyone re-uploading it.
+        """
+        try:
+            from services.database import load_settlement_months, load_settlements
+            stored = load_settlements(self.id)
+            months = load_settlement_months(self.id)
+        except Exception:
+            stored, months = [], []
+        known = {r.get("cycle") for r in stored}
+        for month in months:
+            if month not in known:
+                self.month(month)
+        if any(m not in known for m in months):
+            try:
+                from services.database import load_settlements
+                stored = load_settlements(self.id)
+            except Exception:
+                pass
+        live = [row for c in self.loaded() if not getattr(c, "sample", False)
+                for row in (settlements.computed_row(e, r, c)
+                            for e, r in settlements.documents(c, self.per_payout()))]
+        rows = settlements.merge(stored, live)
+        for row in rows:
+            sent = _posted_now.get((self.id, row["reference"]))
+            if sent and not row.get("posted_at"):
+                row.update(sent)
+        return sorted(rows, key=settlements.sort_key, reverse=True)
+
+    def _adopt_posts(self, cycle: Cycle) -> None:
+        """Mark settlements posted from what posted_entries already says.
+
+        Posts made before settlements were recorded left a row in posted_entries
+        and none here. Without adopting them January's documents — already in
+        Xero — would be listed as Ready to post.
+        """
+        try:
+            from services.database import (
+                load_posted_entries, load_settlements, save_settlement)
+            rows = load_posted_entries(self.id, cycle.cycle)
+            if not rows:
+                return
+            already = {r["reference"] for r in load_settlements(self.id, cycle.cycle)
+                       if r.get("posted_at")}
+        except Exception:
+            return
+        latest: dict[str, dict] = {}
+        for row in rows:                          # newest first
+            latest.setdefault(row.get("reference", ""), row)
+        for reference, row in latest.items():
+            if not reference or reference in already:
+                continue
+            lines = row.get("lines") or []
+            save_settlement(self.id, {
+                "reference": reference, "cycle": cycle.cycle,
+                "platform": row.get("platform", ""),
+                "ledger": row.get("adapter", ""),
+                # Xero was only ever sent drafts. The status check corrects this
+                # the first time it runs.
+                "ledger_status": "DRAFT" if row.get("adapter") == "xero" else "",
+                "posted_total": settlements.total_of_lines(lines),
+                "posted_lines": lines,
+                "posted_at": row.get("posted_at") or datetime.now(timezone.utc).isoformat(),
+                "posted_by": row.get("actor", ""),
+            })
 
     def profile(self) -> FirmProfile:
         profile, _ = _profiles.get_or_create(self.id)
@@ -553,53 +764,54 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     payouts = dict(parsed.reported_payouts)
     payouts.update(parse_reported(reported))
 
-    if space.cycle is None or space.cycle.cycle != parsed.cycle:
-        space.cycle = Cycle(
+    # The month this file belongs to, wherever it was: in memory, retained from
+    # an earlier upload, or new. A file for another month joins that month and
+    # leaves the one on screen exactly as it was — it stays in the settlements
+    # list, with whatever it still needs.
+    existing = space.month(parsed.cycle)
+    if existing is None:
+        target = Cycle(
             lines=parsed.lines, reported_payouts=payouts, store=_rules(),
+            prior_cycles=space.prior_lines(parsed.cycle),
             cycle=parsed.cycle, firm=profile.firm, firm_id=space.id,
             stated_totals=parsed.stated_totals,
         )
-        space.cycle.run()
+        target.run()
     else:
-        space.cycle.add_lines(parsed.lines, payouts, parsed.stated_totals)
+        target = existing
+        target.add_lines(parsed.lines, payouts, parsed.stated_totals)
 
     save_settlement_file(space.id, filename, parsed.cycle, raw, len(parsed.lines),
                          reported=reported)
+    space.cycle = target
     # Remember which cycle is open, so it can be rebuilt after a restart.
     if profile.open_cycle != parsed.cycle:
         profile.open_cycle = parsed.cycle
         _profiles.save(profile)
-    return space.cycle
+    space.record(target)
+    return target
 
 
-def _post_cycle() -> dict:
-    """Post every platform's journal. Refuses while anything is open."""
-    cycle = _require_cycle()
-    profile = _profile()
+def _send(cycle: Cycle, entries: list, replaces: Optional[dict] = None) -> list[dict]:
+    """Send documents to the firm's ledger and record each one as posted.
 
-    results = cycle.run()
-    blocked = [p.value for p, r in results.items() if not r.ties_out]
-    if blocked:
-        raise HTTPException(
-            409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
-        )
-
+    The one path every post takes — a whole month or one settlement — so the
+    trail, posted_entries and the settlement row cannot disagree about what
+    went out.
+    """
+    space = ws()
+    profile = space.profile()
     adapter = get_adapter(
         profile.ledger, _accounts(profile.ledger),
-        connections.get(ws().id, profile.ledger),
+        connections.get(space.id, profile.ledger),
         preview_for="xero",
     )
     actor = profile.approver()
     out = []
-    for _platform, result in results.items():
-        # One document per bank deposit where the ledger reconciles that way,
-        # otherwise the single cycle entry.
-        entries = (result.payout_journals
-                   if adapter.per_payout and result.payout_journals
-                   else [result.journal])
+    for entry in entries:
+        adapter.replaces = (replaces or {}).get(entry.reference, "")
         try:
-            for entry in entries:
-                out.append(adapter.post(entry))
+            result = adapter.post(entry)
         except NotImplementedError as exc:
             # The live adapters prepare the payload but cannot send it yet. That
             # is a configuration state, not a server fault.
@@ -608,27 +820,94 @@ def _post_cycle() -> dict:
             # Unmapped accounts, or missing credentials. Both are things the
             # firm can fix, and the message says which.
             raise HTTPException(409, str(exc))
+        out.append(result)
+
         # Record what was actually sent, one line per document. A trail that
         # names the cycle entry while four invoices went out is a trail of
         # something that did not happen.
-        for entry in entries:
-            where = f" ({entry.payout})" if entry.payout else ""
-            cycle.trail.add(
-                "post", f"{entry.reference}{where} sent to {adapter.name}", actor=actor
-            )
-        for entry in entries:
-            save_posted_entry(
-                ws().id, cycle.cycle, entry, adapter.name, actor, cycle.trail.to_csv()
-            )
-            cycle.posted.append({
-                "reference": entry.reference,
-                "platform": entry.platform.value,
-                "payout": entry.payout,
-                "adapter": adapter.name,
-                "at": datetime.now(timezone.utc).isoformat(),
-                "actor": actor,
-            })
-    return {"adapter": adapter.name, "entries": out}
+        where = f" ({entry.payout})" if entry.payout else ""
+        cycle.trail.add(
+            "post", f"{entry.reference}{where} sent to {adapter.name}", actor=actor
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        save_posted_entry(
+            space.id, cycle.cycle, entry, adapter.name, actor, cycle.trail.to_csv()
+        )
+        cycle.posted = [p for p in cycle.posted if p.get("reference") != entry.reference]
+        cycle.posted.append({
+            "reference": entry.reference,
+            "platform": entry.platform.value,
+            "payout": entry.payout,
+            "adapter": adapter.name,
+            "at": now,
+            "actor": actor,
+        })
+        # The Xero document id is what lets Fynn ask later whether the draft was
+        # approved and matched to the deposit. Xero returns it once, here.
+        lines = [{"account": l.account, "side": l.side.value, "amount": round(l.amount, 2)}
+                 for l in entry.lines]
+        save_settlement(space.id, {
+            "reference": entry.reference, "cycle": cycle.cycle,
+            "platform": entry.platform.value,
+            "ledger": adapter.name,
+            "ledger_id": result.get("ledger_id", "") or "",
+            "ledger_status": (result.get("ledger_status", "") or "").upper()
+                             if adapter.name != "dry-run" else "",
+            "document": result.get("document", "") or "",
+            "posted_total": settlements.total_of(entry),
+            "posted_lines": lines,
+            "posted_at": now,
+            "posted_by": actor,
+        })
+        _posted_now[(space.id, entry.reference)] = {
+            "ledger": adapter.name, "ledger_id": result.get("ledger_id", "") or "",
+            "ledger_status": (result.get("ledger_status", "") or "").upper()
+                             if adapter.name != "dry-run" else "",
+            "document": result.get("document", "") or "",
+            "posted_total": settlements.total_of(entry), "posted_lines": lines,
+            "posted_at": now, "posted_by": actor,
+        }
+    space.record(cycle)
+    return out
+
+
+# What was sent in this process, by workspace and reference. Storage is the
+# record; this is so a firm running without it still sees what it just posted.
+_posted_now: dict[tuple[str, str], dict] = {}
+
+
+def _post_cycle() -> dict:
+    """Post every platform's journal. Refuses while anything is open.
+
+    Documents already approved in the ledger are left alone: they belong to the
+    accountant now, and sending them again would fail or, worse, not.
+    """
+    cycle = _require_cycle()
+    results = cycle.run()
+    blocked = [p.value for p, r in results.items() if not r.ties_out]
+    if blocked:
+        raise HTTPException(
+            409, f"Unresolved exceptions on: {', '.join(blocked)}. Resolve before posting."
+        )
+
+    rows = {r["reference"]: r for r in ws().settlement_rows() if r.get("cycle") == cycle.cycle}
+    entries, skipped, replaces = [], [], {}
+    for entry, _result in settlements.documents(cycle, _adapter_per_payout()):
+        row = rows.get(entry.reference, {})
+        sendable, why = settlements.ledger_allows(row)
+        if not sendable:
+            skipped.append({"reference": entry.reference, "why": why})
+            continue
+        if (row.get("ledger_status") or "").upper() in settlements.GONE_FROM_LEDGER:
+            replaces[entry.reference] = row.get("ledger_id") or "voided"
+        entries.append(entry)
+    out = _send(cycle, entries, replaces)
+    return {"adapter": get_adapter(_profile().ledger).name, "entries": out,
+            "skipped": skipped}
+
+
+def _adapter_per_payout() -> bool:
+    return ws().per_payout()
 
 
 # ── The app ───────────────────────────────────────────────────────────────────
@@ -710,11 +989,15 @@ def api_load_sample():
     """Load the built-in sample cycle covering the three known edge cases."""
     space = ws()
     profile = space.profile()
-    space.cycle = Cycle(
+    sample = Cycle(
         lines=sample_lines(), reported_payouts=dict(REPORTED_PAYOUTS),
         store=_rules(), prior_cycles=prior_cycle_lines(),
         firm=profile.firm, firm_id=space.id,
     )
+    # A demonstration, kept out of the settlements list and out of storage: it
+    # would otherwise sit among a firm's real months for ever.
+    sample.sample = True
+    space.cycle = sample
     space.cycle.run()
     return space.cycle.digest()
 
@@ -772,6 +1055,7 @@ def api_set_reported(req: ReportedRequest):
     cycle.trail.add("source", f"Reported payout set — {stated}",
                     actor=space.profile().approver())
     update_settlement_reported(space.id, cycle.cycle, stated)
+    space.record(cycle)
     return cycle.digest()
 
 
@@ -857,6 +1141,7 @@ def api_approve_batch(req: BatchApproveRequest):
         cycle.approve(key, account, side, actor, True, "label")
         save_resolution(space.id, cycle.cycle, key, account, side.value, actor)
         applied.append({"key": key, "account": account})
+    space.record(cycle)
     return {"applied": applied, "failed": failed, "digest": cycle.digest()}
 
 
@@ -877,6 +1162,7 @@ def api_approve(req: ApproveRequest):
     # refund with no sale, a withheld balance — and without it a restart would
     # re-open a decision already made.
     save_resolution(ws().id, cycle.cycle, req.key, req.account, side.value, actor)
+    ws().record(cycle)
     return cycle.digest()
 
 
@@ -899,6 +1185,191 @@ def api_journal(platform: str):
                 "balanced": j.balanced,
             }
     raise HTTPException(404, f"No journal for {platform}")
+
+
+# ── Settlements ───────────────────────────────────────────────────────────────
+# The list a firm works from: every payout, every month, and where each one
+# stands — in Fynn, and in Xero. See services/settlements.py.
+
+def _find_settlement(reference: str):
+    """A settlement's row, and the month and document behind it if Fynn has them."""
+    space = ws()
+    row = next((r for r in space.settlement_rows() if r["reference"] == reference), None)
+    if row is None:
+        raise HTTPException(404, f"No settlement {reference}.")
+    cycle = space.month(row.get("cycle", ""))
+    entry = result = None
+    if cycle is not None:
+        for e, r in settlements.documents(cycle, space.per_payout()):
+            if e.reference == reference:
+                entry, result = e, r
+                break
+    return row, cycle, entry, result
+
+
+@app.get("/api/settlements")
+def api_settlements(cycle: Optional[str] = None, platform: Optional[str] = None,
+                    status: Optional[str] = None):
+    """Every settlement, newest first, filtered as the list asks."""
+    space = ws()
+    rows = [settlements.present(r) for r in space.settlement_rows()]
+    months = sorted({r["cycle"] for r in rows if r["cycle"]}, reverse=True)
+    platforms = sorted({r["platform"] for r in rows if r["platform"]})
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    if cycle:
+        rows = [r for r in rows if r["cycle"] == cycle]
+    if platform:
+        rows = [r for r in rows if r["platform"] == platform]
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+    profile = space.profile()
+    return {
+        "settlements": rows,
+        "months": months,
+        "platforms": platforms,
+        "counts": counts,
+        "labels": settlements.STATUS_LABELS,
+        "ledger": profile.ledger,
+        "connected": connections.get(space.id, "xero") is not None,
+        "current": space.cycle.cycle if space.cycle is not None
+                   and not getattr(space.cycle, "sample", False) else None,
+    }
+
+
+@app.post("/api/settlements/refresh")
+def api_refresh_settlements():
+    """Ask Xero where every document Fynn sent now stands.
+
+    Only documents that can still move: a reconciled or voided one has
+    finished, and asking about it again costs a call and says nothing new.
+    """
+    space = ws()
+    connection = connections.get(space.id, "xero")
+    rows = [r for r in space.settlement_rows()
+            if r.get("posted_at") and r.get("ledger") == "xero"
+            and (r.get("ledger_status") or "").upper() not in settlements.FINAL_IN_LEDGER]
+    if not rows:
+        return {"checked": 0, "changed": 0}
+    if connection is None:
+        return {"checked": 0, "changed": 0,
+                "error": "Connect Xero in Settings to see what happened to what Fynn sent."}
+    try:
+        found = fetch_invoice_statuses(
+            connection,
+            ids=[r["ledger_id"] for r in rows if r.get("ledger_id")],
+            numbers=[r["reference"] for r in rows if not r.get("ledger_id")],
+        )
+    except Exception as exc:
+        return {"checked": 0, "changed": 0, "error": str(exc)}
+
+    now = datetime.now(timezone.utc).isoformat()
+    changed = 0
+    for row in rows:
+        hit = found.get(row["reference"])
+        if hit is None:
+            continue
+        update = {"reference": row["reference"], "cycle": row.get("cycle", ""),
+                  "platform": row.get("platform", ""),
+                  "ledger_status": hit["status"], "status_checked_at": now}
+        if hit.get("id"):
+            update["ledger_id"] = hit["id"]
+        if hit.get("document"):
+            update["document"] = hit["document"]
+        if hit["status"] != (row.get("ledger_status") or "").upper():
+            changed += 1
+        save_settlement(space.id, update)
+        sent = _posted_now.get((space.id, row["reference"]))
+        if sent:
+            sent.update({k: v for k, v in update.items()
+                         if k in ("ledger_status", "ledger_id", "document")})
+    return {"checked": len(rows), "changed": changed}
+
+
+@app.get("/api/settlements/{reference}")
+def api_settlement(reference: str):
+    """One settlement, as A2X opens one: summary, fee lines, the document."""
+    space = ws()
+    row, cycle, entry, result = _find_settlement(reference)
+    view = settlements.present(row)
+    profile = space.profile()
+    accounts = _accounts(profile.ledger)
+
+    # What Xero holds, where Fynn may no longer change it; what it would send,
+    # where it still may.
+    frozen = bool(row.get("posted_at")) and not settlements.ledger_allows(row)[0]
+    shown = row.get("posted_lines") if frozen else row.get("lines")
+    document = [
+        {**l, "code": getattr(accounts.get(l["account"]), "code", "") or "",
+         "tax": getattr(accounts.get(l["account"]), "tax", "") or ""}
+        for l in (shown or [])
+    ]
+
+    exceptions = []
+    if cycle is not None and result is not None:
+        exceptions = [{"key": e.key, "kind": e.kind, "amount": e.amount, "why": e.why}
+                      for e in result.exceptions if not e.resolved]
+
+    files = []
+    if cycle is not None and entry is not None:
+        files = sorted({l.source_ref for l in settlements.lines_of(cycle, entry)
+                        if l.source_ref})
+    return {
+        **view,
+        "document_lines": document,
+        "document_frozen": frozen,
+        "breakdown": (settlements.breakdown(cycle, entry, result, accounts)
+                      if entry is not None else []),
+        "line_count": (len(settlements.lines_of(cycle, entry))
+                       if entry is not None else 0),
+        "exceptions": exceptions,
+        "files": files,
+        "trail": [r for r in (cycle.trail.to_dicts() if cycle is not None else [])
+                  if entry is None or r["kind"] != "post"
+                  or reference in r["message"]],
+        "available": entry is not None,
+    }
+
+
+@app.get("/api/settlements/{reference}/raw")
+def api_settlement_raw(reference: str):
+    """The settlement's own rows from the files it came from, as a download."""
+    _row, cycle, entry, _result = _find_settlement(reference)
+    if cycle is None or entry is None:
+        raise HTTPException(404, "The files behind this settlement are not available.")
+    return Response(
+        content=settlements.raw_csv(settlements.lines_of(cycle, entry)),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{reference.lower()}-raw.csv"'},
+    )
+
+
+@app.post("/api/settlements/{reference}/post")
+def api_post_settlement(reference: str):
+    """Send one settlement to the ledger — A2X's "Post to Xero" on a single row."""
+    row, cycle, entry, _result = _find_settlement(reference)
+    if cycle is None or entry is None:
+        raise HTTPException(409, "Fynn cannot rebuild this settlement from its files.")
+    sendable, why = settlements.can_send(row)
+    if not sendable:
+        raise HTTPException(409, why)
+    replaces = {}
+    if (row.get("ledger_status") or "").upper() in settlements.GONE_FROM_LEDGER:
+        replaces[reference] = row.get("ledger_id") or "voided"
+    out = _send(cycle, [entry], replaces)
+    return {"adapter": get_adapter(_profile().ledger).name, "entries": out,
+            "settlement": api_settlement(reference)}
+
+
+@app.post("/api/cycles/{month}/open")
+def api_open_month(month: str):
+    """Put a month on the review screen, without touching any other month."""
+    cycle = ws().open_month(month)
+    if cycle is None:
+        raise HTTPException(404, f"No retained files for {month}.")
+    return cycle.digest()
 
 
 class AccountMapRequest(BaseModel):

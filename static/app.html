@@ -331,6 +331,46 @@ padding:8px 4px}
 color:var(--ledger);display:grid;place-items:center;font-size:11px;margin-top:1px}
 .ob-note{font-size:12px;color:var(--faint);margin-top:14px;line-height:1.5}
 
+/* ── settlements ──
+   One row per payout, as A2X lists them. The status pill carries where the
+   document stands in Xero too, because that is the question after posting. */
+.filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.filters select{width:auto;min-width:140px;padding:7px 10px;font-size:13px}
+.filters .grow{flex:1}
+.filters .st{font-size:12px;color:var(--faint)}
+.tablewrap{overflow-x:auto;border:1px solid var(--rule);border-radius:var(--r-sm)}
+.st-t{width:100%;border-collapse:collapse;font-size:13px}
+.st-t th{text-align:left;font-weight:700;color:var(--slate);font-size:10.5px;padding:10px 12px;
+border-bottom:1px solid var(--ruleF);text-transform:uppercase;letter-spacing:.055em;
+background:var(--panel2);white-space:nowrap}
+.st-t td{padding:11px 12px;border-bottom:1px solid var(--rule);vertical-align:middle}
+.st-t tbody tr:last-child td{border-bottom:none}
+.st-t tbody tr:hover{background:var(--panel2)}
+.st-t .num{text-align:right;white-space:nowrap}
+.st-t a.per{color:var(--link);font-weight:500;text-decoration:none;white-space:nowrap}
+.st-t a.per:hover{text-decoration:underline}
+.st-t .sm{font-size:12px;color:var(--faint)}
+.st-t .ref{font:11.5px "IBM Plex Mono",monospace;color:var(--faint);margin-top:2px}
+.st-t td.act{white-space:nowrap;text-align:right}
+.st-t td.act button{padding:5px 11px;font-size:12px}
+.st-t td.act a{font-size:12px;color:var(--link);text-decoration:none;margin-left:8px}
+.st-t tr.total td{font-weight:600;border-top:1px solid var(--ruleF)}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
+padding:3px 9px;border-radius:99px;white-space:nowrap;background:var(--bubF);color:var(--slate)}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.needs_review,.pill.changed{background:var(--flagBg);color:var(--flag)}
+.pill.ready{background:var(--linkBg);color:var(--link)}
+.pill.draft,.pill.approved{background:var(--ledgerBg);color:var(--ledgerHi)}
+.pill.reconciled{background:var(--ledger);color:#fff}
+.pill.voided{background:var(--dangerBg);color:var(--danger)}
+.summary{border:1px solid var(--rule);border-radius:var(--r-sm);background:var(--panel2);
+padding:16px 18px;margin-bottom:22px;font-size:13.5px}
+.summary p+p{margin-top:6px}
+.summary .act{margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.summary .st{font-size:12.5px;color:var(--slate)}
+.summary a{color:var(--link)}
+.empty{padding:40px 16px;text-align:center;color:var(--slate);font-size:13.5px}
+
 @media(max-width:920px){
   .stage{flex-direction:column;align-items:stretch;padding:18px 14px 48px}
   .main,.main.wide{width:auto;flex:1 1 auto;padding:22px 20px 26px}
@@ -371,7 +411,7 @@ color:var(--ledger);display:grid;place-items:center;font-size:11px;margin-top:1p
 const $=s=>document.querySelector(s);
 const fmt=n=>(n<0?"−":"")+Math.abs(n).toFixed(2);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let S=null, TAB="cycle", ACTIVE=null, HISTORY=[], BUSY=false;
+let S=null, TAB="settlements", ACTIVE=null, HISTORY=[], BUSY=false;
 
 // Served by the API so the dropdown and the explainer offer the same accounts.
 // The fallback is only for the moment before state has loaded.
@@ -403,22 +443,25 @@ async function load(){
    Every view has a URL. Uploading is a step you take from somewhere and come
    back from, not a place you live, so it is reached by a button and keeps a
    Back control rather than sitting in the tab bar beside the standing views. */
-const VIEWS={cycle:viewCycle, upload:viewUpload, rules:viewRules,
-             accounts:viewAccounts, settings:viewSettings};
+const VIEWS={settlements:viewSettlements, settlement:viewSettlement, cycle:viewCycle,
+             upload:viewUpload, rules:viewRules, accounts:viewAccounts, settings:viewSettings};
 // Upload and Rules are not places you live: one is a step you take and come
 // back from, the other a reference you consult. Both keep a route and a Back
 // control, and neither takes a seat in the tab bar beside the standing views.
-const TABS=[["cycle","Cycle"],["accounts","Accounts"],["settings","Settings"]];
-// Where Upload's Back returns to: wherever you opened it from.
-let BACK_TO="cycle";
-const BACK_LABEL={cycle:"Cycle",accounts:"Accounts",settings:"Settings"};
+// Settlements is where a firm lives, as in A2X: every payout, every month. A
+// month's review and one settlement's detail are places you open from it and
+// come back from, so they keep a Back control rather than a tab.
+const TABS=[["settlements","Settlements"],["accounts","Accounts"],["settings","Settings"]];
+// Where Back returns to: whichever standing view you opened it from.
+let BACK_TO="settlements";
+const BACK_LABEL={settlements:"Settlements",accounts:"Accounts",settings:"Settings"};
 
 /* The control that returns from a view reached by a button rather than a tab. */
 function backControl(){
   return `<button class="back" id="back">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M15 18l-6-6 6-6"/></svg>${esc(BACK_LABEL[BACK_TO]||"Cycle")}</button>`;
+      <path d="M15 18l-6-6 6-6"/></svg>${esc(BACK_LABEL[BACK_TO]||"Settlements")}</button>`;
 }
 
 function wireBack(){
@@ -428,9 +471,14 @@ function wireBack(){
   b.onclick=()=>{ if(history.length>1) history.back(); else go(BACK_TO); };
 }
 
+/* The query part of the hash: #/settlement?ref=JE-LAZ-… */
+function param(name){
+  return new URLSearchParams((location.hash||"").split("?")[1]||"").get(name)||"";
+}
+
 function route(){
   const name=(location.hash||"").replace(/^#\/?/,"").split("?")[0];
-  return VIEWS[name] ? name : "cycle";
+  return VIEWS[name] ? name : "settlements";
 }
 
 function go(name){
@@ -442,17 +490,17 @@ function go(name){
 
 function render(){
   TAB=route();
-  if(TAB!=="upload" && TAB!=="rules") BACK_TO=TAB;
-  $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
+  if(TABS.some(([k])=>k===TAB)) BACK_TO=TAB;
+  $("#firmname").textContent = S.firm.firm;
   $("#whoami").textContent = S.user ? S.user.name || S.user.email : "";
   $("#whoami").title = S.user ? S.user.email : "";
   $("#tabs").innerHTML = TABS.map(([k,l])=>
-    `<button class="tab${TAB===k?" on":""}" data-tab="${k}">${l}</button>`).join("")
+    `<button class="tab${(TAB===k||(k==="settlements"&&(TAB==="settlement"||TAB==="cycle")))?" on":""}" data-tab="${k}">${l}</button>`).join("")
     + `<a class="tab out" href="/logout">Sign out</a>`;
   document.querySelectorAll("button.tab").forEach(b=>b.onclick=()=>{
     closeDrawer(); go(b.dataset.tab);
   });
-  const wide = TAB==="accounts";
+  const wide = ["accounts","settlements","settlement"].includes(TAB);
   $("#main").classList.toggle("wide", wide);
   document.querySelector(".stage").classList.toggle("wide", wide);
   VIEWS[TAB]();
@@ -462,10 +510,216 @@ function render(){
 // is a real history entry rather than a variable.
 addEventListener("hashchange", ()=>{ closeDrawer(); render(); });
 
+/* ── settlements ──
+   Every payout Fynn has seen, newest first. A month's exceptions still decide
+   whether its payouts can post, so a row that needs review opens the month. */
+let SETTLEMENTS=null, SFILTER={cycle:"",platform:"",status:""}, CHECKED=false;
+
+function sendLabel(){ return S.firm.ledger==="xero" ? "Post to Xero" : "Dry run"; }
+function pill(r){ return `<span class="pill ${esc(r.status)}">${esc(r.status_label)}</span>`; }
+function money(r){ return `<span class="num">${fmt(r.total)}</span>`; }
+
+async function viewSettlements(){
+  if(!SETTLEMENTS) $("#main").innerHTML=`<p class="loading">Loading settlements…</p>`;
+  try{ SETTLEMENTS=await api("/api/settlements"); }
+  catch(e){ $("#main").innerHTML=`<p class="loading">${esc(e.message)}</p>`; return; }
+  if(TAB!=="settlements") return;
+  drawSettlements();
+  // Once per visit: ask Xero what became of what Fynn sent. The list is drawn
+  // first so nobody waits on Xero to see their own settlements.
+  if(!CHECKED){
+    CHECKED=true;
+    try{
+      const r=await api("/api/settlements/refresh",{method:"POST"});
+      SETTLEMENTS.checkNote = r.error ? r.error
+        : r.checked ? `Checked ${r.checked} in Xero just now${r.changed?` — ${r.changed} changed`:""}.` : "";
+      if(r.changed) SETTLEMENTS=Object.assign(await api("/api/settlements"),
+                                              {checkNote:SETTLEMENTS.checkNote});
+      if(TAB==="settlements") drawSettlements();
+    }catch(e){}
+  }
+}
+
+function drawSettlements(){
+  const L=SETTLEMENTS, all=L.settlements;
+  const rows=all.filter(r=>(!SFILTER.cycle||r.cycle===SFILTER.cycle)
+    &&(!SFILTER.platform||r.platform===SFILTER.platform)
+    &&(!SFILTER.status||r.status===SFILTER.status));
+  const review=L.counts.needs_review||0, ready=L.counts.ready||0;
+  const opt=(v,label,cur)=>`<option value="${esc(v)}"${v===cur?" selected":""}>${esc(label)}</option>`;
+
+  let h=`<div class="head"><h1>Settlements</h1>
+    <span class="headright">${review?`<span class="count" style="background:var(--flagBg);color:var(--flag)"><b class="num">${review}</b> need review</span>`
+      : ready?`<span class="count"><b class="num">${ready}</b> ready to post</span>`:""}
+      <button class="go" id="toupload">Upload files</button></span></div>
+    <p class="sub">Every payout, from every month. Each becomes one document in
+    ${S.firm.ledger==="xero"?"Xero":"your ledger"}, which is matched to the bank deposit there.</p>`;
+
+  if(!all.length){
+    h+=`<div class="tablewrap"><div class="empty">
+      <p>No settlements yet. Upload a settlement export and each payout in it appears here.</p>
+      <div class="acts" style="justify-content:center;margin-top:14px">
+        <button class="go" id="toupload2">Upload a file</button>
+        <button id="sample">Try the sample cycle</button></div></div></div>`;
+    $("#main").innerHTML=h;
+    $("#toupload").onclick=$("#toupload2").onclick=()=>go("upload");
+    $("#sample").onclick=async()=>{ await api("/api/cycle/sample",{method:"POST"}); await load(); go("cycle"); };
+    return;
+  }
+
+  h+=`<div class="filters">
+    <select id="f-cycle" aria-label="Month">${opt("","All months",SFILTER.cycle)}${L.months.map(m=>opt(m,m,SFILTER.cycle)).join("")}</select>
+    ${L.platforms.length>1?`<select id="f-platform" aria-label="Platform">${opt("","All platforms",SFILTER.platform)}${L.platforms.map(m=>opt(m,m,SFILTER.platform)).join("")}</select>`:""}
+    <select id="f-status" aria-label="Status">${opt("","Any status",SFILTER.status)}${
+      Object.entries(L.labels).filter(([k])=>L.counts[k]).map(([k,v])=>opt(k,`${v} (${L.counts[k]})`,SFILTER.status)).join("")}</select>
+    <span class="grow"></span><span class="st" id="checknote">${esc(L.checkNote||"")}</span></div>`;
+
+  h+=`<div class="tablewrap"><table class="st-t"><thead><tr>
+    <th>Settlement period</th><th>Platform</th><th>Month</th><th class="num">Total</th>
+    <th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    const ref=encodeURIComponent(r.reference);
+    let act="";
+    if(r.action==="review") act=`<button data-review="${esc(r.cycle)}">Review ${esc(r.cycle)}</button>`;
+    else if(r.action==="post") act=`<button class="go" data-post="${ref}">${sendLabel()}</button>`;
+    else if(r.action==="resend") act=`<button data-post="${ref}">${r.status==="prepared"?sendLabel():"Re-send"}</button>`;
+    if(r.ledger_url) act+=`<a href="${esc(r.ledger_url)}" target="_blank" rel="noopener">View in Xero ↗</a>`;
+    h+=`<tr><td><a class="per" href="#/settlement?ref=${ref}">${esc(r.period)}</a>
+        <div class="ref">${esc(r.reference)}</div></td>
+      <td>${esc(r.platform)}</td><td>${esc(r.cycle)}</td>
+      <td class="num">${money(r)}</td><td>${pill(r)}</td><td class="act">${act}</td></tr>`;
+  });
+  if(!rows.length) h+=`<tr><td colspan="6" class="empty">Nothing matches these filters.</td></tr>`;
+  h+=`</tbody></table></div>
+    <p class="note">A settlement needing review shares its month's open exceptions:
+    they change the payout, so none of that month's settlements can post until they are decided.</p>`;
+
+  $("#main").innerHTML=h;
+  $("#toupload").onclick=()=>go("upload");
+  ["cycle","platform","status"].forEach(k=>{
+    const el=$("#f-"+k); if(el) el.onchange=()=>{ SFILTER[k]=el.value; drawSettlements(); };
+  });
+  document.querySelectorAll("[data-review]").forEach(b=>b.onclick=()=>reviewMonth(b.dataset.review, b));
+  document.querySelectorAll("[data-post]").forEach(b=>b.onclick=()=>postSettlement(decodeURIComponent(b.dataset.post), b));
+}
+
+async function reviewMonth(month, btn){
+  if(btn) btn.disabled=true;
+  try{
+    await api("/api/cycles/"+encodeURIComponent(month)+"/open",{method:"POST"});
+    S=await api("/api/state"); closeDrawer(); go("cycle");
+  }catch(e){ if(btn) btn.disabled=false; flash("Could not open "+month, e.message, "bad"); }
+}
+
+async function postSettlement(reference, btn){
+  const was=btn.textContent; btn.disabled=true; btn.textContent="Sending…";
+  try{
+    const r=await api("/api/settlements/"+encodeURIComponent(reference)+"/post",{method:"POST"});
+    flash(r.adapter==="dry-run" ? "Prepared via dry run" : "Sent to Xero as a draft",
+      r.adapter==="dry-run" ? `${reference} — nothing was sent to a ledger.`
+        : `${reference}. Approve it in Xero, then match it to the deposit in bank reconciliation.`, "ok");
+    SETTLEMENTS=null; render();
+  }catch(e){
+    btn.disabled=false; btn.textContent=was;
+    flash("Could not send "+reference, e.message, "bad");
+  }
+}
+
+async function viewSettlement(){
+  const ref=param("ref");
+  $("#main").innerHTML=backControl()+`<p class="loading">Loading…</p>`;
+  wireBack();
+  let d;
+  try{ d=await api("/api/settlements/"+encodeURIComponent(ref)); }
+  catch(e){ $("#main").innerHTML=backControl()+`<p class="loading">${esc(e.message)}</p>`; wireBack(); return; }
+  if(TAB!=="settlement" || param("ref")!==ref) return;
+
+  const doc = d.total<0 ? "bill" : "invoice";
+  const period = d.period.replace(/\s+-\s+/," to ");
+  let h=backControl()+`<div class="head"><h1>Settlement — ${esc(period)}</h1>
+    <span class="headright">${pill(d)}</span></div>
+    <p class="sub">${esc(d.platform)} · closes in ${esc(d.cycle)} · <span class="num">${esc(d.reference)}</span></p>`;
+
+  h+=`<div class="summary">
+    <p>One ${doc} for this settlement, totalling <b class="num">${fmt(Math.abs(d.total))}</b>${
+      d.total<0?" — the fees were more than the sales, so Xero receives a bill":""}.</p>`;
+  if(d.available) h+=`<p>Built from ${d.line_count} settlement lines in ${d.files.map(f=>`<b>${esc(f)}</b>`).join(", ")||"the uploaded file"}.
+      You can <a href="/api/settlements/${encodeURIComponent(d.reference)}/raw">download the raw data</a>.</p>`;
+  else h+=`<p>The files behind this settlement could not be re-read, so only what was sent is shown.</p>`;
+  if(d.posted_at){
+    const when=String(d.posted_at).slice(0,10);
+    const where=d.ledger==="dry-run" ? "Prepared via dry run" : `Sent to ${d.ledger==="xero"?"Xero":esc(d.ledger)}`;
+    h+=`<p>${where} on ${esc(when)}${d.posted_by?` by ${esc(d.posted_by)}`:""}${
+      d.ledger_status?` · Xero status <b>${esc(d.ledger_status)}</b>`:""}${
+      d.posted_total!==null && Math.abs(d.posted_total-d.total)>=0.005 ? ` · sent as <span class="num">${fmt(d.posted_total)}</span>`:""}${
+      d.ledger_url?` · <a href="${esc(d.ledger_url)}" target="_blank" rel="noopener">View in Xero ↗</a>`:""}</p>`;
+  }
+  const sendText = !d.posted_at ? sendLabel()
+    : d.status==="prepared" ? sendLabel() : `Re-send to ${S.firm.ledger==="xero"?"Xero":"ledger"}`;
+  h+=`<div class="act">`;
+  if(d.exceptions.length) h+=`<button class="go" id="s-review">Review ${esc(d.cycle)}</button>`;
+  else if(d.available) h+=`<button class="${d.posted_at?"":"go"}" id="s-post" ${d.can_send?"":"disabled"}>${sendText}</button>`;
+  h+=`<span class="st" id="s-status">${esc(d.why_not || (d.status==="changed"
+      ? "Decisions since it was sent changed this document. Re-sending updates the draft in Xero under the same number."
+      : d.status==="draft" ? "Approve it in Xero, then match it to the deposit in bank reconciliation." : ""))}</span></div></div>`;
+
+  if(d.exceptions.length){
+    h+=`<p class="sect" style="margin-bottom:10px">Open in ${esc(d.platform)} ${esc(d.cycle)} <span>${d.exceptions.length} to decide</span></p>
+      <div class="tablewrap" style="margin-bottom:22px"><table class="st-t"><tbody>${
+      d.exceptions.map(e=>`<tr><td>${esc(label(e))}<div class="sm">${esc(e.why)}</div></td>
+        <td class="num">${money({total:e.amount})}</td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  // What Xero holds: per account, in the invoice's own signs — money in positive.
+  const docLines=d.document_lines.filter(l=>!/clearing account$/i.test(l.account));
+  h+=`<p class="sect" style="margin-bottom:10px">${doc==="bill"?"Bill":"Invoice"} lines
+    <span>${d.document_frozen?"As it stands in Xero":"What Xero will receive"}</span></p>
+    <div class="tablewrap" style="margin-bottom:22px"><table class="st-t"><thead><tr>
+      <th>Account</th><th>Code</th><th>Tax</th><th class="num">Amount</th></tr></thead><tbody>${
+    docLines.map(l=>{
+      const signed=(l.side==="credit"?1:-1)*l.amount*(d.total<0?-1:1);
+      return `<tr><td>${esc(l.account)}</td><td class="num" style="text-align:left">${esc(l.code)||'<span class="warn">unmapped</span>'}</td>
+        <td>${esc(l.tax||"No tax")}</td><td class="num">${money({total:signed})}</td></tr>`;
+    }).join("")}
+    <tr class="total"><td colspan="3">Total — what the deposit should be</td><td class="num">${money({total:Math.abs(d.total)})}</td></tr>
+    </tbody></table></div>`;
+
+  if(d.breakdown.length){
+    h+=`<p class="sect" style="margin-bottom:10px">Sales and fees <span>From the settlement file</span></p>
+      <div class="tablewrap" style="margin-bottom:22px"><table class="st-t"><thead><tr>
+        <th>Description</th><th class="num">Lines</th><th class="num">Amount</th><th>Account</th><th>Tax</th></tr></thead><tbody>${
+      d.breakdown.map(b=>`<tr><td>${esc(b.label)}</td><td class="num">${b.count||""}</td><td class="num">${money({total:b.amount})}</td>
+        <td>${b.state==="open"?'<span class="tag">Needs review</span>':esc(b.account)}</td>
+        <td>${b.state==="open"?"":esc(b.tax||"No tax")}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  }
+
+  h+=`<p class="sect" style="margin-bottom:10px">Activity <span>Everything in ${esc(d.cycle)}</span></p>
+    <div class="trail">${d.trail.map(r=>`<div class="tr"><span class="dot" style="background:${
+      r.kind==="post"||r.kind==="decision"||r.kind==="rule"?"var(--ledger)":"var(--faint)"}"></span>
+      <span class="ts num">${esc(r.at.slice(0,10))} ${esc(r.at.slice(11,16))}</span><span>${esc(r.message)}</span></div>`).join("")
+      || `<p class="note">Nothing recorded yet.</p>`}</div>`;
+
+  $("#main").innerHTML=h;
+  wireBack();
+  if($("#s-review")) $("#s-review").onclick=()=>reviewMonth(d.cycle, $("#s-review"));
+  if($("#s-post")) $("#s-post").onclick=async()=>{
+    const b=$("#s-post"); b.disabled=true; $("#s-status").textContent="Sending…";
+    try{
+      await api("/api/settlements/"+encodeURIComponent(d.reference)+"/post",{method:"POST"});
+      SETTLEMENTS=null; viewSettlement();
+    }catch(e){
+      b.disabled=false;
+      $("#s-status").innerHTML=esc(e.message)+(/not mapped/i.test(e.message)
+        ? ` <a href="#/accounts" class="jview">Open Accounts →</a>` : "");
+    }
+  };
+}
+
 /* ── cycle ── */
 function viewCycle(){
   if(!S.cycle){
-    $("#main").innerHTML=`
+    $("#main").innerHTML=backControl()+`
       <div class="head"><h1>No cycle open</h1></div>
       <p class="sub">Upload a settlement export to start a close, or load the sample
       cycle to see how it works.</p>
@@ -473,14 +727,13 @@ function viewCycle(){
         <button class="go" id="toupload">Upload a file</button>
         <button id="sample">Load sample cycle</button>
       </div>`;
+    wireBack();
     $("#toupload").onclick=()=>go("upload");
-  if($("#triage")) $("#triage").onclick=proposeAll;
-  if($("#accept")) $("#accept").onclick=approveProposed;
     $("#sample").onclick=async()=>{ await api("/api/cycle/sample",{method:"POST"}); await load(); };
     return;
   }
   const D=S.cycle, done=D.open_exceptions===0;
-  let h=`<div class="head"><h1>Cycle ${esc(D.cycle)}</h1>
+  let h=backControl()+`<div class="head"><h1>Cycle ${esc(D.cycle)}</h1>
     <span class="headright"><span class="count"><b class="num">${D.lines_classified}</b> of
       <b class="num">${D.lines_total}</b> classified</span>
       <button id="toupload">Add files</button></span></div>
@@ -566,6 +819,7 @@ function viewCycle(){
           <span class="ledright pd-txt">${esc(p.payout||p.platform)}</span></div>`).join("")}
       </div>
       <div class="act"><button id="post">Post again</button>
+      <button id="toseen">See in settlements</button>
       <span class="st" id="poststatus">After deciding anything further, or if the
       ledger rejected these. Changed documents update the drafts under the same
       number; unchanged ones are not sent twice.</span>
@@ -590,10 +844,10 @@ function viewCycle(){
     <p class="sect" style="margin-top:26px;margin-bottom:10px">Audit trail
       <span><a href="/api/audit" style="color:var(--link)">Export working paper</a></span></p>
     <div class="trail" id="trail"><p class="note">Loading…</p></div>
-    <p class="note">${esc(D.retention)}</p>
-    <p class="note" style="margin-top:18px"><button id="clear">Close this cycle without posting</button></p>`;
+    <p class="note">${esc(D.retention)}</p>`;
 
   $("#main").innerHTML=h;
+  wireBack();
   $("#toupload").onclick=()=>go("upload");
   if($("#triage")) $("#triage").onclick=proposeAll;
   if($("#accept")) $("#accept").onclick=approveProposed;
@@ -617,10 +871,7 @@ function viewCycle(){
   document.querySelectorAll(".row").forEach(r=>r.onclick=()=>openExc(decodeURIComponent(r.dataset.k)));
   document.querySelectorAll(".jrow").forEach(b=>b.onclick=()=>toggleJE(b.dataset.je));
   if($("#post")) $("#post").onclick=post;
-  $("#clear").onclick=async()=>{
-    if(!confirm("Close the cycle without posting? Rules you have approved are kept.")) return;
-    await api("/api/cycle",{method:"DELETE"}); ACTIVE=null; closeDrawer(); await load();
-  };
+  if($("#toseen")) $("#toseen").onclick=()=>go("settlements");
   loadTrail();
 }
 
@@ -648,9 +899,11 @@ async function post(){
   try{
     const r=await api("/api/post",{method:"POST"});
     const refs=r.entries.map(e=>e.reference).join(", ");
-    st.textContent = r.adapter==="dry-run"
-      ? `Prepared via dry run — ${refs}. Nothing was sent to a ledger.`
-      : `Sent to ${r.adapter} as DRAFT — ${refs}.`;
+    const kept=(r.skipped||[]).length
+      ? ` ${r.skipped.length} left alone — already approved in the ledger.` : "";
+    st.textContent = (r.adapter==="dry-run"
+      ? `Prepared via dry run — ${refs||"nothing"}. Nothing was sent to a ledger.`
+      : `Sent to ${r.adapter} as DRAFT — ${refs||"nothing"}.`) + kept;
     loadTrail();
   }catch(e){
     btn.disabled=false;
@@ -854,7 +1107,6 @@ async function send(files){
     }
   }
   S=await api("/api/state");
-  $("#firmname").textContent = S.firm.firm + (S.cycle? " · cycle "+S.cycle.cycle : "");
   // Named `actions`, not `go`: a local called `go` shadows the router function
   // of that name, and the click handler below then calls a <div>.
   let actions = $("#toreview-wrap");
@@ -867,8 +1119,10 @@ async function send(files){
   }
   // Rebuilt rather than appended, so uploading twice does not leave two
   // buttons sharing one id.
-  actions.innerHTML = `<button class="go" id="toreview">Review the cycle →</button>`;
+  actions.innerHTML = `<button class="go" id="toreview">Review the cycle →</button>
+    <button id="tosettlements">See all settlements</button>`;
   $("#toreview").onclick = () => go("cycle");
+  $("#tosettlements").onclick = () => go("settlements");
 }
 
 /* ── rules ── */

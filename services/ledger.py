@@ -119,6 +119,8 @@ class LedgerAdapter(ABC):
     ) -> None:
         self.accounts = accounts
         self.connection = connection
+        # The ledger's id for a document this post replaces, if it was voided.
+        self.replaces = ""
 
     def idempotency_key(self, entry: JournalEntry) -> str:
         """Stable for a given entry, so a retry cannot create a second journal.
@@ -138,6 +140,12 @@ class LedgerAdapter(ABC):
             f"{l.account}:{l.side.value}:{l.amount:.2f}" for l in entry.lines
         )
         raw = f"{firm}|{self.name}|{entry.cycle}|{entry.reference}|{content}"
+        # A document voided in the ledger and sent again is the same content
+        # under the same number, and would be replayed as the voided one.
+        # Naming what it replaces makes it a new request; unset, every key is
+        # what it always was.
+        if self.replaces:
+            raw += f"|replaces:{self.replaces}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     @abstractmethod
@@ -510,6 +518,63 @@ def get_adapter(
     if cls is DryRunAdapter:
         return cls(accounts, connection, preview_for=preview_for)
     return cls(accounts, connection)
+
+
+# ── Reading back what happened to a document ──────────────────────────────────
+
+def fetch_invoice_statuses(connection, ids=(), numbers=()) -> dict[str, dict]:
+    """Where each Xero document stands now, keyed by its invoice number.
+
+    Posting is not the end of a settlement. The accountant approves the draft in
+    Xero and matches it to the bank deposit there, and Fynn hears about neither.
+    Asking is how the list can say "Reconciled" rather than "Sent" for ever —
+    Xero marks an invoice PAID once a bank line is matched to it.
+
+    By id where Fynn kept one. By number for documents sent before it did, which
+    is every document posted before settlements were recorded. Where a number
+    was sent twice — voided, then sent again — the live one wins.
+    """
+    if connection is None:
+        raise RuntimeError("Xero is not connected.")
+    token = connection.access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        **({"Xero-tenant-id": connection.org_id} if connection.org_id else {}),
+        "Accept": "application/json",
+    }
+    found: list[dict] = []
+    batches = [("IDs", list(ids)[i:i + 40]) for i in range(0, len(ids), 40)]
+    batches += [("InvoiceNumbers", list(numbers)[i:i + 40])
+                for i in range(0, len(numbers), 40)]
+    for param, chunk in batches:
+        if not chunk:
+            continue
+        response = httpx.get(
+            "https://api.xero.com/api.xro/2.0/Invoices",
+            params={param: ",".join(chunk), "summaryOnly": "true"},
+            headers=headers, timeout=30,
+        )
+        if response.status_code in (401, 403):
+            raise RuntimeError(
+                "Xero would not let Fynn read invoices. Reconnect Xero in Settings "
+                f"with invoice access. (Xero said: {response.status_code})")
+        if response.status_code >= 400:
+            raise RuntimeError(f"Xero refused the status check "
+                               f"({response.status_code}): {response.text[:200]}")
+        found.extend(response.json().get("Invoices") or [])
+
+    rank = {"PAID": 0, "AUTHORISED": 1, "SUBMITTED": 2, "DRAFT": 3, "VOIDED": 4, "DELETED": 5}
+    out: dict[str, dict] = {}
+    for invoice in found:
+        number = invoice.get("InvoiceNumber") or ""
+        if not number:
+            continue
+        status = (invoice.get("Status") or "").upper()
+        current = out.get(number)
+        if current is None or rank.get(status, 9) < rank.get(current["status"], 9):
+            out[number] = {"id": invoice.get("InvoiceID", ""), "status": status,
+                           "document": invoice.get("Type", "")}
+    return out
 
 
 # ── Reading the destination's chart of accounts ───────────────────────────────

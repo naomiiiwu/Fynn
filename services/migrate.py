@@ -47,6 +47,7 @@ APPLY = (
     "012_account_tax.sql",
     "013_resume_cycle.sql",
     "014_cycle_resolutions.sql",
+    "015_settlements.sql",
 )
 
 
