@@ -1,10 +1,10 @@
 -- Fynn — the whole schema, for a fresh Supabase project.
 --
 -- Paste this into the Supabase SQL editor and run it once. It is 005 + 007
--- through 015 already applied, so a new project does not have to replay a
+-- through 016 already applied, so a new project does not have to replay a
 -- rename.
 --
--- On a database that already has the 005 schema, run 007 through 015 instead
+-- On a database that already has the 005 schema, run 007 through 016 instead
 -- of this file; `create table if not exists` would skip the existing tables and
 -- leave firm_profiles keyed by the old `phone` column.
 --
@@ -51,6 +51,8 @@ create table if not exists firm_profiles (
     -- itself is in memory; this is what says whether to rebuild it from the
     -- retained files after a restart.
     open_cycle      text,
+    -- Send a settlement to the ledger as soon as it is ready, without a click.
+    auto_post       boolean not null default false,
     updated_at      timestamptz not null default now()
 );
 

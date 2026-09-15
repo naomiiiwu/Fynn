@@ -94,7 +94,8 @@ def save_firm(profile) -> bool:
         "ledger":          profile.ledger,
         "onboarding_step": profile.onboarding_step,
         "open_cycle":      profile.open_cycle,
-    }, optional=("open_cycle",))
+        "auto_post":       profile.auto_post,
+    }, optional=("open_cycle", "auto_post"))
     if ok:
         print(f"  [DB] Firm profile saved for {profile.id}")
     return ok

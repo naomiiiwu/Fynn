@@ -818,6 +818,7 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
         profile.open_cycle = parsed.cycle
         _profiles.save(profile)
     space.record(target)
+    space.auto_posted = _auto_post(target)
     return target
 
 
@@ -905,6 +906,48 @@ def _send(cycle: Cycle, entries: list, replaces: Optional[dict] = None) -> list[
 _posted_now: dict[tuple[str, str], dict] = {}
 
 
+def _auto_post(cycle: Optional[Cycle]) -> Optional[dict]:
+    """Send whatever in this month has just become ready, if the firm asked.
+
+    Called after anything that can make a settlement ready: an approval, a
+    payout supplied, a file uploaded. Sends the same documents Post would, one
+    path, so nothing about what goes out differs from pressing the button.
+
+    Ready means never sent, or a draft that no longer matches what was sent. A
+    document voided or deleted in Xero is not sent again: somebody removed it
+    there on purpose.
+
+    Never raises. A post that cannot go — an unmapped account, a disconnected
+    ledger — must not undo the approval that triggered it; it is reported back
+    and noted in the trail, and the settlement stays Ready to post.
+    """
+    if cycle is None or getattr(cycle, "sample", False):
+        return None
+    space = ws()
+    profile = space.profile()
+    if not profile.auto_post or profile.ledger != "xero":
+        return None
+
+    ready = {r["reference"] for r in
+             (settlements.present(row) for row in space.settlement_rows())
+             if r["cycle"] == cycle.cycle and r["status"] in ("ready", "changed")}
+    entries = [e for e, _r in settlements.documents(cycle, space.per_payout())
+               if e.reference in ready]
+    if not entries:
+        return None
+    if connections.get(space.id, "xero") is None:
+        why = "Xero is not connected. Reconnect it in Settings."
+    else:
+        try:
+            _send(cycle, entries)
+            return {"sent": [e.reference for e in entries]}
+        except HTTPException as exc:
+            why = str(exc.detail)
+    cycle.trail.add("post", f"Automatic post held — {why}", actor="Fynn")
+    return {"sent": [], "error": why,
+            "waiting": [e.reference for e in entries]}
+
+
 def _post_cycle() -> dict:
     """Post every platform's journal. Refuses while anything is open.
 
@@ -970,6 +1013,9 @@ class SettingsRequest(BaseModel):
     actor: str = ""
     platforms: list[str] = SUPPORTED_PLATFORMS
     ledger: str = "dry-run"
+    # Left out by setup, which saves settings as it goes and must not turn this
+    # off each time it does.
+    auto_post: Optional[bool] = None
 
 
 @app.get("/api/state")
@@ -1004,13 +1050,15 @@ async def api_upload(file: UploadFile = File(...), reported: str = Form("")):
     """Take one settlement export and fold it into the open cycle."""
     filename = file.filename or "upload.csv"
     raw = await file.read()
+    ws().auto_posted = None
     try:
         cycle = _ingest(raw, filename, reported)
     except SettlementParseError as exc:
         raise HTTPException(422, str(exc))
     d = cycle.digest()
     print(f"\n[Upload] {filename} → cycle {d['cycle']}, {d['open_exceptions']} open exception(s)")
-    return {"filename": filename, "cycle": d["cycle"], "digest": d}
+    return {"filename": filename, "cycle": d["cycle"], "digest": d,
+            "auto_post": getattr(ws(), "auto_posted", None)}
 
 
 @app.post("/api/cycle/sample")
@@ -1085,7 +1133,7 @@ def api_set_reported(req: ReportedRequest):
                     actor=space.profile().approver())
     update_settlement_reported(space.id, cycle.cycle, stated)
     space.record(cycle)
-    return cycle.digest()
+    return {**cycle.digest(), "auto_post": _auto_post(cycle)}
 
 
 @app.get("/api/digest")
@@ -1171,7 +1219,9 @@ def api_approve_batch(req: BatchApproveRequest):
         save_resolution(space.id, cycle.cycle, key, account, side.value, actor)
         applied.append({"key": key, "account": account})
     space.record(cycle)
-    return {"applied": applied, "failed": failed, "digest": cycle.digest()}
+    posted = _auto_post(cycle) if applied else None
+    return {"applied": applied, "failed": failed, "digest": cycle.digest(),
+            "auto_post": posted}
 
 
 @app.post("/api/approve")
@@ -1192,7 +1242,7 @@ def api_approve(req: ApproveRequest):
     # re-open a decision already made.
     save_resolution(ws().id, cycle.cycle, req.key, req.account, side.value, actor)
     ws().record(cycle)
-    return cycle.digest()
+    return {**cycle.digest(), "auto_post": _auto_post(cycle)}
 
 
 @app.post("/api/post")
@@ -1666,7 +1716,9 @@ def api_save_accounts(req: AccountMapRequest):
         value = value or {}
         amap.set(account, value.get("code", ""), value.get("name", ""),
                  value.get("tax", ""))
-    return api_get_accounts(target)
+    # A post held for an unmapped account is sent once the account is mapped,
+    # or mapping it would quietly put the Post button back.
+    return {**api_get_accounts(target), "auto_post": _auto_post(ws().cycle)}
 
 
 OAUTH_STATE_COOKIE = "fynn_oauth_state"
@@ -1903,6 +1955,8 @@ def api_save_settings(req: SettingsRequest):
     profile.platforms = [p for p in req.platforms if p in SUPPORTED_PLATFORMS] \
         or list(SUPPORTED_PLATFORMS)
     profile.ledger = req.ledger if req.ledger in SUPPORTED_LEDGERS else "dry-run"
+    if req.auto_post is not None:
+        profile.auto_post = req.auto_post
     # Saving settings no longer ends setup. Setup writes through this endpoint as
     # it goes — so that leaving for a ledger's consent screen does not lose what
     # was typed — and finishing it is a separate, deliberate act.

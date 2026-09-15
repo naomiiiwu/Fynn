@@ -81,7 +81,7 @@ def map_all(c):
 # The columns each migration adds. A write carrying one of these must degrade to
 # writing the row without it, never to losing the row.
 LATE_COLUMNS = {
-    "firm_profiles": ["open_cycle"],
+    "firm_profiles": ["open_cycle", "auto_post"],
     "settlement_files": ["reported"],
     "ledger_connections": ["scopes"],
     "account_mappings": ["tax"],
@@ -942,6 +942,79 @@ def delete_takes_drafts_out_of_xero_and_leaves_approved_ones_alone():
     from services.settlements import ledger_allows
     ok(not ledger_allows({"posted_at": "x", "ledger": "xero", "ledger_status": "PAID"})[0],
        "a reconciled invoice")
+
+
+@check("settlements")
+def a_resolved_month_posts_itself_only_when_the_firm_asked():
+    import main as app
+    from services import ledger
+    from tests.fakedb import FakeDB
+
+    class Connected:
+        org_id, org_name, scopes, connected_at, can_post = "org", "Org", "", "", True
+        def access_token(self): return "t"
+        def to_dict(self): return {"ledger": "xero", "org_name": "Org"}
+
+    sent = []
+    def fake_post(self, entry):
+        self._check(entry)
+        self._resolve(entry)
+        sent.append(entry.reference)
+        return {"status": "posted", "adapter": "xero", "reference": entry.reference,
+                "ledger_id": "id-" + entry.reference, "ledger_status": "DRAFT",
+                "document": "ACCREC"}
+
+    def firm(email, auto, mapped=True):
+        c = signup(client_for(FakeDB()), email)
+        c.put("/api/settings", json={"firm": "F", "ledger": "xero", "auto_post": auto,
+                                     "platforms": ["Lazada"]})
+        c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+        if mapped:
+            map_all(c)
+        return c
+
+    real = (ledger.XeroAdapter.post, app.connections.get)
+    try:
+        ledger.XeroAdapter.post = fake_post
+        app.connections.get = lambda f, l: Connected()
+
+        c = firm("auto-off@firm.com", False)
+        resolve_all(c)
+        eq(sent, [], "posted without the setting on")
+
+        c = firm("auto-on@firm.com", True, mapped=False)
+        eq(sent, [], "posted while exceptions were still open")
+        keys = [e["key"] for e in c.get("/api/state").json()["cycle"]["exceptions"]]
+        for key in keys[:-1]:
+            c.post("/api/approve", json={"key": key, "account": "Other Expense"})
+        eq(sent, [], "posted before the last exception")
+        map_all(c)
+        r = c.post("/api/approve", json={"key": keys[-1], "account": "Other Expense"}).json()
+        eq(len(sent), 4, "the four weekly settlements after the last decision")
+        eq(len(r["auto_post"]["sent"]), 4, "the approval did not say what was sent")
+        ok(all(x["status"] == "draft" for x in listed(c)), "not shown as drafts in Xero")
+
+        # Settings saved again by setup, which does not send auto_post, keep it on.
+        c.put("/api/settings", json={"firm": "F", "ledger": "xero", "platforms": ["Lazada"]})
+        ok(c.get("/api/settings").json()["auto_post"], "setup switched automatic posting off")
+
+        sent.clear()
+        c = firm("auto-unmapped@firm.com", True, mapped=False)
+        keys = [e["key"] for e in c.get("/api/state").json()["cycle"]["exceptions"]]
+        for key in keys:
+            last = c.post("/api/approve", json={"key": key, "account": "Other Expense"})
+        eq(last.status_code, 200, "an approval failed because the post could not go")
+        ok("not mapped" in last.json()["auto_post"]["error"], "no reason given for holding it")
+        eq(sent, [], "an unmapped entry was sent")
+        ok(all(x["status"] == "ready" for x in listed(c)), "held settlements not left ready")
+        accounts = c.get("/api/accounts").json()["accounts"]
+        r = c.put("/api/accounts", json={"mapping": {
+            a["account"]: {"code": str(300 + i), "name": a["account"], "tax": ""}
+            for i, a in enumerate(accounts)}}).json()
+        eq(len(r["auto_post"]["sent"]), 4, "mapping the account did not send what was held")
+    finally:
+        ledger.XeroAdapter.post, app.connections.get = real
+
 
 # ── runner ────────────────────────────────────────────────────────────────────
 

@@ -48,6 +48,7 @@ APPLY = (
     "013_resume_cycle.sql",
     "014_cycle_resolutions.sql",
     "015_settlements.sql",
+    "016_auto_post.sql",
 )
 
 

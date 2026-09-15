@@ -51,6 +51,9 @@ class FirmProfile:
     # whether it should be rebuilt from the retained files on the way back, and
     # is why closing a cycle stays closed rather than resurrecting on restart.
     open_cycle: Optional[str] = None
+    # Send each settlement to the ledger the moment it is ready to post. Off by
+    # default: it writes to a client's books without anyone pressing anything.
+    auto_post: bool = False
 
     def is_onboarding_complete(self) -> bool:
         return self.onboarding_step is None
@@ -66,6 +69,7 @@ class FirmProfile:
             "platforms": list(self.platforms),
             "ledger": self.ledger,
             "open_cycle": self.open_cycle,
+            "auto_post": self.auto_post,
             "complete": self.is_onboarding_complete(),
         }
 
@@ -90,6 +94,7 @@ class FirmProfileStore:
             ledger=data.get("ledger") or "dry-run",
             onboarding_step=data.get("onboarding_step", "ask_firm"),
             open_cycle=data.get("open_cycle") or None,
+            auto_post=bool(data.get("auto_post")),
         )
 
     def get(self, firm_id: str = WORKSPACE_ID) -> Optional[FirmProfile]:

@@ -220,6 +220,11 @@ font-weight:500}
 .field{margin-top:20px}
 .field label{display:block;font-size:12.5px;font-weight:600;margin-bottom:7px}
 .field .hint{font-size:12px;color:var(--faint);margin-top:7px;line-height:1.5}
+.field label.toggle{display:flex;gap:10px;align-items:flex-start;font-weight:400;
+font-size:13.5px;margin:0;cursor:pointer}
+.field label.toggle input{width:auto;flex:0 0 auto;margin-top:3px;accent-color:var(--ledger)}
+.field label.toggle b{font-weight:600;display:block}
+.field label.toggle .hint{display:block;margin-top:3px}
 .field label.pill{display:inline-flex;align-items:center;gap:7px;width:auto;
 border:1px solid var(--ruleF);border-radius:99px;padding:7px 14px;font-size:13px;
 font-weight:500;margin:0 6px 6px 0;cursor:pointer;user-select:none;
@@ -896,8 +901,9 @@ function viewCycle(){
       if(!v) return;
       $("#fix-save").disabled=true; $("#fix-status").textContent="Setting…";
       try{
-        await api("/api/cycle/reported",{method:"PUT",
+        const done=await api("/api/cycle/reported",{method:"PUT",
           headers:{"Content-Type":"application/json"},body:JSON.stringify({reported:v})});
+        announceAutoPost(done.auto_post);
         await load();
       }catch(e){
         $("#fix-save").disabled=false;
@@ -1017,6 +1023,7 @@ async function approveProposed(){
     const r=await api("/api/approve/batch",{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify({approvals:picked})});
     PROPOSALS={};
+    announceAutoPost(r.auto_post);
     if(r.failed.length) alert(r.failed.map(f=>f.key+": "+f.why).join("\n"));
     await load();
   }catch(e){ $("#accept").disabled=false; st.textContent=e.message; }
@@ -1089,8 +1096,9 @@ async function approve(){
   const account=$("#acct").value;
   const scope = ($("#wide") && $("#wide").checked) ? "category" : "label";
   try{
-    await api("/api/approve",{method:"POST",headers:{"Content-Type":"application/json"},
+    const done=await api("/api/approve",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({key:ACTIVE,account,save_rule:true,scope})});
+    announceAutoPost(done.auto_post);
     bubble(`Recorded to ${account}. Fynn will treat this the same way next cycle unless you say otherwise.`,"f");
     setTimeout(async()=>{ closeDrawer(); await load(); },1000);
   }catch(e){ bubble("Could not approve: "+e.message,"f"); }
@@ -1137,6 +1145,7 @@ async function send(files){
     fd.append("reported",$("#reported").value||"");
     try{
       const r=await api("/api/upload",{method:"POST",body:fd});
+      announceAutoPost(r.auto_post);
       const d=r.digest;
       row.innerHTML=`<span class="nm">${esc(f.name)}</span>
         <span class="ok">cycle ${esc(d.cycle)} · ${d.lines_total} lines ·
@@ -1299,6 +1308,8 @@ async function viewAccounts(){
           headers:{"Content-Type":"application/json"},body:JSON.stringify({mapping})});
         $("#a-status").textContent = r.unmapped.length
           ? `Saved. ${r.unmapped.length} still unmapped.` : "Saved. Every account is mapped.";
+        // Still mapping is not news; a post that went, or one that still cannot, is.
+        if(r.auto_post && (r.auto_post.sent.length || !r.unmapped.length)) announceAutoPost(r.auto_post);
         S=await api("/api/state");
       }catch(e){ $("#a-status").textContent=e.message; }
     };
@@ -1324,11 +1335,17 @@ function viewSettings(){
     <div class="field"><label>Ledger</label>
       <select id="s-ledger">
         <option value="dry-run"${f.ledger==="dry-run"?" selected":""}>Dry run — prepare the entry, post nothing</option>
-        <option value="xero"${f.ledger==="xero"?" selected":""}>Xero — DRAFT manual journal</option>
+        <option value="xero"${f.ledger==="xero"?" selected":""}>Xero — a draft invoice per settlement</option>
         <option value="quickbooks"${f.ledger==="quickbooks"?" selected":""}>QuickBooks Online — journal entry</option>
       </select>
       <p class="hint">Dry run returns the exact payload that would be sent. Choosing a
       live ledger needs it connected below, and every account mapped.</p></div>
+    <div class="field"><label class="toggle">
+      <input type="checkbox" id="s-auto" ${f.auto_post?"checked":""}>
+      <span><b>Send to Xero automatically</b>
+      <span class="hint">Each settlement goes to Xero as a draft the moment its last exception
+      is resolved, with no Post button to press. It is still approved in Xero before
+      anything is final. Only with Xero as the ledger.</span></span></label></div>
     <div id="ledgers"></div>
     <div id="signin"></div>
     <p class="sect" style="margin-top:30px;margin-bottom:10px">Rules</p>
@@ -1357,7 +1374,7 @@ function viewSettings(){
     try{
       await api("/api/settings",{method:"PUT",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({firm:$("#s-firm").value,actor:$("#s-actor").value,
-          platforms,ledger:$("#s-ledger").value})});
+          platforms,ledger:$("#s-ledger").value,auto_post:$("#s-auto").checked})});
       $("#s-status").textContent="Saved.";
       S=await api("/api/state");
       $("#firmname").textContent=S.firm.firm+(S.cycle?" · cycle "+S.cycle.cycle:"");
@@ -1723,6 +1740,17 @@ function obCollect(){
 /* A connection result is news about the page you are looking at, so it belongs
    on the page. alert() blocks, cannot be styled, and reads like a browser
    fault rather than an answer to the button you pressed. */
+/* What an automatic post did, after the click that triggered it. Silence would
+   leave the accountant wondering whether it happened; a held post has to say why. */
+function announceAutoPost(r){
+  if(!r) return;
+  if(r.sent && r.sent.length)
+    flash(`Sent to Xero automatically — ${r.sent.length} ${r.sent.length===1?"settlement":"settlements"}`,
+      `${r.sent.join(", ")}. Approve ${r.sent.length===1?"it":"them"} in Xero, then match to the deposit.`, "ok");
+  else if(r.error)
+    flash("Ready, but not sent to Xero", r.error + " Post it from Settlements once fixed.", "bad");
+}
+
 function flash(title, detail, kind){
   $("#flashwrap").innerHTML=`<div class="flash ${kind}">
     <span><b>${esc(title)}</b>${detail?esc(detail):""}</span>
