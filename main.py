@@ -518,7 +518,6 @@ class Workspace:
             print(f"  [Cycle] Resumed {month} for {self.id} "
                   f"from {len(rows)} retained file(s).")
             self.record(rebuilt)
-            self._adopt_posts(rebuilt)
         return rebuilt
 
     # ── settlements ──────────────────────────────────────────────────────────
@@ -584,44 +583,55 @@ class Workspace:
             sent = _posted_now.get((self.id, row["reference"]))
             if sent and not row.get("posted_at"):
                 row.update(sent)
+        self._adopt_posts(rows)
         return sorted(rows, key=settlements.sort_key, reverse=True)
 
-    def _adopt_posts(self, cycle: Cycle) -> None:
-        """Mark settlements posted from what posted_entries already says.
+    def _adopt_posts(self, rows: list[dict]) -> None:
+        """Show as sent whatever posted_entries says was sent.
 
-        Posts made before settlements were recorded left a row in posted_entries
-        and none here. Without adopting them January's documents — already in
-        Xero — would be listed as Ready to post.
+        posted_entries is the record of every post, and it predates settlements.
+        A settlement with no post of its own but a post in that record was sent
+        before settlements were recorded — or while their table did not exist
+        yet — and listing it as Ready to post invites a second copy into a
+        client's books. So the record is read on every listing, not trusted to
+        have been copied across once, and the copy is written back when it can
+        be.
         """
+        waiting = [r for r in rows if not r.get("posted_at")]
+        if not waiting:
+            return
         try:
-            from services.database import (
-                load_posted_entries, load_settlements, save_settlement)
-            rows = load_posted_entries(self.id, cycle.cycle)
-            if not rows:
-                return
-            already = {r["reference"] for r in load_settlements(self.id, cycle.cycle)
-                       if r.get("posted_at")}
+            from services.database import load_posted_entries, save_settlement
+            posts = load_posted_entries(self.id)            # newest first
         except Exception:
             return
         latest: dict[str, dict] = {}
-        for row in rows:                          # newest first
-            latest.setdefault(row.get("reference", ""), row)
-        for reference, row in latest.items():
-            if not reference or reference in already:
+        for post in posts:
+            latest.setdefault(post.get("reference", ""), post)
+        for row in waiting:
+            post = latest.get(row["reference"])
+            if post is None:
                 continue
-            lines = row.get("lines") or []
-            save_settlement(self.id, {
-                "reference": reference, "cycle": cycle.cycle,
-                "platform": row.get("platform", ""),
-                "ledger": row.get("adapter", ""),
+            lines = post.get("lines") or []
+            sent = {
+                "ledger": post.get("adapter", ""),
                 # Xero was only ever sent drafts. The status check corrects this
                 # the first time it runs.
-                "ledger_status": "DRAFT" if row.get("adapter") == "xero" else "",
+                "ledger_status": "DRAFT" if post.get("adapter") == "xero" else "",
                 "posted_total": settlements.total_of_lines(lines),
                 "posted_lines": lines,
-                "posted_at": row.get("posted_at") or datetime.now(timezone.utc).isoformat(),
-                "posted_by": row.get("actor", ""),
-            })
+                "posted_at": post.get("posted_at") or datetime.now(timezone.utc).isoformat(),
+                "posted_by": post.get("actor", ""),
+            }
+            row.update(sent)
+            save_settlement(self.id, {"reference": row["reference"],
+                                      "cycle": row.get("cycle", ""),
+                                      "platform": row.get("platform", ""), **sent})
+
+    def forget(self, month: str) -> None:
+        """Drop a month from memory, so the next read rebuilds it from storage."""
+        self._cycles.pop(month, None)
+        self._absent.discard(month)
 
     def profile(self) -> FirmProfile:
         profile, _ = _profiles.get_or_create(self.id)
@@ -737,6 +747,24 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     """
     space = ws()
     profile = space.profile()
+
+    # The same file twice is never a second settlement. Folding it in again
+    # changes nothing — its lines are already there — but storing it again
+    # leaves two copies behind one figure, and a reviewer tracing the figure
+    # back finds both. Compared by content, so a browser's "file (1).csv" is
+    # caught as well as the same name.
+    text = raw.decode("utf-8-sig", errors="replace")
+    try:
+        from services.database import load_settlement_files
+        earlier = next((r for r in load_settlement_files(space.id)
+                        if (r.get("csv_data") or "") == text), None)
+    except Exception:
+        earlier = None
+    if earlier is not None:
+        same = earlier.get("filename") == filename
+        raise HTTPException(409, (
+            f"Already uploaded{'' if same else ' as ' + str(earlier.get('filename'))}"
+            f" for {earlier.get('cycle')}. Nothing was added."))
 
     # An adjustments file names no marketplace anywhere, but the orders it
     # refers to are already in the open cycle. Offering those lets it be
@@ -1361,6 +1389,143 @@ def api_post_settlement(reference: str):
     out = _send(cycle, [entry], replaces)
     return {"adapter": get_adapter(_profile().ledger).name, "entries": out,
             "settlement": api_settlement(reference)}
+
+
+def _deletion(reference: str) -> dict:
+    """What deleting a settlement takes with it, and whether it may.
+
+    A settlement is not stored on its own: it is what a file produces. So what
+    is deleted is the upload behind it, and with it every settlement that upload
+    made — one Lazada statement is four weekly settlements, and removing one
+    week while its file stays would bring it back at the next rebuild.
+    """
+    space = ws()
+    row, cycle, entry, _result = _find_settlement(reference)
+    month = row.get("cycle", "")
+    names: set[str] = set()
+    refs = {reference}
+    if cycle is not None and entry is not None:
+        names = {l.source_ref for l in settlements.lines_of(cycle, entry) if l.source_ref}
+        for other, _r in settlements.documents(cycle, space.per_payout()):
+            if any(l.source_ref in names for l in settlements.lines_of(cycle, other)):
+                refs.add(other.reference)
+    try:
+        from services.database import load_settlement_files
+        files = [f for f in load_settlement_files(space.id, month)
+                 if f.get("filename") in names]
+    except Exception:
+        files = []
+
+    rows = [r for r in space.settlement_rows() if r["reference"] in refs]
+    # In a client's ledger and still live there. Deleting Fynn's copy would
+    # leave a document nothing in Fynn accounts for.
+    in_ledger = [r for r in rows if r.get("posted_at")
+                 and r.get("ledger") not in ("", "dry-run")
+                 and (r.get("ledger_status") or "").upper() not in settlements.GONE_FROM_LEDGER]
+    return {
+        "reference": reference,
+        "cycle": month,
+        "files": sorted(names) or [f.get("filename", "") for f in files],
+        "file_ids": [f["id"] for f in files if f.get("id")],
+        "settlements": [{"reference": r["reference"], "period": r.get("period", ""),
+                         "status": settlements.present(r)["status_label"]}
+                        for r in sorted(rows, key=settlements.sort_key)],
+        "allowed": not in_ledger,
+        "why_not": (
+            f"{len(in_ledger)} of these {'is' if len(in_ledger) == 1 else 'are'} in Xero "
+            f"({', '.join(r['reference'] for r in in_ledger)}). Delete or void "
+            f"{'it' if len(in_ledger) == 1 else 'them'} in Xero first, then open "
+            "Settlements again so Fynn sees it, and delete here."
+        ) if in_ledger else "",
+    }
+
+
+def _without_files(cycle: Cycle, names: set[str]) -> Optional[Cycle]:
+    """The same month without some files' lines, or None if nothing is left."""
+    keep = [l for l in cycle.lines if l.source_ref not in names]
+    if not keep:
+        return None
+    touched = {l.platform for l in cycle.lines if l.source_ref in names}
+    platforms = {l.platform for l in keep}
+    # A platform the deleted files never touched keeps its payout as it was; one
+    # they shared is left with what its remaining lines add up to.
+    stated = {p: (round(sum(l.amount for l in keep if l.platform == p), 2)
+                  if p in touched else cycle.stated.get(p, 0.0)) for p in platforms}
+    typed = {p: v for p, v in cycle.reported.items()
+             if p in platforms and p not in touched and p not in cycle.derived}
+    left = Cycle(lines=keep, reported_payouts=typed, store=cycle.store,
+                 prior_cycles=cycle.prior, cycle=cycle.cycle, firm=cycle.firm,
+                 firm_id=cycle.firm_id, stated_totals=stated)
+    left.resolutions = dict(cycle.resolutions)
+    left.posted = [p for p in cycle.posted if any(
+        l.platform.value == p.get("platform") for l in keep)]
+    left.trail = cycle.trail
+    left.run()
+    return left
+
+
+@app.get("/api/settlements/{reference}/delete")
+def api_preview_delete(reference: str):
+    """What Delete would remove, so the confirmation can say so before it happens."""
+    plan = _deletion(reference)
+    plan.pop("file_ids", None)
+    return plan
+
+
+@app.delete("/api/settlements/{reference}")
+def api_delete_settlement(reference: str):
+    """Delete the upload behind a settlement, and every settlement it made.
+
+    Rules the firm decided stay: they are about fee labels, not about this file,
+    and the next upload will want them. A month left with no files loses its
+    one-off decisions too, since they were about lines that are gone.
+    """
+    from services.database import (
+        delete_dry_run_posts, delete_resolutions, delete_settlement,
+        delete_settlement_file, load_settlement_files)
+    space = ws()
+    plan = _deletion(reference)
+    if not plan["allowed"]:
+        raise HTTPException(409, plan["why_not"])
+    month = plan["cycle"]
+
+    for file_id in plan["file_ids"]:
+        delete_settlement_file(space.id, file_id)
+    for item in plan["settlements"]:
+        delete_settlement(space.id, item["reference"])
+        delete_dry_run_posts(space.id, item["reference"])
+        _posted_now.pop((space.id, item["reference"]), None)
+
+    from services.database import _get_client
+    if _get_client() is None and month in space._cycles:
+        # Nothing stored to rebuild from, so take the deleted files' lines out
+        # of the month in memory. Rebuilding from storage here would find no
+        # files at all and delete every other platform's settlements with it.
+        left = _without_files(space._cycles[month], set(plan["files"]))
+        space.forget(month)
+        if left is not None:
+            space._cycles[month] = left
+            space.record(left)
+            return {"deleted_files": plan["files"],
+                    "deleted_settlements": [s["reference"] for s in plan["settlements"]]}
+
+    space.forget(month)
+    remaining = load_settlement_files(space.id, month) if month else []
+    if remaining:
+        # Rebuilt from what is left, which also removes any settlement the
+        # deleted file alone produced.
+        space.month(month)
+    else:
+        if month:
+            delete_resolutions(space.id, month)
+        profile = space.profile()
+        if space._current == month:
+            space.cycle = None
+        if profile.open_cycle == month:
+            profile.open_cycle = None
+            _profiles.save(profile)
+    return {"deleted_files": plan["files"],
+            "deleted_settlements": [s["reference"] for s in plan["settlements"]]}
 
 
 @app.post("/api/cycles/{month}/open")

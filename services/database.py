@@ -374,6 +374,53 @@ def delete_settlement(firm_id: str, reference: str) -> bool:
         return False
 
 
+def delete_settlement_file(firm_id: str, file_id: str) -> bool:
+    """Remove one retained upload. Only ever at the firm's own request."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("settlement_files").delete()
+         .eq("firm_id", firm_id).eq("id", file_id).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to remove file {file_id}: {exc}")
+        return False
+
+
+def delete_resolutions(firm_id: str, cycle: str) -> bool:
+    """Forget a month's one-off decisions, once nothing of the month is left."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("cycle_resolutions").delete()
+         .eq("firm_id", firm_id).eq("cycle", cycle).execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to remove decisions for {cycle}: {exc}")
+        return False
+
+
+def delete_dry_run_posts(firm_id: str, reference: str) -> bool:
+    """Forget dry runs of a document. Nothing was sent, so nothing is lost.
+
+    Real posts stay in posted_entries whatever happens to the settlement: they
+    are the record of what reached a client's ledger.
+    """
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        (client.table("posted_entries").delete()
+         .eq("firm_id", firm_id).eq("reference", reference)
+         .eq("adapter", "dry-run").execute())
+        return True
+    except Exception as exc:
+        print(f"  [DB] Failed to remove dry runs of {reference}: {exc}")
+        return False
+
+
 def load_settlement_months(firm_id: str) -> list[str]:
     """Every month with a retained file, without reading the files."""
     client = _get_client()

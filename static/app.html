@@ -354,6 +354,9 @@ background:var(--panel2);white-space:nowrap}
 .st-t td.act{white-space:nowrap;text-align:right}
 .st-t td.act button{padding:5px 11px;font-size:12px}
 .st-t td.act a{font-size:12px;color:var(--link);text-decoration:none;margin-left:8px}
+.st-t td.act button.del{margin-left:6px}
+button.ghost.del{color:var(--faint)}
+button.ghost.del:hover{color:var(--danger);border-color:var(--dangerRule);background:var(--dangerBg)}
 .st-t tr.total td{font-weight:600;border-top:1px solid var(--ruleF)}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;
 padding:3px 9px;border-radius:99px;white-space:nowrap;background:var(--bubF);color:var(--slate)}
@@ -584,6 +587,7 @@ function drawSettlements(){
     else if(r.action==="post") act=`<button class="go" data-post="${ref}">${sendLabel()}</button>`;
     else if(r.action==="resend") act=`<button data-post="${ref}">${r.status==="prepared"?sendLabel():"Re-send"}</button>`;
     if(r.ledger_url) act+=`<a href="${esc(r.ledger_url)}" target="_blank" rel="noopener">View in Xero ↗</a>`;
+    act+=`<button class="ghost del" data-del="${ref}" title="Delete this upload">Delete</button>`;
     h+=`<tr><td><a class="per" href="#/settlement?ref=${ref}">${esc(r.period)}</a>
         <div class="ref">${esc(r.reference)}</div></td>
       <td>${esc(r.platform)}</td><td>${esc(r.cycle)}</td>
@@ -601,6 +605,35 @@ function drawSettlements(){
   });
   document.querySelectorAll("[data-review]").forEach(b=>b.onclick=()=>reviewMonth(b.dataset.review, b));
   document.querySelectorAll("[data-post]").forEach(b=>b.onclick=()=>postSettlement(decodeURIComponent(b.dataset.post), b));
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>deleteSettlement(decodeURIComponent(b.dataset.del), b));
+}
+
+/* Delete removes the upload behind a settlement, so the confirmation names
+   every settlement that goes with it — one Lazada statement is four weeks. */
+async function deleteSettlement(reference, btn){
+  btn.disabled=true;
+  let plan;
+  try{ plan=await api("/api/settlements/"+encodeURIComponent(reference)+"/delete"); }
+  catch(e){ btn.disabled=false; flash("Could not delete "+reference, e.message, "bad"); return; }
+  if(!plan.allowed){
+    btn.disabled=false;
+    flash("Not deleted — it is in Xero", plan.why_not, "bad");
+    return;
+  }
+  const list=plan.settlements.map(x=>`  • ${x.period}  (${x.status})`).join("\n");
+  const files=plan.files.length ? plan.files.join(", ") : "this upload";
+  if(!confirm(`Delete ${files}?\n\nThis removes ${plan.settlements.length} `
+      + `${plan.settlements.length===1?"settlement":"settlements"}:\n${list}\n\n`
+      + `Rules your firm has decided are kept. Upload the file again to bring them back.`)){
+    btn.disabled=false; return;
+  }
+  try{
+    const r=await api("/api/settlements/"+encodeURIComponent(reference),{method:"DELETE"});
+    flash("Deleted", `${r.deleted_settlements.length} ${r.deleted_settlements.length===1?"settlement":"settlements"}`
+      + (r.deleted_files.length?` and ${r.deleted_files.join(", ")}`:"") + ".", "ok");
+    SETTLEMENTS=null; S=await api("/api/state");
+    if(TAB==="settlements") render(); else go("settlements");
+  }catch(e){ btn.disabled=false; flash("Could not delete "+reference, e.message, "bad"); }
 }
 
 async function reviewMonth(month, btn){
@@ -698,11 +731,14 @@ async function viewSettlement(){
     <div class="trail">${d.trail.map(r=>`<div class="tr"><span class="dot" style="background:${
       r.kind==="post"||r.kind==="decision"||r.kind==="rule"?"var(--ledger)":"var(--faint)"}"></span>
       <span class="ts num">${esc(r.at.slice(0,10))} ${esc(r.at.slice(11,16))}</span><span>${esc(r.message)}</span></div>`).join("")
-      || `<p class="note">Nothing recorded yet.</p>`}</div>`;
+      || `<p class="note">Nothing recorded yet.</p>`}</div>
+    <p class="note" style="margin-top:22px"><button class="ghost del" id="s-delete">Delete this upload</button>
+    Removes the file behind this settlement and every settlement it produced.</p>`;
 
   $("#main").innerHTML=h;
   wireBack();
   if($("#s-review")) $("#s-review").onclick=()=>reviewMonth(d.cycle, $("#s-review"));
+  $("#s-delete").onclick=()=>deleteSettlement(d.reference, $("#s-delete"));
   if($("#s-post")) $("#s-post").onclick=async()=>{
     const b=$("#s-post"); b.disabled=true; $("#s-status").textContent="Sending…";
     try{

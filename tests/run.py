@@ -807,6 +807,83 @@ def a_refund_is_traced_to_a_sale_in_an_earlier_month():
        f"January's sale was not found: {refund['evidence']}")
 
 
+
+@check("settlements")
+def the_same_file_twice_is_refused_under_any_name():
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "twice@firm.com")
+    eq(c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")}
+              ).status_code, 200, "first upload")
+    for name in (LAZADA, "lazada-account-statement-2026-01 (1).csv"):
+        r = c.post("/api/upload", files={"file": (name, sample_file(LAZADA), "text/csv")})
+        eq(r.status_code, 409, f"the same file again as {name}")
+    eq(db.count("settlement_files"), 1, "a second copy was stored")
+    eq(len(listed(c)), 4, "settlements after the repeats")
+
+
+@check("settlements")
+def posts_are_shown_as_sent_even_when_the_table_came_later():
+    """The settlements table was created after the app had loaded January, so
+    January's posts were never copied across and every row read Ready to post."""
+    import main as app
+    from tests.fakedb import FakeDB
+    db = FakeDB(missing_tables=["settlements"])
+    c = signup(client_for(db), "late-table@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    map_all(c)
+    c.post("/api/post")
+    app._posted_now.clear()
+    ok(all(r["posted_at"] for r in listed(c)), "posted while the table was missing")
+    db.missing_tables.clear()               # the table is created by hand
+    ok(all(r["posted_at"] for r in listed(c)), "posted once the table exists")
+    ok(all(r.get("posted_at") for r in db.rows.get("settlements", [])),
+       "what was sent was not written into the new table")
+
+
+@check("settlements")
+def deleting_a_settlement_removes_its_upload_and_everything_it_made():
+    import main as app
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "delete@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    c.post("/api/upload", files={"file": ("shopee-income-statement-2026-01.csv",
+            sample_file("shopee-income-statement-2026-01.csv"), "text/csv")})
+    week = next(r["reference"] for r in listed(c) if r["platform"] == "Lazada")
+    plan = c.get(f"/api/settlements/{week}/delete").json()
+    eq(len(plan["settlements"]), 4, "one Lazada file is four weekly settlements")
+    eq(plan["files"], [LAZADA], "the file named in the confirmation")
+    eq(c.delete(f"/api/settlements/{week}").status_code, 200, "delete")
+    eq([r["platform"] for r in listed(c)], ["Shopee"], "what is left")
+    eq(db.count("settlement_files"), 1, "the Lazada file was kept")
+    app._workspaces.clear()
+    eq([r["platform"] for r in listed(c)], ["Shopee"], "Lazada came back after a restart")
+    eq(c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")}
+              ).status_code, 200, "the deleted file could not be uploaded again")
+
+
+@check("settlements")
+def a_settlement_in_xero_is_not_deleted_until_it_is_voided_there():
+    from tests.fakedb import FakeDB
+    db = FakeDB()
+    c = signup(client_for(db), "delete-xero@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    map_all(c)
+    c.post("/api/post")
+    week = listed(c)[0]["reference"]
+    for row in db.rows["settlements"]:
+        row.update({"ledger": "xero", "ledger_status": "DRAFT"})
+    eq(c.delete(f"/api/settlements/{week}").status_code, 409,
+       "deleted while its drafts are still in Xero")
+    for row in db.rows["settlements"]:
+        row.update({"ledger_status": "DELETED"})
+    eq(c.delete(f"/api/settlements/{week}").status_code, 200,
+       "refused after the drafts were deleted in Xero")
+
+
 # ── runner ────────────────────────────────────────────────────────────────────
 
 def main() -> int:
