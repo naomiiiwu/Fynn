@@ -577,6 +577,36 @@ def fetch_invoice_statuses(connection, ids=(), numbers=()) -> dict[str, dict]:
     return out
 
 
+def delete_draft_invoice(connection, invoice_id: str) -> str:
+    """Delete one draft invoice or bill in Xero. Returns the status Xero reports.
+
+    Only a draft can be deleted — Xero's word for an approved one is voided,
+    and that is the accountant's call, not something a Delete button in another
+    app should do. Callers check the status first; Xero refuses anyway.
+    """
+    if connection is None:
+        raise RuntimeError("Xero is not connected.")
+    response = httpx.post(
+        "https://api.xero.com/api.xro/2.0/Invoices",
+        json={"Invoices": [{"InvoiceID": invoice_id, "Status": "DELETED"}]},
+        headers={
+            "Authorization": f"Bearer {connection.access_token()}",
+            **({"Xero-tenant-id": connection.org_id} if connection.org_id else {}),
+            "Accept": "application/json",
+        },
+        timeout=45,
+    )
+    if response.status_code in (401, 403):
+        raise RuntimeError(
+            "Xero would not let Fynn change invoices. Reconnect Xero in Settings "
+            f"with invoice access. (Xero said: {response.status_code})")
+    if response.status_code >= 400:
+        raise RuntimeError(f"Xero refused to delete the draft "
+                           f"({response.status_code}): {response.text[:300]}")
+    invoice = (response.json().get("Invoices") or [{}])[0]
+    return (invoice.get("Status") or "").upper()
+
+
 # ── Reading the destination's chart of accounts ───────────────────────────────
 
 def fetch_chart(ledger: str, connection) -> list[dict]:

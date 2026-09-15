@@ -865,24 +865,83 @@ def deleting_a_settlement_removes_its_upload_and_everything_it_made():
 
 
 @check("settlements")
-def a_settlement_in_xero_is_not_deleted_until_it_is_voided_there():
+def delete_takes_drafts_out_of_xero_and_leaves_approved_ones_alone():
+    import main as app
     from tests.fakedb import FakeDB
-    db = FakeDB()
-    c = signup(client_for(db), "delete-xero@firm.com")
-    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
-    resolve_all(c)
-    map_all(c)
-    c.post("/api/post")
-    week = listed(c)[0]["reference"]
-    for row in db.rows["settlements"]:
-        row.update({"ledger": "xero", "ledger_status": "DRAFT"})
-    eq(c.delete(f"/api/settlements/{week}").status_code, 409,
-       "deleted while its drafts are still in Xero")
-    for row in db.rows["settlements"]:
-        row.update({"ledger_status": "DELETED"})
-    eq(c.delete(f"/api/settlements/{week}").status_code, 200,
-       "refused after the drafts were deleted in Xero")
 
+    def posted_to_xero(email):
+        db = FakeDB()
+        c = signup(client_for(db), email)
+        c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+        resolve_all(c)
+        map_all(c)
+        c.post("/api/post")
+        for row in db.rows["settlements"]:
+            row.update({"ledger": "xero", "ledger_status": "DRAFT",
+                        "ledger_id": "id-" + row["reference"]})
+        app._posted_now.clear()
+        return db, c, listed(c)[0]["reference"]
+
+    xero = {}                                   # invoice id -> status, as Xero holds it
+    real = (app.fetch_invoice_statuses, app.delete_draft_invoice, app.connections.get)
+
+    def fetch(connection, ids=(), numbers=()):
+        return {i[3:]: {"id": i, "status": xero[i], "document": "ACCREC"} for i in ids}
+
+    def delete(connection, invoice_id):
+        if xero.get("fail") == invoice_id:
+            raise RuntimeError("boom")
+        xero[invoice_id] = "DELETED"
+        return "DELETED"
+
+    try:
+        app.fetch_invoice_statuses, app.delete_draft_invoice = fetch, delete
+
+        # Not connected: nothing can be deleted in Xero, so nothing is deleted.
+        app.connections.get = lambda firm, ledger: None
+        db, c, week = posted_to_xero("xero-off@firm.com")
+        eq(c.delete(f"/api/settlements/{week}").status_code, 409, "deleted with Xero disconnected")
+
+        class Connected:
+            org_id, org_name, scopes, connected_at, can_post = "org", "Org", "", "", True
+            def access_token(self): return "t"
+            def to_dict(self): return {"ledger": "xero", "org_name": "Org"}
+        app.connections.get = lambda firm, ledger: Connected()
+
+        # Drafts: gone from Xero and from Fynn in one click.
+        db, c, week = posted_to_xero("xero-drafts@firm.com")
+        xero.clear()
+        xero.update({"id-" + r["reference"]: "DRAFT" for r in db.rows["settlements"]})
+        plan = c.get(f"/api/settlements/{week}/delete").json()
+        eq(len(plan["xero_drafts"]), 4, "drafts named in the confirmation")
+        r = c.delete(f"/api/settlements/{week}")
+        eq(r.status_code, 200, "delete")
+        eq(sorted(xero.values()), ["DELETED"] * 4, "the drafts were left in Xero")
+        eq(listed(c), [], "the settlements were left in Fynn")
+
+        # Approved in Xero since the list was drawn: nothing happens anywhere.
+        db, c, week = posted_to_xero("xero-raced@firm.com")
+        xero.clear()
+        xero.update({"id-" + r["reference"]: "DRAFT" for r in db.rows["settlements"]})
+        xero["id-" + week] = "AUTHORISED"
+        eq(c.delete(f"/api/settlements/{week}").status_code, 409, "an approved invoice")
+        ok("AUTHORISED" not in [v for k, v in xero.items() if k != "id-" + week]
+           and "DELETED" not in xero.values(), "a draft was deleted before the refusal")
+        eq(len(listed(c)), 4, "Fynn deleted its settlements anyway")
+
+        # Xero fails part-way: Fynn keeps everything, so the delete can be retried.
+        xero.update({k: "DRAFT" for k in xero})
+        xero["fail"] = "id-" + listed(c)[-1]["reference"]
+        eq(c.delete(f"/api/settlements/{week}").status_code, 502, "a failure in Xero")
+        eq(len(listed(c)), 4, "Fynn forgot settlements Xero still holds")
+        eq(db.count("settlement_files"), 1, "the file went although Xero refused")
+    finally:
+        app.fetch_invoice_statuses, app.delete_draft_invoice, app.connections.get = real
+
+    # Already approved when the list was drawn: refused before anything is sent.
+    from services.settlements import ledger_allows
+    ok(not ledger_allows({"posted_at": "x", "ledger": "xero", "ledger_status": "PAID"})[0],
+       "a reconciled invoice")
 
 # ── runner ────────────────────────────────────────────────────────────────────
 

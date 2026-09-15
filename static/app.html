@@ -617,20 +617,23 @@ async function deleteSettlement(reference, btn){
   catch(e){ btn.disabled=false; flash("Could not delete "+reference, e.message, "bad"); return; }
   if(!plan.allowed){
     btn.disabled=false;
-    flash("Not deleted — it is in Xero", plan.why_not, "bad");
+    flash("Not deleted", plan.why_not, "bad");
     return;
   }
   const list=plan.settlements.map(x=>`  • ${x.period}  (${x.status})`).join("\n");
   const files=plan.files.length ? plan.files.join(", ") : "this upload";
   if(!confirm(`Delete ${files}?\n\nThis removes ${plan.settlements.length} `
       + `${plan.settlements.length===1?"settlement":"settlements"}:\n${list}\n\n`
+      + (plan.xero_drafts.length ? `It also deletes ${plan.xero_drafts.length} `
+         + `${plan.xero_drafts.length===1?"draft":"drafts"} in Xero. Anything approved there is never touched.\n\n` : "")
       + `Rules your firm has decided are kept. Upload the file again to bring them back.`)){
     btn.disabled=false; return;
   }
   try{
     const r=await api("/api/settlements/"+encodeURIComponent(reference),{method:"DELETE"});
     flash("Deleted", `${r.deleted_settlements.length} ${r.deleted_settlements.length===1?"settlement":"settlements"}`
-      + (r.deleted_files.length?` and ${r.deleted_files.join(", ")}`:"") + ".", "ok");
+      + (r.deleted_files.length?` and ${r.deleted_files.join(", ")}`:"")
+      + (r.deleted_in_xero.length?`, and ${r.deleted_in_xero.length} ${r.deleted_in_xero.length===1?"draft":"drafts"} in Xero`:"") + ".", "ok");
     SETTLEMENTS=null; S=await api("/api/state");
     if(TAB==="settlements") render(); else go("settlements");
   }catch(e){ btn.disabled=false; flash("Could not delete "+reference, e.message, "bad"); }
@@ -733,7 +736,7 @@ async function viewSettlement(){
       <span class="ts num">${esc(r.at.slice(0,10))} ${esc(r.at.slice(11,16))}</span><span>${esc(r.message)}</span></div>`).join("")
       || `<p class="note">Nothing recorded yet.</p>`}</div>
     <p class="note" style="margin-top:22px"><button class="ghost del" id="s-delete">Delete this upload</button>
-    Removes the file behind this settlement and every settlement it produced.</p>`;
+    Removes the file behind this settlement and every settlement it produced, and deletes their drafts in Xero.</p>`;
 
   $("#main").innerHTML=h;
   wireBack();

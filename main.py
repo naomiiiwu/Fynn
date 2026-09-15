@@ -67,7 +67,8 @@ from services.database import (
     save_settlement_file,
     update_settlement_reported,
 )
-from services.ledger import fetch_chart, fetch_invoice_statuses, get_adapter
+from services.ledger import (
+    delete_draft_invoice, fetch_chart, fetch_invoice_statuses, get_adapter)
 from utils.formatter import Cycle
 
 app = FastAPI(
@@ -1417,11 +1418,18 @@ def _deletion(reference: str) -> dict:
         files = []
 
     rows = [r for r in space.settlement_rows() if r["reference"] in refs]
-    # In a client's ledger and still live there. Deleting Fynn's copy would
-    # leave a document nothing in Fynn accounts for.
-    in_ledger = [r for r in rows if r.get("posted_at")
-                 and r.get("ledger") not in ("", "dry-run")
-                 and (r.get("ledger_status") or "").upper() not in settlements.GONE_FROM_LEDGER]
+    # In a client's ledger and still live there. A draft is still Fynn's, so
+    # Delete takes it out of Xero too. Anything past a draft is not: deleting
+    # Fynn's copy would leave a document nothing in Fynn accounts for, and
+    # voiding it is the accountant's decision.
+    live = [r for r in rows if r.get("posted_at")
+            and r.get("ledger") not in ("", "dry-run")
+            and (r.get("ledger_status") or "").upper() not in settlements.GONE_FROM_LEDGER]
+    drafts = [r for r in live
+              if (r.get("ledger_status") or "").upper() in settlements.EDITABLE_IN_LEDGER]
+    in_ledger = [r for r in live if r not in drafts]
+    if drafts and connections.get(space.id, "xero") is None:
+        in_ledger = live
     return {
         "reference": reference,
         "cycle": month,
@@ -1430,14 +1438,73 @@ def _deletion(reference: str) -> dict:
         "settlements": [{"reference": r["reference"], "period": r.get("period", ""),
                          "status": settlements.present(r)["status_label"]}
                         for r in sorted(rows, key=settlements.sort_key)],
+        "xero_drafts": [r["reference"] for r in drafts] if not in_ledger else [],
         "allowed": not in_ledger,
         "why_not": (
-            f"{len(in_ledger)} of these {'is' if len(in_ledger) == 1 else 'are'} in Xero "
-            f"({', '.join(r['reference'] for r in in_ledger)}). Delete or void "
-            f"{'it' if len(in_ledger) == 1 else 'them'} in Xero first, then open "
+            "Xero is not connected, so Fynn cannot delete its drafts there. "
+            "Reconnect Xero in Settings, or delete them in Xero first."
+            if drafts and in_ledger == live and connections.get(space.id, "xero") is None
+            else
+            f"{len(in_ledger)} of these {'is' if len(in_ledger) == 1 else 'are'} already "
+            f"approved or reconciled in Xero ({', '.join(r['reference'] for r in in_ledger)}). "
+            f"Void {'it' if len(in_ledger) == 1 else 'them'} in Xero first, then open "
             "Settlements again so Fynn sees it, and delete here."
         ) if in_ledger else "",
+        "_drafts": drafts,
     }
+
+
+def _delete_xero_drafts(drafts: list[dict]) -> None:
+    """Delete Fynn's drafts in Xero before Fynn forgets them.
+
+    Xero first, and nothing in Fynn until every one is gone: the opposite order
+    can leave a draft in a client's books that Fynn no longer lists.
+
+    The status is asked again at the moment of deleting, not taken from the
+    list. The list can be minutes old, and a draft approved in the meantime is
+    no longer a draft to delete.
+    """
+    if not drafts:
+        return
+    space = ws()
+    connection = connections.get(space.id, "xero")
+    if connection is None:
+        raise HTTPException(409, "Xero is not connected. Reconnect it in Settings.")
+    try:
+        found = fetch_invoice_statuses(
+            connection,
+            ids=[r["ledger_id"] for r in drafts if r.get("ledger_id")],
+            numbers=[r["reference"] for r in drafts if not r.get("ledger_id")])
+    except Exception as exc:
+        raise HTTPException(502, f"Could not check the drafts in Xero: {exc}")
+
+    moved = [r["reference"] for r in drafts
+             if (found.get(r["reference"]) or {}).get("status") not in
+             (None, *settlements.EDITABLE_IN_LEDGER, *settlements.GONE_FROM_LEDGER)]
+    if moved:
+        raise HTTPException(409, (
+            f"{', '.join(moved)} {'was' if len(moved) == 1 else 'were'} approved in Xero "
+            "since this list was loaded. Nothing was deleted. Void "
+            f"{'it' if len(moved) == 1 else 'them'} in Xero first."))
+
+    deleted = []
+    for row in drafts:
+        hit = found.get(row["reference"])
+        if hit is None or hit["status"] in settlements.GONE_FROM_LEDGER:
+            continue            # already gone from Xero; nothing to do there
+        try:
+            status = delete_draft_invoice(connection, hit["id"])
+        except Exception as exc:
+            done = f" {', '.join(deleted)} {'was' if len(deleted) == 1 else 'were'} " \
+                   "deleted in Xero first." if deleted else ""
+            raise HTTPException(502, (
+                f"Xero did not delete {row['reference']}: {exc}.{done} Nothing was "
+                "deleted in Fynn, so try again."))
+        save_settlement(space.id, {"reference": row["reference"],
+                                   "cycle": row.get("cycle", ""),
+                                   "platform": row.get("platform", ""),
+                                   "ledger_id": hit["id"], "ledger_status": status})
+        deleted.append(row["reference"])
 
 
 def _without_files(cycle: Cycle, names: set[str]) -> Optional[Cycle]:
@@ -1469,6 +1536,7 @@ def api_preview_delete(reference: str):
     """What Delete would remove, so the confirmation can say so before it happens."""
     plan = _deletion(reference)
     plan.pop("file_ids", None)
+    plan.pop("_drafts", None)
     return plan
 
 
@@ -1488,6 +1556,7 @@ def api_delete_settlement(reference: str):
     if not plan["allowed"]:
         raise HTTPException(409, plan["why_not"])
     month = plan["cycle"]
+    _delete_xero_drafts(plan["_drafts"])
 
     for file_id in plan["file_ids"]:
         delete_settlement_file(space.id, file_id)
@@ -1507,7 +1576,8 @@ def api_delete_settlement(reference: str):
             space._cycles[month] = left
             space.record(left)
             return {"deleted_files": plan["files"],
-                    "deleted_settlements": [s["reference"] for s in plan["settlements"]]}
+                    "deleted_settlements": [s["reference"] for s in plan["settlements"]],
+                    "deleted_in_xero": plan["xero_drafts"]}
 
     space.forget(month)
     remaining = load_settlement_files(space.id, month) if month else []
@@ -1525,7 +1595,8 @@ def api_delete_settlement(reference: str):
             profile.open_cycle = None
             _profiles.save(profile)
     return {"deleted_files": plan["files"],
-            "deleted_settlements": [s["reference"] for s in plan["settlements"]]}
+            "deleted_settlements": [s["reference"] for s in plan["settlements"]],
+            "deleted_in_xero": plan["xero_drafts"]}
 
 
 @app.post("/api/cycles/{month}/open")
