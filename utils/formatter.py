@@ -29,9 +29,17 @@ class Cycle:
         cycle: str = "2026-01",
         firm: str = "Your firm",
         firm_id: Optional[str] = None,
+        stated_totals: Optional[dict[Platform, float]] = None,
     ) -> None:
         self.lines = lines
-        self.reported = reported_payouts
+        # Two kinds of payout figure. One is stated — a platform's own payout
+        # row, or what the firm typed from the bank — and is the payout. The
+        # other is only what the file's rows add up to, and belongs to that file:
+        # a second file for the same platform adds to it rather than replacing
+        # it, or a one-line adjustments file would become the month's payout.
+        self.stated = dict(stated_totals or {})
+        self.reported = {**self.stated, **reported_payouts}
+        self.derived = set(self.stated) - set(reported_payouts)
         self.store = store
         self.prior = prior_cycles or []
         self.cycle = cycle
@@ -106,6 +114,7 @@ class Cycle:
         self,
         lines: list[SettlementLine],
         reported_payouts: Optional[dict[Platform, float]] = None,
+        stated_totals: Optional[dict[Platform, float]] = None,
     ) -> dict[Platform, CycleResult]:
         """Fold another settlement file into the open cycle.
 
@@ -116,8 +125,25 @@ class Cycle:
         existing = {l.key for l in self.lines}
         added = [l for l in lines if l.key not in existing]
         self.lines.extend(added)
+
+        for platform, total in (stated_totals or {}).items():
+            new = [l for l in added if l.platform == platform]
+            if not new:
+                continue          # the same file again: nothing to add
+            ours = [l for l in lines if l.platform == platform]
+            # Only the part of the file not already in the cycle counts. The
+            # row total where the whole file is new, since it can differ from
+            # the components; the new lines' own amounts where it overlaps.
+            if len(new) != len(ours):
+                total = sum(l.amount for l in new)
+            self.stated[platform] = round(self.stated.get(platform, 0.0) + total, 2)
+            if platform in self.derived or platform not in self.reported:
+                self.reported[platform] = self.stated[platform]
+                self.derived.add(platform)
+
         if reported_payouts:
             self.reported.update(reported_payouts)
+            self.derived -= set(reported_payouts)
 
         for src in sorted({l.source_ref for l in added if l.source_ref}):
             self.trail.add("source", f"Settlement file {src} ingested")

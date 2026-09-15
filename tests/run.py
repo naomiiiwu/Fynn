@@ -327,6 +327,83 @@ def a_posted_cycle_says_so():
     ok(posted[0]["at"], "no time recorded against the post")
 
 
+LAZADA = "lazada-account-statement-2026-01.csv"
+LAZADA_EXTRA = (b"Transaction Date,Transaction Type,Transaction Number,Order Number,"
+                b"Order Item ID,Item Name,Comment,Amount,Statement Period\n"
+                b"2026-01-10,Brand New Fee,MY199999,736057349,736057349-1,Cotton Tote Bag,,"
+                b"-12.34,05 Jan 2026 - 11 Jan 2026\n")
+
+
+def lazada_payout(c):
+    p = next(p for p in c.get("/api/state").json()["cycle"]["platforms"]
+             if p["platform"] == "Lazada")
+    return p["reported_payout"], p["residual"]
+
+
+@check("posting")
+def a_redeploy_keeps_the_payout_read_from_the_file():
+    """After a redeploy the Lazada payout came back as 0.00, reopening the whole
+    deposit as an unexplained residual and holding the close."""
+    import main as app
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "redeploy@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    resolve_all(c)
+    before = lazada_payout(c)
+    app._workspaces.clear()
+    eq(lazada_payout(c), before, "payout after a redeploy")
+    eq(c.get("/api/state").json()["cycle"]["open_exceptions"], 0, "exceptions reopened")
+
+
+@check("posting")
+def a_follow_up_file_adds_to_the_payout_instead_of_replacing_it():
+    """A one-line file for the same platform became the month's payout: -12.34."""
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "followup@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    c.post("/api/upload", files={"file": ("lazada-extra.csv", LAZADA_EXTRA, "text/csv")})
+    eq(lazada_payout(c)[0], 3182.25, "payout after a follow-up file")
+    # The same file again adds nothing.
+    c.post("/api/upload", files={"file": ("lazada-extra.csv", LAZADA_EXTRA, "text/csv")})
+    eq(lazada_payout(c)[0], 3182.25, "payout after the same file twice")
+
+
+@check("posting")
+def a_residual_is_written_off_once_not_once_per_payout():
+    from decimal import Decimal
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "residual-once@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")},
+           data={"reported": "Lazada=3000.00"})
+    resolve_all(c)
+    map_all(c)
+    entries = c.post("/api/post").json()["entries"]
+    total = sum(Decimal(str(l["UnitAmount"]))
+                for e in entries for l in e["document"]["Invoices"][0]["LineItems"])
+    eq(total, Decimal("3000.00"), "documents do not sum to the payout")
+
+
+@check("posting")
+def a_corrected_entry_is_not_replayed_as_the_old_one():
+    """A fee classified after the first post never reached Xero: the re-post
+    carried the same idempotency key, so Xero answered with the original."""
+    from models.account_map import AccountMap, LedgerAccount
+    from models.transaction import JournalEntry, JournalLine, Platform, Side
+    from services.ledger import XeroAdapter
+
+    def entry(fee):
+        return JournalEntry(reference="JE-LAZ-2026-01-X", cycle="2026-01",
+                            platform=Platform.LAZADA, lines=[
+            JournalLine(account="Lazada Clearing Account", side=Side.DEBIT, amount=100 - fee),
+            JournalLine(account="Other Expense", side=Side.DEBIT, amount=fee),
+            JournalLine(account="Sales Revenue", side=Side.CREDIT, amount=100)])
+
+    adapter = XeroAdapter(AccountMap("w", "xero", {}))
+    eq(adapter.idempotency_key(entry(5)), adapter.idempotency_key(entry(5)), "retry key")
+    ok(adapter.idempotency_key(entry(5)) != adapter.idempotency_key(entry(7)),
+       "a changed entry reuses the key of the one already sent")
+
+
 @check("posting")
 def an_entry_is_dated_in_the_period_it_belongs_to():
     """A January close was posted dated today, landing it in September."""

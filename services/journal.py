@@ -30,6 +30,7 @@ def build_journal(
     result: CycleResult,
     resolutions: dict[str, tuple[str, Side]] | None = None,
     reference: str | None = None,
+    include_residual: bool = True,
 ) -> JournalEntry:
     resolutions = resolutions or {}
     blocked = {e.key for e in result.exceptions if not e.resolved}
@@ -69,7 +70,7 @@ def build_journal(
     # the clearing account and lands where it was sent.
     residual_key = f"{platform.value}|{cycle}|residual"
     decided_residual = resolutions.get(residual_key)
-    if decided_residual is not None and abs(result.residual) >= 0.005:
+    if include_residual and decided_residual is not None and abs(result.residual) >= 0.005:
         account, _declared = decided_residual
         amount = -result.residual
         side = Side.CREDIT if amount > 0 else Side.DEBIT
@@ -143,10 +144,16 @@ def build_payout_journals(
 
     entries = []
     base = f"JE-{platform.value[:3].upper()}-{cycle}"
-    for payout, payout_lines in sorted(groups.items()):
+    ordered = sorted(groups.items())
+    for i, (payout, payout_lines) in enumerate(ordered):
+        # The residual is one figure for the whole cycle. Folded into every
+        # payout it was written off once per deposit — four times in a Lazada
+        # January — so it goes on the last statement only, and the documents
+        # still sum to the payout.
         entry = build_journal(
             platform, cycle, payout_lines, store, result, resolutions,
             reference=f"{base}-{_payout_slug(payout)}",
+            include_residual=i == len(ordered) - 1,
         )
         entry.payout = payout
         entries.append(entry)

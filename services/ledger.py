@@ -127,12 +127,17 @@ class LedgerAdapter(ABC):
         from the moment of sending: a network timeout followed by a retry must
         present the same key, or the retry is a new journal in a client's books.
 
-        The corollary is that deliberately re-posting a corrected entry for the
-        same cycle is also deduplicated. That is the safer way round — a
-        duplicate is silent and a rejection is not.
+        The content is part of it. Keyed on the reference alone, re-posting a
+        corrected entry — a fee classified after the first post — presented the
+        same key, so the ledger replayed its original answer: nothing changed,
+        and Fynn reported success. A changed entry now carries a new key and
+        reaches the ledger, which updates its draft by the same document number.
         """
         firm = getattr(self.accounts, "firm_id", "") or ""
-        raw = f"{firm}|{self.name}|{entry.cycle}|{entry.reference}"
+        content = "|".join(
+            f"{l.account}:{l.side.value}:{l.amount:.2f}" for l in entry.lines
+        )
+        raw = f"{firm}|{self.name}|{entry.cycle}|{entry.reference}|{content}"
         return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     @abstractmethod

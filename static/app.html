@@ -566,8 +566,9 @@ function viewCycle(){
           <span class="ledright pd-txt">${esc(p.payout||p.platform)}</span></div>`).join("")}
       </div>
       <div class="act"><button id="post">Post again</button>
-      <span class="st" id="poststatus">Only if the ledger rejected these, or you
-      deleted them there. The same reference will not create a second document.</span>
+      <span class="st" id="poststatus">After deciding anything further, or if the
+      ledger rejected these. Changed documents update the drafts under the same
+      number; unchanged ones are not sent twice.</span>
       </div></div>`;
   }else{
     h+=`<div class="closed"><h2>Cycle ${esc(D.cycle)} ready to post</h2>

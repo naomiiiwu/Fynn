@@ -372,13 +372,17 @@ class Workspace:
                 continue
             payouts = dict(parsed.reported_payouts)
             payouts.update(parse_reported(row.get("reported") or ""))
+            # The rows' own total too, exactly as at upload. Leaving it out
+            # brought every cycle back from a redeploy with a payout of 0.00 and
+            # the whole deposit reopened as an unexplained residual.
             if rebuilt is None:
                 rebuilt = Cycle(
                     lines=parsed.lines, reported_payouts=payouts, store=self.rules(),
                     cycle=profile.open_cycle, firm=profile.firm, firm_id=self.id,
+                    stated_totals=parsed.stated_totals,
                 )
             else:
-                rebuilt.add_lines(parsed.lines, payouts)
+                rebuilt.add_lines(parsed.lines, payouts, parsed.stated_totals)
 
         if rebuilt is not None:
             try:
@@ -544,18 +548,20 @@ def _ingest(raw: bytes, filename: str, reported: str = "") -> Cycle:
     #     accountant would otherwise copy out of the same file by hand;
     #   a payout the platform states on a row of its own — Lazada does this;
     #   what the firm typed, which is the only one that can come from a bank.
-    payouts = dict(parsed.stated_totals)
-    payouts.update(parsed.reported_payouts)
+    # The first is kept apart from the other two: it is a total for this file
+    # only, so a later file adds to it instead of replacing the cycle's payout.
+    payouts = dict(parsed.reported_payouts)
     payouts.update(parse_reported(reported))
 
     if space.cycle is None or space.cycle.cycle != parsed.cycle:
         space.cycle = Cycle(
             lines=parsed.lines, reported_payouts=payouts, store=_rules(),
             cycle=parsed.cycle, firm=profile.firm, firm_id=space.id,
+            stated_totals=parsed.stated_totals,
         )
         space.cycle.run()
     else:
-        space.cycle.add_lines(parsed.lines, payouts)
+        space.cycle.add_lines(parsed.lines, payouts, parsed.stated_totals)
 
     save_settlement_file(space.id, filename, parsed.cycle, raw, len(parsed.lines),
                          reported=reported)
@@ -759,6 +765,7 @@ def api_set_reported(req: ReportedRequest):
             400, f"No lines in this cycle for: {', '.join(unknown)}.")
 
     cycle.reported.update(payouts)
+    cycle.derived -= set(payouts)
     cycle.run()
     stated = ";".join(f"{p.value}={v:.2f}" for p, v in sorted(
         cycle.reported.items(), key=lambda kv: kv[0].value))
