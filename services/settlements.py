@@ -38,7 +38,6 @@ STATUS_LABELS = {
     "changed":      "Changed since sent",
     "approved":     "Approved in Xero",
     "reconciled":   "Reconciled",
-    "voided":       "Voided in Xero",
 }
 
 
@@ -101,6 +100,50 @@ def computed_row(entry: JournalEntry, result, cycle=None) -> dict:
     }
 
 
+def _one_date(text: str):
+    """A single date from a platform's wording, or None."""
+    from datetime import datetime
+    for fmt in ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def period_label(period: str, cycle: str = "") -> str:
+    """The settlement period as the list shows it, one shape for every platform.
+
+    Platforms word their periods differently — Lazada states a range, Shopee's
+    monthly statement states none at all and falls back to the cycle — and the
+    list read as two different systems. Dates are rendered one way here.
+
+    A month stays a month: a statement that covers January is not evidence that
+    the payout ran 01 to 31 January, and writing those dates would put a
+    precision in the accountant's list that the file never stated.
+    """
+    import re as _re
+    text = (period or cycle or "").strip()
+    if not text:
+        return ""
+
+    month = _re.fullmatch(r"(\d{4})-(\d{2})", text)
+    if month:
+        from datetime import date
+        year, number = int(month.group(1)), int(month.group(2))
+        if 1 <= number <= 12:
+            return date(year, number, 1).strftime("%b %Y")
+        return text
+
+    parts = _re.split(r"\s+(?:-|–|—|to)\s+", text)
+    dates = [_one_date(p) for p in parts]
+    if len(dates) == 2 and all(dates):
+        return f"{dates[0]:%d %b %Y} – {dates[1]:%d %b %Y}"
+    if len(dates) == 1 and dates[0]:
+        return f"{dates[0]:%d %b %Y}"
+    return text          # wording Fynn cannot read stays the platform's own
+
+
 def _same_lines(a, b) -> bool:
     def norm(lines):
         return sorted((l.get("account"), l.get("side"), round(float(l.get("amount") or 0), 2))
@@ -121,7 +164,12 @@ def status_of(row: dict) -> str:
     elif ledger_status == "AUTHORISED":
         return "approved"
     elif ledger_status in GONE_FROM_LEDGER:
-        return "voided"
+        # Nothing of this settlement is left in Xero, so there is no ledger
+        # state left to report: it stands where an unsent settlement stands.
+        # Saying "Voided in Xero" here also hid the two things that matter more
+        # — that the month has open exceptions, or that the figures changed
+        # since the voided document was sent.
+        return "needs_review" if row.get("open_exceptions") else "ready"
     else:
         base = "draft"
 
@@ -131,6 +179,19 @@ def status_of(row: dict) -> str:
     if not _same_lines(row.get("lines"), row.get("posted_lines")):
         return "changed"
     return base
+
+
+def was_voided(row: dict) -> bool:
+    """Whether Fynn sent this settlement and the document is gone from Xero.
+
+    No longer the settlement's status — it is a fact about a document that once
+    existed, kept because it explains why a sent settlement is asking to be
+    sent again, and because an automatic post must not quietly undo somebody's
+    decision to remove it.
+    """
+    return (bool(row.get("posted_at"))
+            and row.get("ledger") not in ("", "dry-run")
+            and (row.get("ledger_status") or "").upper() in GONE_FROM_LEDGER)
 
 
 def can_send(row: dict) -> tuple[bool, str]:
@@ -173,11 +234,15 @@ def present(row: dict) -> dict:
                          if row.get("posted_total") is not None else None),
         "status": status,
         "status_label": STATUS_LABELS[status],
+        "period_label": period_label(row.get("period", ""), row.get("cycle", "")),
+        "was_voided": was_voided(row),
         "open_exceptions": row.get("open_exceptions") or 0,
         "can_send": sendable,
         "why_not": why_not,
         "action": ("review" if status == "needs_review" else
-                   "resend" if posted and sendable and status in ("changed", "voided", "prepared")
+                   # A sent settlement asking to go again: its figures moved,
+                   # it was only a dry run, or its document is gone from Xero.
+                   "resend" if posted and sendable and status in ("changed", "prepared", "ready")
                    else "post" if not posted and sendable else ""),
         "ledger": row.get("ledger", ""),
         "ledger_id": row.get("ledger_id", ""),

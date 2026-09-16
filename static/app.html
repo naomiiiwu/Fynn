@@ -370,7 +370,7 @@ padding:3px 9px;border-radius:99px;white-space:nowrap;background:var(--bubF);col
 .pill.ready{background:var(--linkBg);color:var(--link)}
 .pill.draft,.pill.approved{background:var(--ledgerBg);color:var(--ledgerHi)}
 .pill.reconciled{background:var(--ledger);color:#fff}
-.pill.voided{background:var(--dangerBg);color:var(--danger)}
+.wasvoid{font-size:11px;color:var(--danger);margin-top:3px}
 .summary{border:1px solid var(--rule);border-radius:var(--r-sm);background:var(--panel2);
 padding:16px 18px;margin-bottom:22px;font-size:13.5px}
 .summary p+p{margin-top:6px}
@@ -531,7 +531,10 @@ addEventListener("hashchange", ()=>{ closeDrawer(); render(); });
 let SETTLEMENTS=null, SFILTER={cycle:"",platform:"",status:""}, CHECKED=false;
 
 function sendLabel(){ return S.firm.ledger==="xero" ? "Post to Xero" : "Dry run"; }
-function pill(r){ return `<span class="pill ${esc(r.status)}">${esc(r.status_label)}</span>`; }
+function pill(r){
+  const note = r.was_voided ? `<div class="wasvoid">was voided in Xero</div>` : "";
+  return `<span class="pill ${esc(r.status)}">${esc(r.status_label)}</span>${note}`;
+}
 function money(r){ return `<span class="num">${fmt(r.total)}</span>`; }
 
 async function viewSettlements(){
@@ -600,7 +603,7 @@ function drawSettlements(){
     else if(r.action==="resend") act=`<button data-post="${ref}">${r.status==="prepared"?sendLabel():"Re-send"}</button>`;
     if(r.ledger_url) act+=`<a href="${esc(r.ledger_url)}" target="_blank" rel="noopener">View in Xero ↗</a>`;
     act+=`<button class="ghost del" data-del="${ref}" title="Delete this upload">Delete</button>`;
-    h+=`<tr><td><a class="per" href="#/settlement?ref=${ref}">${esc(r.period)}</a>
+    h+=`<tr><td><a class="per" href="#/settlement?ref=${ref}">${esc(r.period_label||r.period)}</a>
         <div class="ref">${esc(r.reference)}</div></td>
       <td>${esc(r.platform)}</td><td>${esc(r.cycle)}</td>
       <td class="num">${money(r)}</td><td>${pill(r)}</td><td class="act">${act}</td></tr>`;
@@ -683,7 +686,7 @@ async function viewSettlement(){
   if(TAB!=="settlement" || param("ref")!==ref) return;
 
   const doc = d.total<0 ? "bill" : "invoice";
-  const period = d.period.replace(/\s+-\s+/," to ");
+  const period = d.period_label || d.period;
   let h=backControl()+`<div class="head"><h1>Settlement — ${esc(period)}</h1>
     <span class="headright">${pill(d)}</span></div>
     <p class="sub">${esc(d.platform)} · closes in ${esc(d.cycle)} · <span class="num">${esc(d.reference)}</span></p>`;

@@ -944,7 +944,8 @@ def _auto_post(cycle: Optional[Cycle]) -> Optional[dict]:
 
     ready = {r["reference"] for r in
              (settlements.present(row) for row in space.settlement_rows())
-             if r["cycle"] == cycle.cycle and r["status"] in ("ready", "changed")}
+             if r["cycle"] == cycle.cycle and r["status"] in ("ready", "changed")
+             and not r["was_voided"]}
     entries = [e for e, _r in settlements.documents(cycle, space.per_payout())
                if e.reference in ready]
     if not entries:
@@ -1553,7 +1554,9 @@ def _deletion(reference: str) -> dict:
         "cycle": month,
         "files": sorted(names) or [f.get("filename", "") for f in files],
         "file_ids": [f["id"] for f in files if f.get("id")],
-        "settlements": [{"reference": r["reference"], "period": r.get("period", ""),
+        "settlements": [{"reference": r["reference"],
+                         "period": settlements.period_label(r.get("period", ""),
+                                                            r.get("cycle", "")),
                          "status": settlements.present(r)["status_label"]}
                         for r in sorted(rows, key=settlements.sort_key)],
         "xero_drafts": [r["reference"] for r in drafts] if not in_ledger else [],

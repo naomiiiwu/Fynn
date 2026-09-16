@@ -753,7 +753,11 @@ def a_document_approved_in_xero_is_left_alone():
     eq(status_of({**row, "ledger_status": "DRAFT"}), "draft", "draft")
     eq(status_of({**row, "ledger_status": "AUTHORISED"}), "approved", "approved")
     eq(status_of({**row, "ledger_status": "PAID"}), "reconciled", "matched to the deposit")
-    eq(status_of({**row, "ledger_status": "VOIDED"}), "voided", "voided")
+    # Gone from Xero: there is no ledger state left to report, so the row says
+    # where Fynn stands — and keeps saying what the accountant has to do first.
+    eq(status_of({**row, "ledger_status": "VOIDED"}), "ready", "voided")
+    eq(status_of({**row, "ledger_status": "DELETED", "open_exceptions": 3}),
+       "needs_review", "a voided settlement hid its month's open exceptions")
     changed = [dict(sent[0], amount=80.0), dict(sent[1], amount=80.0)]
     eq(status_of({**row, "ledger_status": "DRAFT", "lines": changed}), "changed",
        "a draft that no longer matches what Fynn would send")
@@ -762,6 +766,98 @@ def a_document_approved_in_xero_is_left_alone():
         ok(not can_send({**row, "ledger_status": final, "lines": changed})[0],
            f"Fynn offered to overwrite a document {final} in Xero")
     ok(can_send({**row, "ledger_status": "VOIDED"})[0], "a voided document can go again")
+
+
+@check("settlements")
+def every_platform_states_its_period_the_same_way():
+    """Lazada states a weekly range and Shopee's monthly statement states none,
+    so the list read as two systems side by side. One shape now — without
+    inventing dates for a month that never stated any."""
+    from services.settlements import period_label
+    eq(period_label("26 Jan 2026 - 01 Feb 2026"), "26 Jan 2026 – 01 Feb 2026", "a range")
+    eq(period_label("2026-01-05 to 2026-01-11"), "05 Jan 2026 – 11 Jan 2026", "ISO range")
+    eq(period_label("", "2026-01"), "Jan 2026", "a month with no stated period")
+    eq(period_label("2026-01", "2026-01"), "Jan 2026", "a period that is the month")
+    eq(period_label("05 Jan 2026"), "05 Jan 2026", "a single date")
+    eq(period_label("Week 2"), "Week 2", "wording Fynn cannot read")
+
+
+@check("settlements")
+def a_settlement_voided_in_xero_says_what_is_left_to_do():
+    """Its document is gone from Xero, so the row describes Fynn's side again.
+    Re-uploading writes only the computed half of the row, so the voided status
+    outlived the document and hid both the open exceptions and the new figures."""
+    from services.settlements import present
+    sent = [{"account": "Lazada Clearing Account", "side": "debit", "amount": 90.0},
+            {"account": "Sales Revenue", "side": "credit", "amount": 90.0}]
+    row = {"reference": "R", "cycle": "2026-01", "posted_at": "2026-02-01",
+           "ledger": "xero", "ledger_status": "VOIDED",
+           "lines": sent, "posted_lines": sent, "open_exceptions": 0}
+
+    gone = present(row)
+    eq(gone["status_label"], "Ready to post", "a voided document is not a status")
+    ok(gone["was_voided"], "the voided document was forgotten entirely")
+    eq(gone["action"], "resend", "no way to send it again")
+
+    reuploaded = present({**row, "lines": [dict(l, amount=80.0) for l in sent]})
+    eq(reuploaded["status_label"], "Ready to post", "re-uploaded figures")
+    blocked = present({**row, "open_exceptions": 3})
+    eq(blocked["status_label"], "Needs review", "open exceptions stayed hidden")
+    eq(blocked["action"], "review", "the month still has to be reviewed first")
+
+
+@check("settlements")
+def an_automatic_post_never_replaces_a_document_somebody_voided():
+    """Removing a document in Xero is somebody's decision. Now that a voided
+    settlement reads as Ready to post rather than Voided in Xero, automatic
+    posting has to keep leaving it alone, or it takes that decision back."""
+    import main as app
+    from services import ledger
+    from tests.fakedb import FakeDB
+
+    class Connected:
+        org_id, org_name, scopes, connected_at, can_post = "org", "Org", "", "", True
+        def access_token(self): return "t"
+        def to_dict(self): return {"ledger": "xero", "org_name": "Org"}
+
+    sent = []
+    def fake_post(self, entry):
+        self._check(entry)
+        self._resolve(entry)
+        sent.append(entry.reference)
+        return {"status": "posted", "adapter": "xero", "reference": entry.reference,
+                "ledger_id": "id-" + entry.reference, "ledger_status": "DRAFT",
+                "document": "ACCREC"}
+
+    db = FakeDB()
+    real = (ledger.XeroAdapter.post, app.connections.get)
+    try:
+        ledger.XeroAdapter.post = fake_post
+        app.connections.get = lambda f, l: Connected()
+        c = signup(client_for(db), "auto-voided@firm.com")
+        c.put("/api/settings", json={"firm": "F", "ledger": "xero", "auto_post": True,
+                                     "platforms": ["Lazada"]})
+        c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+        resolve_all(c)
+        map_all(c)          # the accounts exist once the exceptions are decided
+        eq(len(sent), 4, "setup: the four weekly settlements were not sent")
+
+        # Voided in Xero by hand, the way an accountant would.
+        for row in db.rows["settlements"]:
+            row["ledger_status"] = "VOIDED"
+        app._posted_now.clear()
+        rows = listed(c)
+        ok(all(r["status"] == "ready" for r in rows), "a voided settlement is not ready to post")
+        ok(all(r["was_voided"] for r in rows), "the void was forgotten")
+
+        sent.clear()
+        accounts = c.get("/api/accounts").json()["accounts"]
+        c.put("/api/accounts", json={"mapping": {
+            a["account"]: {"code": str(400 + i), "name": a["account"], "tax": ""}
+            for i, a in enumerate(accounts)}})
+        eq(sent, [], "automatic posting sent a document somebody had voided")
+    finally:
+        ledger.XeroAdapter.post, app.connections.get = real
 
 
 @check("settlements")
