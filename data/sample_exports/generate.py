@@ -49,9 +49,18 @@ SHOPEE_HEADER = ["Order ID", "Order Creation Date", "Release Time", "Order Statu
     + SHOPEE_FEES + ["Final Amount"]
 
 
-def shopee_rows(rng: random.Random) -> list[dict]:
+def shopee_rows(rng: random.Random, year: int = 2026, month: int = 1,
+                days: int = 30, last_day: int = 31,
+                id_prefix: str = "25") -> list[dict]:
+    """One month of orders, two a day.
+
+    `days` is how many days carry orders and `last_day` is the month's own
+    length, which is what a release date may not run past — February has no
+    29th in 2026. `id_prefix` keeps each month's order numbers its own, so a
+    refund naming an order from another month means something.
+    """
     rows = []
-    for i in range(60):
+    for i in range(days * 2):
         day = 1 + i // 2
         price = rng.choice(PRICES)
         cancelled = i in (7, 19, 28, 41, 53)          # 5 cancelled orders
@@ -95,9 +104,9 @@ def shopee_rows(rng: random.Random) -> list[dict]:
                 f["Lost Compensation"] = _r(price * 0.5)
 
         row = {
-            "Order ID": f"25{day:02d}{rng.randint(100000, 999999)}",
-            "Order Creation Date": f"2026-01-{day:02d}",
-            "Release Time": f"2026-01-{min(day + 12, 31):02d}",
+            "Order ID": f"{id_prefix}{day:02d}{rng.randint(100000, 999999)}",
+            "Order Creation Date": f"{year}-{month:02d}-{day:02d}",
+            "Release Time": f"{year}-{month:02d}-{min(day + 12, last_day):02d}",
             "Order Status": "Cancelled" if cancelled else "Completed",
         }
         row.update({k: f"{v:.2f}" for k, v in f.items()})
@@ -113,10 +122,25 @@ SHOPEE_ADJUSTMENTS = [
     ("Return refund for order settled in previous period", "2026-01-09", -48.00),
 ]
 
+# February's, on the same four reasons. The last one names a real January order
+# rather than an invented number, so the refund has a sale to be traced back to
+# in the month before — the case a single month's sample cannot produce.
+SHOPEE_ADJUSTMENTS_FEB = [
+    ("Lost Compensation", "2026-02-24", 44.50),
+    ("Overseas Return Service Fee", "2026-02-25", -12.60),
+    ("Delivery Failure Fee", "2026-02-26", -6.95),
+    ("Return refund for order settled in previous period", "2026-02-11", -62.50),
+]
+JANUARY_ORDER = "2512795017"        # 62.50, released 2026-01-24
 
-def write_shopee() -> tuple[pathlib.Path, float, int]:
-    rng = random.Random(SEED)
-    rows = shopee_rows(rng)
+
+def write_shopee(year: int = 2026, month: int = 1, days: int = 30,
+                 last_day: int = 31, id_prefix: str = "25", seed: int = SEED,
+                 adjustments=None,
+                 orphan: str = "2512184472910") -> tuple[pathlib.Path, float, int]:
+    adjustments = SHOPEE_ADJUSTMENTS if adjustments is None else adjustments
+    rng = random.Random(seed)
+    rows = shopee_rows(rng, year, month, days, last_day, id_prefix)
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=SHOPEE_HEADER)
     writer.writeheader()
@@ -128,14 +152,14 @@ def write_shopee() -> tuple[pathlib.Path, float, int]:
     buf.write("\n")
     adj = csv.writer(buf)
     adj.writerow(["Order ID", "Adjustment Reason", "Adjustment Date", "Released Amount"])
-    for i, (reason, date, amount) in enumerate(SHOPEE_ADJUSTMENTS):
-        order = rows[i * 7]["Order ID"] if i < 3 else "2512184472910"   # last one is an orphan
+    for i, (reason, date, amount) in enumerate(adjustments):
+        order = rows[i * 7]["Order ID"] if i < 3 else orphan   # last one is an orphan
         adj.writerow([order, reason, date, f"{amount:.2f}"])
 
-    path = HERE / "shopee-income-statement-2026-01.csv"
+    path = HERE / f"shopee-income-statement-{year}-{month:02d}.csv"
     path.write_text(buf.getvalue())
     payout = _r(sum(float(r["Final Amount"]) for r in rows)
-                + sum(a[2] for a in SHOPEE_ADJUSTMENTS))
+                + sum(a[2] for a in adjustments))
     return path, payout, len(rows)
 
 
@@ -296,6 +320,14 @@ def write_lazada() -> tuple[pathlib.Path, float, int]:
 if __name__ == "__main__":
     sp, sp_payout, sp_orders = write_shopee()
     lz, lz_payout, lz_lines = write_lazada()
+    # A second month, for anything that only shows up once a cycle has a past:
+    # a new month arriving beside a closed one, and a refund whose sale settled
+    # in January. February is 28 days, so it is also the short-month case.
+    feb, feb_payout, feb_orders = write_shopee(
+        2026, 2, days=28, last_day=28, id_prefix="26", seed=20260212,
+        adjustments=SHOPEE_ADJUSTMENTS_FEB, orphan=JANUARY_ORDER)
     print(f"{sp.name}: {sp_orders} orders + {len(SHOPEE_ADJUSTMENTS)} adjustments, "
           f"payout {sp_payout:,.2f}")
     print(f"{lz.name}: {lz_lines} transaction lines, payout {lz_payout:,.2f}")
+    print(f"{feb.name}: {feb_orders} orders + {len(SHOPEE_ADJUSTMENTS_FEB)} "
+          f"adjustments, payout {feb_payout:,.2f}")
