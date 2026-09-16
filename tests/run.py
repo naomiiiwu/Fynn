@@ -183,6 +183,28 @@ def the_same_google_identity_keeps_one_workspace_across_restarts():
     eq(db.count("users"), 1, "a restart created a second account")
 
 
+@check("new account")
+def a_signed_out_browser_is_never_challenged_for_basic():
+    """A challenge would raise the browser's own credential box over the app —
+    and that box cannot set a session cookie, so it leads nowhere. Scripts,
+    which send no Sec-Fetch-Mode, still get something they can act on."""
+    from tests.fakedb import FakeDB
+    c = client_for(FakeDB())
+
+    page = c.get("/api/state", headers={"sec-fetch-mode": "cors"})
+    eq(page.status_code, 401, "a signed-out fetch")
+    ok("www-authenticate" not in page.headers, "a browser fetch was challenged")
+
+    script = c.get("/api/state")
+    eq(script.status_code, 401, "a signed-out script")
+    ok("www-authenticate" in script.headers, "a script got no challenge to act on")
+
+    # Credentials that failed are still told how to retry, browser or not.
+    tried = c.get("/api/state", headers={"sec-fetch-mode": "cors",
+                                         "authorization": "Basic bm86bm8="})
+    ok("www-authenticate" in tried.headers, "a failed sign-in got no challenge")
+
+
 # ── correctness of what gets posted ───────────────────────────────────────────
 
 @check("posting")

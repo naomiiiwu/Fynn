@@ -430,6 +430,13 @@ let ACCOUNTS=["Sales Revenue","Sales Returns & Allowances","Commission Expense",
 
 async function api(path,opts={}){
   const r=await fetch(path,opts);
+  // The session ran out, or was ended in another tab. Send them to sign in and
+  // come back to the same screen, rather than showing an error they can do
+  // nothing about.
+  if(r.status===401){
+    location.href="/login?next="+encodeURIComponent(location.pathname+location.search);
+    await new Promise(()=>{});   // navigating; never resolve, never render.
+  }
   if(!r.ok){ let d=r.statusText; try{ d=(await r.json()).detail||d; }catch(e){} throw new Error(d); }
   return r.status===204?null:r.json();
 }

@@ -160,10 +160,22 @@ async def require_account(request: Request, call_next):
                 wanted += "?" + request.url.query
             return RedirectResponse(f"/login?next={quote(wanted, safe='')}",
                                     status_code=303)
+        # The page's own fetches ask for JSON, not HTML, so they land here too.
+        # Challenging them would make the browser raise its native credential
+        # box over the app — a box that cannot set a session cookie, so filling
+        # it in leads nowhere. Only offer Basic to something that reached for
+        # it: a client that already sent credentials, or one that sends no
+        # Sec-Fetch-Mode, which every browser sets and curl does not.
+        wants_basic = (
+            "authorization" in request.headers
+            or "sec-fetch-mode" not in request.headers
+        )
+        headers = ({"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'}
+                   if wants_basic else {})
         return Response(
             status_code=401,
             content="Sign in to Fynn first.",
-            headers={"WWW-Authenticate": 'Basic realm="Fynn", charset="UTF-8"'},
+            headers=headers,
         )
 
     token = _current_user.set(user.id)
