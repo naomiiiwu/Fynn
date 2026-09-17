@@ -1047,8 +1047,21 @@ async function approveProposed(){
     const r=await api("/api/approve/batch",{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify({approvals:picked})});
     PROPOSALS={};
-    announceAutoPost(r.auto_post);
     if(r.failed.length) alert(r.failed.map(f=>f.key+": "+f.why).join("\n"));
+    // Say what happened either way. Automatic posting reports only when it had
+    // something to send, so a month still holding an undecided exception used
+    // to answer a click with nothing at all — indistinguishable from a button
+    // that does not work.
+    if(r.auto_post) announceAutoPost(r.auto_post);
+    else {
+      const left=(r.digest&&r.digest.open_exceptions)||0;
+      const n=r.applied.length, auto=S&&S.firm&&S.firm.auto_post;
+      flash(`Approved ${n} ${n===1?"exception":"exceptions"}`,
+        left ? ` ${left} still ${left===1?"needs":"need"} a decision before this month can post.`
+        : auto ? " This month is ready."
+        : " This month is ready. Send it from Settlements, or switch on automatic posting in Settings.",
+        left?"bad":"ok");
+    }
     await load();
   }catch(e){ $("#accept").disabled=false; st.textContent=e.message; }
 }

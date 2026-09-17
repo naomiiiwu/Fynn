@@ -768,6 +768,56 @@ def a_document_approved_in_xero_is_left_alone():
     ok(can_send({**row, "ledger_status": "VOIDED"})[0], "a voided document can go again")
 
 
+@check("posting")
+def approving_a_batch_reconciles_the_month_once():
+    """Every approval re-ran the whole month — classifying every line and
+    rebuilding every journal — and looking each exception up ran it again. On a
+    month's worth of lines that is the difference between a button that
+    responds and one that appears to hang. The answer must not change."""
+    import main as app
+    from tests.fakedb import FakeDB
+    from utils.formatter import Cycle
+
+    runs = []
+    real = Cycle.run
+    def counted(self):
+        runs.append(1)
+        return real(self)
+    try:
+        Cycle.run = counted
+        c = signup(client_for(FakeDB()), "batchcost@firm.com")
+        c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+        keys = [e["key"] for e in c.get("/api/state").json()["cycle"]["exceptions"]]
+        runs.clear()
+        r = c.post("/api/approve/batch", json={"approvals": [
+            {"key": k, "account": "Other Expense"} for k in keys]}).json()
+    finally:
+        Cycle.run = real
+
+    eq(len(r["applied"]), len(keys), "not every decision was applied")
+    eq(r["failed"], [], "a decision in the batch failed")
+    eq(r["digest"]["open_exceptions"], 0, "exceptions left open")
+    ok(all(p["ties_out"] for p in r["digest"]["platforms"]), "the month no longer ties out")
+    ok(len(runs) <= 3, f"{len(keys)} approvals reconciled the month {len(runs)} times")
+
+
+@check("posting")
+def a_batch_that_posts_nothing_still_says_what_happened():
+    """Automatic posting reports only when it had something to send, so a month
+    still holding an undecided exception answered the click with nothing at
+    all. The page needs the count to say so."""
+    from tests.fakedb import FakeDB
+    c = signup(client_for(FakeDB()), "batchquiet@firm.com")
+    c.post("/api/upload", files={"file": (LAZADA, sample_file(LAZADA), "text/csv")})
+    keys = [e["key"] for e in c.get("/api/state").json()["cycle"]["exceptions"]]
+    r = c.post("/api/approve/batch", json={"approvals": [
+        {"key": k, "account": "Other Expense"} for k in keys[:-3]]}).json()
+    eq(len(r["applied"]), len(keys) - 3, "not every ticked decision was applied")
+    eq(r["auto_post"], None, "setup: expected nothing to be sent")
+    eq(r["digest"]["open_exceptions"], 3,
+       "the page cannot say what is left without the count")
+
+
 @check("settlements")
 def every_platform_states_its_period_the_same_way():
     """Lazada states a weekly range and Shopee's monthly statement states none,

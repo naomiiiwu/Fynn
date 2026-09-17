@@ -1284,9 +1284,14 @@ def api_approve_batch(req: BatchApproveRequest):
             failed.append({"key": key, "why": "No open exception with that key."})
             continue
         side = Side.CREDIT if exc.amount > 0 else Side.DEBIT
-        cycle.approve(key, account, side, actor, True, "label")
+        # Recorded now, reconciled once below. Every decision in the batch was
+        # made against the state the accountant was looking at, so reconciling
+        # between them would only spend the month's work over again.
+        cycle.approve(key, account, side, actor, True, "label", rerun=False)
         save_resolution(space.id, cycle.cycle, key, account, side.value, actor)
         applied.append({"key": key, "account": account})
+    if applied:
+        cycle.run()
     space.record(cycle)
     posted = _auto_post(cycle) if applied else None
     return {"applied": applied, "failed": failed, "digest": cycle.digest(),
@@ -2058,7 +2063,9 @@ def api_onboarding_restart():
 
 
 def _find_exception(cycle: Cycle, key: str):
-    for result in cycle.run().values():
+    # The reconciliation as it stands, not a fresh one: looking an exception up
+    # is a read, and a batch of approvals looks one up per decision.
+    for result in cycle.results().values():
         for exc in result.exceptions:
             if exc.key == key:
                 return exc

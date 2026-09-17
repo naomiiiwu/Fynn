@@ -160,6 +160,17 @@ class Cycle:
             self._note_starter_coverage(added)
         return self.run()
 
+    def results(self) -> dict[Platform, CycleResult]:
+        """The current reconciliation, run only if there isn't one.
+
+        Reconciling means classifying every line in the month and rebuilding
+        each platform's journals, so a caller that only wants to read the
+        current state must not reach for run() and pay for it again.
+        """
+        if not self._results:
+            self.run()
+        return self._results
+
     def open_exceptions(self) -> list[ReconException]:
         """Every unresolved exception, in a stable order across re-runs.
 
@@ -202,9 +213,16 @@ class Cycle:
 
     def approve(
         self, key: str, account: str, side: Side, actor: str, save_rule: bool = True,
-        scope: str = "label",
+        scope: str = "label", rerun: bool = True,
     ) -> dict[Platform, CycleResult]:
         """Record an accountant's decision, then re-reconcile.
+
+        `rerun=False` records the decision and leaves the reconciliation to the
+        caller. Several decisions arriving together are all known before any of
+        them is reconciled, and running the whole month once after the last one
+        gives the same answer as running it after each — for a fraction of the
+        work, which on a month's worth of lines is the difference between a
+        button that responds and one that appears to hang.
 
         Saving the rule is what makes the next cycle cheaper: the same label
         will not be raised again for this firm.
@@ -262,7 +280,7 @@ class Cycle:
                 f"Rule saved — {line.platform.value} {target} posts to {account}{note}",
                 actor=actor,
             )
-        return self.run()
+        return self.run() if rerun else self._results
 
     def digest(self) -> dict:
         """The payload behind the month-end review link."""
